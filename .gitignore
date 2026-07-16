@@ -1,0 +1,37 @@
+# macOS
+.DS_Store
+.AppleDouble
+
+# Xcode
+DerivedData/
+build/
+*.xcuserstate
+xcuserdata/
+*.xccheckout
+*.xcscmblueprint
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.mobileprovision
+
+# Local databases and runtime files
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+logs/
+diagnostics/
+tmp/
+artifacts/
+
+# Codex local data
+.codex/local/
