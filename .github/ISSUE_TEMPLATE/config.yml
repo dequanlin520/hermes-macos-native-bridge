@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security policy
+    url: https://github.com/dequanlin520/hermes-macos-native-bridge/security/policy
+    about: Do not disclose private vulnerabilities or secrets in public issues.

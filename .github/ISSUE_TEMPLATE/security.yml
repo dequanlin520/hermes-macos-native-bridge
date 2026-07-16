@@ -1,0 +1,42 @@
+name: Security report
+description: Public security hardening or boundary issue. Do not disclose private vulnerabilities here.
+title: "SEC: "
+labels:
+  - "type: security"
+  - "priority: high"
+  - "risk: high"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not submit API keys, access tokens, private prompts, private file paths, credentials, or unredacted diagnostic packages.
+
+        If this is an exploitable private vulnerability, do not file a public issue. Follow `SECURITY.md`.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: Describe the public security hardening concern.
+    validations:
+      required: true
+  - type: textarea
+    id: boundary
+    attributes:
+      label: Boundary involved
+      description: Which execution, permission, IPC, logging, or data boundary is affected?
+    validations:
+      required: true
+  - type: textarea
+    id: proposed-outcome
+    attributes:
+      label: Proposed outcome
+      description: What should change or be decided?
+    validations:
+      required: true
+  - type: checkboxes
+    id: disclosure
+    attributes:
+      label: Public disclosure check
+      options:
+        - label: This issue does not include secrets, credentials, private paths, or exploit instructions for an undisclosed vulnerability.
+          required: true

@@ -49,3 +49,8 @@ The current phase is repository governance and technical validation.
 
 Do not create product runtime code unless the assigned issue explicitly asks
 for it.
+
+Governance tasks may add or update repository policy, issue templates,
+pull-request templates, ADR documentation, and maintenance scripts. They must
+not add Bridge runtime behavior, macOS integration code, or execution paths
+unless the assigned issue explicitly changes the current phase and scope.
