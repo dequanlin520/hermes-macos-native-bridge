@@ -173,7 +173,8 @@ public enum HermesRequestLifecycleState: String, Codable, CaseIterable, Equatabl
       (.running, .failed), (.running, .interrupted),
       (.waitingForApproval, .running), (.waitingForApproval, .cancelling),
       (.waitingForApproval, .failed), (.waitingForApproval, .interrupted),
-      (.cancelling, .cancelled), (.cancelling, .failed), (.cancelling, .interrupted):
+      (.cancelling, .cancelled), (.cancelling, .failed), (.cancelling, .interrupted),
+      (.accepted, .interrupted), (.queued, .interrupted), (.starting, .interrupted):
       return true
     default:
       return false
@@ -513,6 +514,13 @@ public protocol HermesRequestStateStore: Sendable {
     completedAt: Date
   ) async throws -> HermesRequestRecord
 
+  @discardableResult
+  func markInterrupted(
+    requestID: HermesRequestID,
+    expectedRevision: Int?,
+    completedAt: Date
+  ) async throws -> HermesRequestRecord
+
   func listRecoverableRequests() async throws -> [HermesRequestRecoveryItem]
 
   @discardableResult
@@ -670,6 +678,28 @@ public actor InMemoryHermesRequestStateStore: HermesRequestStateStore {
         updatedAt: completedAt,
         completedAt: completedAt,
         failure: failure
+      )
+    }
+  }
+
+  public func markInterrupted(
+    requestID: HermesRequestID,
+    expectedRevision: Int? = nil,
+    completedAt: Date = Date()
+  ) async throws -> HermesRequestRecord {
+    try mutate(requestID: requestID, expectedRevision: expectedRevision) { record in
+      if record.lifecycleState == .interrupted {
+        return record
+      }
+      guard record.lifecycleState.canTransition(to: .interrupted) else {
+        throw HermesRequestStateStoreError.invalidTransition(
+          from: record.lifecycleState, to: .interrupted)
+      }
+      return try Self.next(
+        record,
+        state: .interrupted,
+        updatedAt: completedAt,
+        completedAt: completedAt
       )
     }
   }
@@ -962,6 +992,28 @@ public actor FileBackedHermesRequestStateStore: HermesRequestStateStore {
         updatedAt: completedAt,
         completedAt: completedAt,
         failure: failure
+      )
+    }
+  }
+
+  public func markInterrupted(
+    requestID: HermesRequestID,
+    expectedRevision: Int? = nil,
+    completedAt: Date = Date()
+  ) async throws -> HermesRequestRecord {
+    try mutate(requestID: requestID, expectedRevision: expectedRevision) { record in
+      if record.lifecycleState == .interrupted {
+        return record
+      }
+      guard record.lifecycleState.canTransition(to: .interrupted) else {
+        throw HermesRequestStateStoreError.invalidTransition(
+          from: record.lifecycleState, to: .interrupted)
+      }
+      return try InMemoryHermesRequestStateStore.next(
+        record,
+        state: .interrupted,
+        updatedAt: completedAt,
+        completedAt: completedAt
       )
     }
   }
