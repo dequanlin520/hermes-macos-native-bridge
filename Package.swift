@@ -11,16 +11,28 @@ let package = Package(
     .library(
       name: "HermesRuntimeFoundation",
       targets: ["HermesRuntimeFoundation"]
-    )
+    ),
+    .library(
+      name: "HermesBridgeXPC",
+      targets: ["HermesBridgeXPC"]
+    ),
   ],
   targets: [
     .target(
       name: "HermesRuntimeFoundation"
     ),
+    .target(
+      name: "HermesBridgeXPC",
+      dependencies: ["HermesRuntimeFoundation"]
+    ),
     .testTarget(
       name: "HermesRuntimeFoundationTests",
       dependencies: ["HermesRuntimeFoundation"],
       exclude: ["Fixtures"]
+    ),
+    .testTarget(
+      name: "HermesBridgeXPCTests",
+      dependencies: ["HermesBridgeXPC", "HermesRuntimeFoundation"]
     ),
   ]
 )
