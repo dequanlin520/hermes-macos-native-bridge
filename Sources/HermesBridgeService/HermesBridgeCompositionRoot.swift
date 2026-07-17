@@ -19,6 +19,7 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
   public let stateStore: FileBackedHermesRequestStateStore
   public let bindingRegistry: ConfigurationBackedHermesRequestBindingRegistry
   public let orchestrator: HermesRequestOrchestrator
+  public let requestHandler: HermesBridgeServiceRequestHandler
   public let dispatcher: HermesBridgeXPCRequestDispatcher
   public let xpcService: HermesBridgeXPCService
   public let logger: HermesBridgeServiceLogger
@@ -78,8 +79,12 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
       protocolFactory: protocolFactory,
       gatewayReadyTimeout: configuration.timeouts.gatewayReady
     )
+    self.requestHandler = HermesBridgeServiceRequestHandler(
+      orchestrator: orchestrator,
+      bindingRegistry: bindingRegistry
+    )
     self.dispatcher = HermesBridgeXPCRequestDispatcher(
-      handler: orchestrator,
+      handler: requestHandler,
       maximumConcurrentRequests: configuration.maximumConcurrentXPCRequests
     )
     self.xpcService = HermesBridgeXPCService(dispatcher: dispatcher)
@@ -139,5 +144,43 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
   private static func safeCode(for error: Error) -> String {
     String(describing: type(of: error))
       .filter { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_") }
+  }
+}
+
+public struct HermesBridgeServiceRequestHandler: HermesBridgeRequestHandling {
+  private let orchestrator: HermesRequestOrchestrator
+  private let bindingRegistry: ConfigurationBackedHermesRequestBindingRegistry
+
+  public init(
+    orchestrator: HermesRequestOrchestrator,
+    bindingRegistry: ConfigurationBackedHermesRequestBindingRegistry
+  ) {
+    self.orchestrator = orchestrator
+    self.bindingRegistry = bindingRegistry
+  }
+
+  public func listEnabledBindings() async throws -> [HermesBridgeBindingSummary] {
+    try await bindingRegistry.listEnabledBindings()
+  }
+
+  public func submit(bindingID: HermesRequestBindingID, prompt: String) async throws
+    -> HermesRequestID
+  {
+    try await orchestrator.submit(bindingID: bindingID, prompt: prompt)
+  }
+
+  public func status(requestID: HermesRequestID) async throws -> HermesRequestRecord {
+    try await orchestrator.status(requestID: requestID)
+  }
+
+  public func cancel(requestID: HermesRequestID) async throws -> HermesRequestRecord {
+    try await orchestrator.cancel(requestID: requestID)
+  }
+
+  public func respondToApproval(
+    requestID: HermesRequestID,
+    decision: HermesApprovalResponseDecision
+  ) async throws -> HermesRequestRecord {
+    try await orchestrator.respondToApproval(requestID: requestID, decision: decision)
   }
 }

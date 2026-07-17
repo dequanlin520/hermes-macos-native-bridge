@@ -39,6 +39,7 @@ public enum HermesAppIntentError: Error, Equatable, Sendable, CustomStringConver
 }
 
 public protocol HermesAppIntentClient: Sendable {
+  func listEnabledBindings() async throws -> [HermesAppIntentBindingDefinition]
   func submit(bindingID: HermesRequestBindingID, prompt: String) async throws -> HermesRequestID
   func status(requestID: HermesRequestID) async throws -> HermesAppIntentRequestStatus
   func cancel(requestID: HermesRequestID) async throws -> HermesAppIntentRequestStatus
@@ -88,6 +89,16 @@ public actor HermesAppIntentXPCClient: HermesAppIntentClient {
   {
     do {
       return try await client.submit(bindingID: bindingID, prompt: prompt)
+    } catch {
+      throw Self.map(error)
+    }
+  }
+
+  public func listEnabledBindings() async throws -> [HermesAppIntentBindingDefinition] {
+    do {
+      return try await client.listEnabledBindings().bindings.map {
+        try HermesAppIntentBindingDefinition(summary: $0)
+      }
     } catch {
       throw Self.map(error)
     }
@@ -200,9 +211,64 @@ public struct HermesAppIntentStaticBindingProvider: HermesAppIntentBindingProvid
 }
 
 public struct HermesAppIntentProductionBindingProvider: HermesAppIntentBindingProviding {
-  public init() {}
+  private let factory: any HermesAppIntentClientFactory
+  private let cache: HermesAppIntentBindingCache
+
+  public init(
+    factory: any HermesAppIntentClientFactory = HermesAppIntentProductionClientFactory(),
+    cacheLifetime: TimeInterval = 30
+  ) {
+    self.factory = factory
+    self.cache = HermesAppIntentBindingCache(lifetime: cacheLifetime)
+  }
 
   public func enabledBindings() async throws -> [HermesAppIntentBindingDefinition] {
-    []
+    if let cached = await cache.current() {
+      return cached
+    }
+    do {
+      let client = try await factory.makeClient()
+      let bindings = try await client.listEnabledBindings()
+      await cache.store(bindings)
+      return bindings
+    } catch HermesAppIntentError.serviceUnavailable {
+      return []
+    } catch HermesAppIntentError.protocolIncompatible {
+      return []
+    } catch {
+      throw error
+    }
+  }
+}
+
+public actor HermesAppIntentBindingCache {
+  private let lifetime: TimeInterval
+  private var cachedAt: Date?
+  private var cachedBindings: [HermesAppIntentBindingDefinition] = []
+
+  public init(lifetime: TimeInterval = 30) {
+    self.lifetime = max(0, min(lifetime, 300))
+  }
+
+  public func current(now: Date = Date()) -> [HermesAppIntentBindingDefinition]? {
+    guard let cachedAt, now.timeIntervalSince(cachedAt) <= lifetime else {
+      return nil
+    }
+    return cachedBindings
+  }
+
+  public func store(_ bindings: [HermesAppIntentBindingDefinition], now: Date = Date()) {
+    cachedAt = now
+    cachedBindings =
+      bindings
+      .filter(\.enabled)
+      .sorted { $0.id.rawValue.localizedStandardCompare($1.id.rawValue) == .orderedAscending }
+      .prefixArray(HermesBridgeBindingSummary.maximumCount)
+  }
+}
+
+extension Array {
+  fileprivate func prefixArray(_ count: Int) -> [Element] {
+    Array(prefix(count))
   }
 }

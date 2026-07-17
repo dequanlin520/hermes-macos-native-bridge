@@ -36,7 +36,7 @@ The current protocol version is:
 
 ```text
 major: 1
-minor: 0
+minor: 1
 ```
 
 The service rejects unsupported major versions before operation dispatch.
@@ -53,6 +53,7 @@ The confirmed capability set is:
 - `cancelRequest`
 - `respondToApproval`
 - `protocolVersion`
+- `bindingDiscovery`
 
 The service does not advertise or accept generic execution, generic JSON-RPC,
 generic HTTP, filesystem path, process, browser, GUI, AppleScript, JXA, or shell
@@ -75,6 +76,7 @@ Supported operations are:
 - `status`: request ID.
 - `cancel`: request ID.
 - `approvalResponse`: request ID and confirmed approval decision.
+- `listEnabledBindings`: no payload.
 
 The envelope contains no arbitrary dictionaries and no generic JSON blob field.
 Payloads are Swift `Codable` types with fixed fields. Unknown operation strings
@@ -96,11 +98,18 @@ Success payloads are limited to:
 - redacted request status summary;
 - redacted cancellation status summary;
 - redacted approval-response status summary.
+- enabled binding summaries.
 
 Status summaries include request ID, binding ID, lifecycle state, cancellation
 flag, result availability, and redacted failure code/retryability. They do not
 include prompts, backend session tokens, raw stdout/stderr, backend process
 PID/PGID, or raw result bodies.
+
+Binding summaries include only binding ID, localized display name, safe
+localized description, maximum Prompt length, approval policy, and enabled
+state. They do not include executable paths, process arguments, endpoints,
+backend tokens, JSON-RPC methods, environments, result locators, prompts, raw
+result bodies, or private filesystem paths.
 
 ## Size Limits
 
@@ -160,6 +169,7 @@ performs protocol-version negotiation, queries capabilities, and exposes only:
 - `status(requestID:)`
 - `cancel(requestID:)`
 - `respondToApproval(requestID:decision:)`
+- `listEnabledBindings()`
 - `close()`
 
 The public client API does not expose raw `Data`, arbitrary operation names, or

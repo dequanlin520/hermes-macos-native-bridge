@@ -6,6 +6,7 @@ import HermesRuntimeFoundation
 }
 
 public protocol HermesBridgeRequestHandling: Sendable {
+  func listEnabledBindings() async throws -> [HermesBridgeBindingSummary]
   func submit(bindingID: HermesRequestBindingID, prompt: String) async throws -> HermesRequestID
   func status(requestID: HermesRequestID) async throws -> HermesRequestRecord
   func cancel(requestID: HermesRequestID) async throws -> HermesRequestRecord
@@ -16,6 +17,12 @@ public protocol HermesBridgeRequestHandling: Sendable {
 }
 
 extension HermesRequestOrchestrator: HermesBridgeRequestHandling {}
+
+extension HermesBridgeRequestHandling {
+  public func listEnabledBindings() async throws -> [HermesBridgeBindingSummary] {
+    throw HermesBridgeXPCError.unsupportedOperation
+  }
+}
 
 public actor HermesBridgeXPCRequestDispatcher {
   private let handler: HermesBridgeRequestHandling
@@ -114,7 +121,7 @@ public actor HermesBridgeXPCRequestDispatcher {
       else {
         throw HermesBridgeXPCError.malformedPayload
       }
-    case .capabilities, .protocolVersion:
+    case .capabilities, .protocolVersion, .listEnabledBindings:
       guard envelope.submit == nil, envelope.status == nil, envelope.cancel == nil,
         envelope.approvalResponse == nil
       else {
@@ -131,6 +138,9 @@ public actor HermesBridgeXPCRequestDispatcher {
       return .protocolVersion(HermesBridgeProtocolVersionPayload(version: .current))
     case .capabilities:
       return .capabilities(HermesBridgeCapabilitiesPayload())
+    case .listEnabledBindings:
+      return .listEnabledBindings(
+        try HermesBridgeBindingListPayload(bindings: try await handler.listEnabledBindings()))
     case .submit:
       guard let submit = envelope.submit else {
         throw HermesBridgeXPCError.malformedPayload

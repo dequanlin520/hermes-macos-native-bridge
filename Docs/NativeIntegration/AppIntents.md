@@ -131,9 +131,11 @@ bundle identifiers, entitlements, and release packaging for Shortcuts indexing.
 The Swift Package host compiles App Intents but is not sufficient evidence that
 Shortcuts has indexed a user-visible app.
 
-The production binding provider currently returns no bindings because the
-Bridge does not yet expose a list-enabled-bindings XPC operation. This avoids
-inventing an unreviewed runtime source for allowlist discovery.
+The production binding provider now calls the typed Bridge XPC
+`listEnabledBindings` operation. It falls back to an empty deterministic list
+when the Bridge is unavailable or the service is too old, caches only safe
+binding summaries for a bounded lifetime, and validates a selected binding ID
+against current discovery before submitting a Prompt.
 
 ## Recommended Next Step
 

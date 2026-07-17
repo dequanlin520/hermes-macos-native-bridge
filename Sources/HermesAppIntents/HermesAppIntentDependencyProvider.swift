@@ -51,6 +51,10 @@ public struct HermesAppIntentOperations: Sendable {
   {
     let bindingID = try parseBindingID(bindingID)
     try validate(prompt: prompt)
+    let bindings = try await client.listEnabledBindings()
+    guard bindings.contains(where: { $0.enabled && $0.id == bindingID }) else {
+      throw HermesAppIntentError.invalidBinding
+    }
     let requestID = try await client.submit(bindingID: bindingID, prompt: prompt)
     return HermesAppIntentRequestEntity(requestID: requestID)
   }
