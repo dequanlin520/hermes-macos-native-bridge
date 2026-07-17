@@ -4,7 +4,7 @@ import HermesRuntimeFoundation
 public struct HermesBridgeProtocolVersion: Codable, Equatable, Sendable,
   CustomStringConvertible
 {
-  public static let current = HermesBridgeProtocolVersion(major: 1, minor: 0)
+  public static let current = HermesBridgeProtocolVersion(major: 1, minor: 1)
   public static let supportedMajor = 1
 
   public let major: Int
@@ -34,6 +34,7 @@ public enum HermesBridgeCapability: String, Codable, CaseIterable, Equatable, Se
   case cancelRequest
   case respondToApproval
   case protocolVersion
+  case bindingDiscovery
 }
 
 public enum HermesBridgeOperation: String, Codable, CaseIterable, Equatable, Sendable {
@@ -43,6 +44,7 @@ public enum HermesBridgeOperation: String, Codable, CaseIterable, Equatable, Sen
   case approvalResponse
   case capabilities
   case protocolVersion
+  case listEnabledBindings
 }
 
 public struct HermesBridgeCorrelationID: Codable, Equatable, Hashable, Sendable,
@@ -140,6 +142,78 @@ public struct HermesBridgeApprovalResponsePayload: Codable, Equatable, Sendable 
   }
 }
 
+public struct HermesBridgeBindingSummary: Codable, Equatable, Sendable {
+  public static let maximumCount = 128
+  public static let maximumPayloadBytes = 64 * 1024
+  public static let maximumDisplayNameCharacters = 80
+  public static let maximumDescriptionCharacters = 240
+
+  public let bindingID: String
+  public let localizedDisplayName: String
+  public let safeLocalizedDescription: String
+  public let maximumPromptBytes: Int
+  public let approvalPolicy: String
+  public let enabled: Bool
+
+  public init(
+    bindingID: HermesRequestBindingID,
+    localizedDisplayName: String,
+    safeLocalizedDescription: String,
+    maximumPromptBytes: Int,
+    approvalPolicy: String,
+    enabled: Bool
+  ) {
+    self.bindingID = bindingID.rawValue
+    self.localizedDisplayName = Self.safeText(
+      localizedDisplayName,
+      maximumCharacters: Self.maximumDisplayNameCharacters
+    )
+    self.safeLocalizedDescription = Self.safeText(
+      safeLocalizedDescription,
+      maximumCharacters: Self.maximumDescriptionCharacters
+    )
+    self.maximumPromptBytes = max(
+      0, min(maximumPromptBytes, HermesBridgeRequestEnvelope.maximumPromptBytes))
+    self.approvalPolicy = Self.safeToken(approvalPolicy)
+    self.enabled = enabled
+  }
+
+  private static func safeText(_ value: String, maximumCharacters: Int) -> String {
+    let filtered = value.unicodeScalars.filter { scalar in
+      scalar.value >= 0x20 && scalar.value != 0x7F
+    }
+    return String(String.UnicodeScalarView(filtered)).prefixString(maximumCharacters)
+  }
+
+  private static func safeToken(_ value: String) -> String {
+    let filtered = value.filter {
+      $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_" || $0 == "-")
+    }
+    return String(filtered.prefix(40))
+  }
+}
+
+public struct HermesBridgeBindingListPayload: Codable, Equatable, Sendable {
+  public let protocolVersion: HermesBridgeProtocolVersion
+  public let bindings: [HermesBridgeBindingSummary]
+
+  public init(
+    protocolVersion: HermesBridgeProtocolVersion = .current,
+    bindings: [HermesBridgeBindingSummary]
+  ) throws {
+    let sorted =
+      bindings
+      .filter(\.enabled)
+      .sorted { $0.bindingID.localizedStandardCompare($1.bindingID) == .orderedAscending }
+    self.protocolVersion = protocolVersion
+    self.bindings = Array(sorted.prefix(HermesBridgeBindingSummary.maximumCount))
+    let encoded = (try? JSONEncoder().encode(self)) ?? Data()
+    guard encoded.count <= HermesBridgeBindingSummary.maximumPayloadBytes else {
+      throw HermesBridgeXPCError.oversizedPayload
+    }
+  }
+}
+
 public struct HermesBridgeRequestEnvelope: Codable, Equatable, Sendable {
   public static let maximumEnvelopeBytes = 128 * 1024
   public static let maximumPromptBytes = 64 * 1024
@@ -215,6 +289,7 @@ public struct HermesBridgeCapabilitiesPayload: Codable, Equatable, Sendable {
 public enum HermesBridgeSuccessPayload: Codable, Equatable, Sendable {
   case protocolVersion(HermesBridgeProtocolVersionPayload)
   case capabilities(HermesBridgeCapabilitiesPayload)
+  case listEnabledBindings(HermesBridgeBindingListPayload)
   case submit(HermesBridgeRequestIDPayload)
   case status(HermesBridgeRequestStatusPayload)
   case cancel(HermesBridgeRequestStatusPayload)
@@ -249,5 +324,11 @@ public struct HermesBridgeResponseEnvelope: Codable, Equatable, Sendable {
     self.protocolVersion = protocolVersion
     self.correlationID = correlationID
     self.result = result
+  }
+}
+
+extension String {
+  fileprivate func prefixString(_ count: Int) -> String {
+    String(prefix(count))
   }
 }

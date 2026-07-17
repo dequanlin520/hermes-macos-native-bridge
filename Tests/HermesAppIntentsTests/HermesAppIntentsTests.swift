@@ -320,6 +320,94 @@ final class HermesAppIntentsTests: XCTestCase {
     XCTAssertEqual(fake.submittedPrompts.sorted(), ["one", "two"])
   }
 
+  func testEntityLookupValidatesCurrentBinding() async throws {
+    await installFake(bindings: [
+      HermesAppIntentBindingDefinition(
+        id: try bindingID(),
+        enabled: true,
+        displayName: "Daily Status",
+        safeDescription: "Allowed summary request"
+      )
+    ])
+
+    let entities = try await HermesAppIntentBindingQuery().entities(for: [
+      bindingID().rawValue,
+      "binding:v1:not.current",
+    ])
+
+    let expected = try bindingID().rawValue
+    XCTAssertEqual(entities.map(\.id), [expected])
+  }
+
+  func testProductionBindingProviderServiceUnavailableFallback() async throws {
+    let fake = FakeAppIntentClient()
+    fake.listBindingsError = HermesAppIntentError.serviceUnavailable
+    let provider = HermesAppIntentProductionBindingProvider(
+      factory: FakeClientFactory(client: fake),
+      cacheLifetime: 30
+    )
+
+    let bindings = try await provider.enabledBindings()
+
+    XCTAssertEqual(bindings, [])
+  }
+
+  func testBindingCacheExpiration() async throws {
+    let cache = HermesAppIntentBindingCache(lifetime: 1)
+    let binding = HermesAppIntentBindingDefinition(
+      id: try bindingID(),
+      enabled: true,
+      displayName: "Daily Status",
+      safeDescription: "Allowed summary request"
+    )
+
+    await cache.store([binding], now: Date(timeIntervalSince1970: 10))
+
+    let fresh = await cache.current(now: Date(timeIntervalSince1970: 10.5))
+    let expired = await cache.current(now: Date(timeIntervalSince1970: 12))
+    XCTAssertEqual(fresh, [binding])
+    XCTAssertNil(expired)
+  }
+
+  func testBindingCacheConcurrency() async throws {
+    let cache = HermesAppIntentBindingCache(lifetime: 30)
+    let binding = HermesAppIntentBindingDefinition(
+      id: try bindingID(),
+      enabled: true,
+      displayName: "Daily Status",
+      safeDescription: "Allowed summary request"
+    )
+
+    await withTaskGroup(of: Void.self) { group in
+      for _ in 0..<20 {
+        group.addTask {
+          await cache.store([binding])
+          _ = await cache.current()
+        }
+      }
+    }
+
+    let cached = await cache.current()
+    XCTAssertEqual(cached, [binding])
+  }
+
+  func testPromptAndTokenAbsentFromBindingCache() async throws {
+    let cache = HermesAppIntentBindingCache(lifetime: 30)
+
+    await cache.store([
+      HermesAppIntentBindingDefinition(
+        id: try bindingID(),
+        enabled: true,
+        displayName: "Daily Status",
+        safeDescription: "Allowed summary request"
+      )
+    ])
+    let rendered = String(describing: await cache.current() ?? [])
+
+    XCTAssertFalse(rendered.contains("hello private prompt"))
+    XCTAssertFalse(rendered.localizedCaseInsensitiveContains("token"))
+  }
+
   private func installFake(bindings: [HermesAppIntentBindingDefinition] = []) async {
     await HermesAppIntentDependencyProvider.shared.replaceForTesting(
       clientFactory: FakeClientFactory(client: FakeAppIntentClient()),
@@ -332,11 +420,13 @@ private final class FakeAppIntentClient: @unchecked Sendable, HermesAppIntentCli
   private let lock = NSLock()
   private var submitCountStorage = 0
   private var statusCountStorage = 0
+  private var listBindingsCountStorage = 0
   private var cancelCountStorage = 0
   private var submittedPromptsStorage: [String] = []
   private var approvalDecisionsStorage: [HermesAppIntentApprovalDecision] = []
   private var submitErrorStorage: Error?
   private var healthErrorStorage: Error?
+  private var listBindingsErrorStorage: Error?
   private var blockCompletionStorage = false
   private var completionWaitedStorage = false
   private var launchedRealHermesStorage = false
@@ -349,6 +439,29 @@ private final class FakeAppIntentClient: @unchecked Sendable, HermesAppIntentCli
     cancellationRequested: false,
     resultAvailable: false
   )
+
+  var listBindingsError: Error? {
+    get { lock.withLock { listBindingsErrorStorage } }
+    set { lock.withLock { listBindingsErrorStorage = newValue } }
+  }
+
+  func listEnabledBindings() async throws -> [HermesAppIntentBindingDefinition] {
+    let error = lock.withLock {
+      listBindingsCountStorage += 1
+      return listBindingsErrorStorage
+    }
+    if let error {
+      throw error
+    }
+    return [
+      HermesAppIntentBindingDefinition(
+        id: try HermesRequestBindingID(rawValue: "binding:v1:daily.status"),
+        enabled: true,
+        displayName: "Daily Status",
+        safeDescription: "Allowed summary request"
+      )
+    ]
+  }
 
   var submitCount: Int { lock.withLock { submitCountStorage } }
   var statusCount: Int { lock.withLock { statusCountStorage } }

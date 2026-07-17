@@ -44,6 +44,38 @@ final class HermesBridgeXPCTests: XCTestCase {
       return XCTFail("expected capabilities")
     }
     XCTAssertEqual(Set(payload.capabilities), Set(HermesBridgeCapability.allCases))
+    XCTAssertTrue(payload.capabilities.contains(.bindingDiscovery))
+  }
+
+  func testBindingDiscoveryReturnsEnabledBindingsSorted() async throws {
+    let harness = try Harness()
+
+    let response = try await harness.send(.listEnabledBindings)
+
+    guard case .success(.listEnabledBindings(let payload)) = response.result else {
+      return XCTFail("expected binding discovery")
+    }
+    XCTAssertEqual(payload.protocolVersion, .current)
+    XCTAssertEqual(
+      payload.bindings.map(\.bindingID), ["binding:v1:alpha", "binding:v1:test.binding"])
+    XCTAssertTrue(payload.bindings.allSatisfy(\.enabled))
+  }
+
+  func testBindingDiscoveryPayloadLimit() async throws {
+    let bindings = try (0..<HermesBridgeBindingSummary.maximumCount + 10).map {
+      HermesBridgeBindingSummary(
+        bindingID: try HermesRequestBindingID(rawValue: "binding:v1:item.\($0)"),
+        localizedDisplayName: "Binding \($0)",
+        safeLocalizedDescription: "safe",
+        maximumPromptBytes: 128,
+        approvalPolicy: "explicit",
+        enabled: true
+      )
+    }
+
+    let payload = try HermesBridgeBindingListPayload(bindings: bindings)
+
+    XCTAssertEqual(payload.bindings.count, HermesBridgeBindingSummary.maximumCount)
   }
 
   func testSubmitDispatch() async throws {
@@ -319,10 +351,12 @@ final class HermesBridgeXPCTests: XCTestCase {
     )
 
     let capabilities = try await client.connect()
+    let bindings = try await client.listEnabledBindings()
     let requestID = try await client.submit(bindingID: harness.bindingID, prompt: "hello")
     let status = try await client.status(requestID: requestID)
 
     XCTAssertTrue(capabilities.capabilities.contains(.submitRequest))
+    XCTAssertEqual(bindings.bindings.first?.bindingID, "binding:v1:alpha")
     XCTAssertEqual(status.requestID, harness.requestID.rawValue)
   }
 
@@ -331,11 +365,13 @@ final class HermesBridgeXPCTests: XCTestCase {
     let client = HermesBridgeXPCClient(transport: fixture.makeTransport(), timeout: 1)
 
     let capabilities = try await client.connect()
+    let bindings = try await client.listEnabledBindings()
     let requestID = try await client.submit(bindingID: try Harness.bindingID(), prompt: "hello")
 
     await client.close()
     fixture.close()
     XCTAssertTrue(capabilities.capabilities.contains(.requestStatus))
+    XCTAssertFalse(bindings.bindings.isEmpty)
     XCTAssertEqual(requestID, try Harness.requestID())
   }
 
@@ -460,6 +496,35 @@ private actor FakeBridgeHandler: HermesBridgeRequestHandling {
   private var statusBlocked = false
   private var statusStartedExpectation: XCTestExpectation?
   private var statusContinuations: [CheckedContinuation<Void, Never>] = []
+
+  func listEnabledBindings() async throws -> [HermesBridgeBindingSummary] {
+    [
+      HermesBridgeBindingSummary(
+        bindingID: try HermesRequestBindingID(rawValue: "binding:v1:test.binding"),
+        localizedDisplayName: "Test Binding",
+        safeLocalizedDescription: "Safe test binding",
+        maximumPromptBytes: 4096,
+        approvalPolicy: "explicit",
+        enabled: true
+      ),
+      HermesBridgeBindingSummary(
+        bindingID: try HermesRequestBindingID(rawValue: "binding:v1:disabled"),
+        localizedDisplayName: "Disabled",
+        safeLocalizedDescription: "Disabled",
+        maximumPromptBytes: 4096,
+        approvalPolicy: "explicit",
+        enabled: false
+      ),
+      HermesBridgeBindingSummary(
+        bindingID: try HermesRequestBindingID(rawValue: "binding:v1:alpha"),
+        localizedDisplayName: "Alpha",
+        safeLocalizedDescription: "Safe alpha binding",
+        maximumPromptBytes: 4096,
+        approvalPolicy: "explicit",
+        enabled: true
+      ),
+    ]
+  }
 
   func submittedPrompts() -> [String] {
     prompts

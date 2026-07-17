@@ -24,6 +24,10 @@ let package = Package(
       name: "HermesAppIntents",
       targets: ["HermesAppIntents"]
     ),
+    .library(
+      name: "HermesBridgeMenuBar",
+      targets: ["HermesBridgeMenuBar"]
+    ),
     .executable(
       name: "HermesBridgeService",
       targets: ["HermesBridgeServiceExecutable"]
@@ -39,6 +43,10 @@ let package = Package(
     .executable(
       name: "HermesAppIntentsHost",
       targets: ["HermesAppIntentsHost"]
+    ),
+    .executable(
+      name: "HermesBridgeApp",
+      targets: ["HermesBridgeApp"]
     ),
   ],
   targets: [
@@ -73,6 +81,13 @@ let package = Package(
       name: "HermesAppIntents",
       dependencies: ["HermesBridgeServiceManager", "HermesBridgeXPC", "HermesRuntimeFoundation"]
     ),
+    .target(
+      name: "HermesBridgeMenuBar",
+      dependencies: [
+        "HermesAppIntents", "HermesBridgeControlCore", "HermesBridgeServiceManager",
+        "HermesBridgeXPC", "HermesRuntimeFoundation",
+      ]
+    ),
     .executableTarget(
       name: "HermesBridgeControl",
       dependencies: ["HermesBridgeControlCore"]
@@ -80,6 +95,10 @@ let package = Package(
     .executableTarget(
       name: "HermesAppIntentsHost",
       dependencies: ["HermesAppIntents"]
+    ),
+    .executableTarget(
+      name: "HermesBridgeApp",
+      dependencies: ["HermesAppIntents", "HermesBridgeMenuBar"]
     ),
     .testTarget(
       name: "HermesRuntimeFoundationTests",
@@ -105,6 +124,10 @@ let package = Package(
     .testTarget(
       name: "HermesAppIntentsTests",
       dependencies: ["HermesAppIntents", "HermesBridgeXPC", "HermesRuntimeFoundation"]
+    ),
+    .testTarget(
+      name: "HermesBridgeMenuBarTests",
+      dependencies: ["HermesBridgeMenuBar"]
     ),
   ]
 )

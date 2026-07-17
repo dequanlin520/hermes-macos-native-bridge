@@ -92,6 +92,19 @@ public actor HermesBridgeXPCClient {
     return payload
   }
 
+  public func listEnabledBindings() async throws -> HermesBridgeBindingListPayload {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .listEnabledBindings
+      ))
+    guard case .success(.listEnabledBindings(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
   public func submit(bindingID: HermesRequestBindingID, prompt: String) async throws
     -> HermesRequestID
   {
@@ -239,6 +252,10 @@ public struct HermesBridgeAppIntentAdapter: Sendable {
 
   public func cancel(requestID: HermesRequestID) async throws -> HermesBridgeRequestStatusPayload {
     try await client.cancel(requestID: requestID)
+  }
+
+  public func listEnabledBindings() async throws -> HermesBridgeBindingListPayload {
+    try await client.listEnabledBindings()
   }
 }
 

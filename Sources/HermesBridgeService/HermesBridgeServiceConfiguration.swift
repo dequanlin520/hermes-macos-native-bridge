@@ -64,6 +64,8 @@ public struct HermesBridgeBindingDefinition: Codable, Equatable, Sendable {
   public let maximumPromptBytes: Int
   public let timeoutSeconds: TimeInterval?
   public let approvalPolicy: HermesBridgeBindingApprovalPolicy
+  public let localizedDisplayName: String
+  public let safeLocalizedDescription: String
 
   public init(
     schemaVersion: Int = currentSchemaVersion,
@@ -71,7 +73,9 @@ public struct HermesBridgeBindingDefinition: Codable, Equatable, Sendable {
     enabled: Bool,
     maximumPromptBytes: Int,
     timeoutSeconds: TimeInterval?,
-    approvalPolicy: HermesBridgeBindingApprovalPolicy
+    approvalPolicy: HermesBridgeBindingApprovalPolicy,
+    localizedDisplayName: String? = nil,
+    safeLocalizedDescription: String = ""
   ) throws {
     guard schemaVersion == Self.currentSchemaVersion else {
       throw HermesBridgeServiceConfigurationError.unsupportedSchemaVersion(schemaVersion)
@@ -93,6 +97,14 @@ public struct HermesBridgeBindingDefinition: Codable, Equatable, Sendable {
     self.maximumPromptBytes = maximumPromptBytes
     self.timeoutSeconds = timeoutSeconds
     self.approvalPolicy = approvalPolicy
+    self.localizedDisplayName = Self.safeText(
+      localizedDisplayName ?? id,
+      maximumCharacters: HermesBridgeBindingSummary.maximumDisplayNameCharacters
+    )
+    self.safeLocalizedDescription = Self.safeText(
+      safeLocalizedDescription,
+      maximumCharacters: HermesBridgeBindingSummary.maximumDescriptionCharacters
+    )
   }
 
   public var requestBinding: HermesRequestBinding {
@@ -105,6 +117,24 @@ public struct HermesBridgeBindingDefinition: Codable, Equatable, Sendable {
       approvalPolicy: approvalPolicy.rawValue,
       resultPolicy: nil
     )
+  }
+
+  public var bindingSummary: HermesBridgeBindingSummary {
+    HermesBridgeBindingSummary(
+      bindingID: try! HermesRequestBindingID(rawValue: id),
+      localizedDisplayName: localizedDisplayName,
+      safeLocalizedDescription: safeLocalizedDescription,
+      maximumPromptBytes: maximumPromptBytes,
+      approvalPolicy: approvalPolicy.rawValue,
+      enabled: enabled
+    )
+  }
+
+  private static func safeText(_ value: String, maximumCharacters: Int) -> String {
+    let filtered = value.unicodeScalars.filter { scalar in
+      scalar.value >= 0x20 && scalar.value != 0x7F
+    }
+    return String(String.UnicodeScalarView(filtered)).prefixString(maximumCharacters)
   }
 }
 
@@ -238,6 +268,7 @@ public struct HermesBridgeServiceConfiguration: Codable, Equatable, Sendable {
 
 public struct ConfigurationBackedHermesRequestBindingRegistry: HermesRequestBindingRegistry {
   private let registry: StaticHermesRequestBindingRegistry
+  private let summaries: [HermesBridgeBindingSummary]
 
   public init(definitions: [HermesBridgeBindingDefinition]) throws {
     var seen = Set<String>()
@@ -247,9 +278,44 @@ public struct ConfigurationBackedHermesRequestBindingRegistry: HermesRequestBind
       }
     }
     registry = StaticHermesRequestBindingRegistry(bindings: definitions.map(\.requestBinding))
+    summaries = try HermesBridgeBindingListPayload(bindings: definitions.map(\.bindingSummary))
+      .bindings
   }
 
   public func binding(for id: HermesRequestBindingID) async throws -> HermesRequestBinding? {
     try await registry.binding(for: id)
+  }
+
+  public func listEnabledBindings() async throws -> [HermesBridgeBindingSummary] {
+    summaries
+  }
+}
+
+extension ConfigurationBackedHermesRequestBindingRegistry: HermesBridgeRequestHandling {
+  public func submit(bindingID _: HermesRequestBindingID, prompt _: String) async throws
+    -> HermesRequestID
+  {
+    throw HermesBridgeXPCError.unsupportedOperation
+  }
+
+  public func status(requestID _: HermesRequestID) async throws -> HermesRequestRecord {
+    throw HermesBridgeXPCError.unsupportedOperation
+  }
+
+  public func cancel(requestID _: HermesRequestID) async throws -> HermesRequestRecord {
+    throw HermesBridgeXPCError.unsupportedOperation
+  }
+
+  public func respondToApproval(
+    requestID _: HermesRequestID,
+    decision _: HermesApprovalResponseDecision
+  ) async throws -> HermesRequestRecord {
+    throw HermesBridgeXPCError.unsupportedOperation
+  }
+}
+
+extension String {
+  fileprivate func prefixString(_ count: Int) -> String {
+    String(prefix(count))
   }
 }

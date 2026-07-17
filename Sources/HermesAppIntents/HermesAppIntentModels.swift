@@ -229,6 +229,15 @@ public struct HermesAppIntentBindingDefinition: Equatable, Sendable {
     self.displayName = displayName
     self.safeDescription = safeDescription
   }
+
+  public init(summary: HermesBridgeBindingSummary) throws {
+    self.init(
+      id: try HermesRequestBindingID(rawValue: summary.bindingID),
+      enabled: summary.enabled,
+      displayName: summary.localizedDisplayName,
+      safeDescription: summary.safeLocalizedDescription
+    )
+  }
 }
 
 extension String {
