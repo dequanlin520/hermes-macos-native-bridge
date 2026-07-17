@@ -129,5 +129,9 @@ let package = Package(
       name: "HermesBridgeMenuBarTests",
       dependencies: ["HermesBridgeMenuBar"]
     ),
+    .testTarget(
+      name: "M4003ScriptTests",
+      dependencies: []
+    ),
   ]
 )
