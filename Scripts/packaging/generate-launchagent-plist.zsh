@@ -23,9 +23,18 @@ if [[ ! -d "$output_parent" ]]; then
 fi
 
 output_parent_real="$(cd "$output_parent" && pwd -P)"
-artifact_root="$repo_root/artifacts/m2-008"
+artifact_root="${HERMES_LAUNCHAGENT_ARTIFACT_ROOT:-$repo_root/artifacts/m2-008}"
+if [[ "$artifact_root" != /* ]]; then
+  print -u2 "artifact root must be absolute"
+  exit 67
+fi
+artifact_root="$(mkdir -p "$artifact_root" && cd "$artifact_root" && pwd -P)"
+if [[ "$artifact_root" != "$repo_root/artifacts/"* ]]; then
+  print -u2 "refusing artifact root outside artifacts"
+  exit 67
+fi
 if [[ "$output_parent_real" != "$artifact_root" && "$output_parent_real" != "$artifact_root"/* ]]; then
-  print -u2 "refusing to write outside artifacts/m2-008"
+  print -u2 "refusing to write outside $artifact_root"
   exit 67
 fi
 
