@@ -10,12 +10,14 @@ public struct HermesProcessConfiguration: Equatable, Sendable {
   public let gracefulShutdownTimeout: TimeInterval
   public let forcedShutdownTimeout: TimeInterval
   public let outputLimitBytes: Int
+  public let sessionToken: HermesBackendSessionToken
 
   public init(
     executable: HermesExecutableCandidate,
     host: String = "127.0.0.1",
     port: Int,
     runtimeRoot: URL,
+    sessionToken: HermesBackendSessionToken? = nil,
     startupTimeout: TimeInterval = 10,
     gracefulShutdownTimeout: TimeInterval = 5,
     forcedShutdownTimeout: TimeInterval = 5,
@@ -36,6 +38,7 @@ public struct HermesProcessConfiguration: Equatable, Sendable {
     self.gracefulShutdownTimeout = max(0.001, gracefulShutdownTimeout)
     self.forcedShutdownTimeout = max(0.001, forcedShutdownTimeout)
     self.outputLimitBytes = max(1, outputLimitBytes)
+    self.sessionToken = try sessionToken ?? HermesBackendSessionToken.generate()
   }
 
   public var fixedArguments: [String] {
@@ -113,7 +116,18 @@ public struct HermesEscapedDescendantObservation: Equatable, Sendable {
 public struct HermesProcessLaunchResult: Equatable, Sendable {
   public let identity: HermesProcessIdentity
   public let runtimeDirectory: URL
+  public let launchContext: HermesBackendLaunchContext
   public let output: HermesProcessOutputSnapshot
+}
+
+public struct HermesBackendLaunchContext: Equatable, Sendable, CustomStringConvertible {
+  public let identity: HermesProcessIdentity
+  public let endpoint: HermesBackendEndpoint
+  public let sessionToken: HermesBackendSessionToken
+
+  public var description: String {
+    "HermesBackendLaunchContext(identity: \(identity.pid), endpoint: \(endpoint), token: <redacted>)"
+  }
 }
 
 public struct HermesProcessStopResult: Equatable, Sendable {
@@ -142,7 +156,10 @@ public final class HermesProcessSupervisor: @unchecked Sendable {
       }
 
       let runtimeDirectory = try Self.createRuntimeDirectory(under: configuration.runtimeRoot)
-      let environment = Self.fixedEnvironment(runtimeDirectory: runtimeDirectory)
+      let environment = Self.fixedEnvironment(
+        runtimeDirectory: runtimeDirectory,
+        sessionToken: configuration.sessionToken
+      )
       let capture = DualStreamCapture(limitBytes: configuration.outputLimitBytes)
       let readySignal = DispatchSemaphore(value: 0)
       let exitSignal = DispatchSemaphore(value: 0)
@@ -201,9 +218,15 @@ public final class HermesProcessSupervisor: @unchecked Sendable {
             switch readiness {
             case .success:
               lock.withLock { currentState = .ready(identity) }
+              let endpoint = try HermesBackendEndpoint(port: configuration.port)
               return HermesProcessLaunchResult(
                 identity: identity,
                 runtimeDirectory: runtimeDirectory,
+                launchContext: HermesBackendLaunchContext(
+                  identity: identity,
+                  endpoint: endpoint,
+                  sessionToken: configuration.sessionToken
+                ),
                 output: capture.snapshot()
               )
             case .failure(let failure):
@@ -476,12 +499,16 @@ public final class HermesProcessSupervisor: @unchecked Sendable {
     )
   }
 
-  private static func fixedEnvironment(runtimeDirectory: URL) -> [String] {
+  private static func fixedEnvironment(
+    runtimeDirectory: URL,
+    sessionToken: HermesBackendSessionToken
+  ) -> [String] {
     let home = runtimeDirectory.appendingPathComponent("home", isDirectory: true).path
     let hermesHome = runtimeDirectory.appendingPathComponent("hermes-home", isDirectory: true).path
     return [
       "HOME=\(home)",
       "HERMES_HOME=\(hermesHome)",
+      "HERMES_DASHBOARD_SESSION_TOKEN=\(sessionToken.rawValue)",
       "XDG_CONFIG_HOME=\(runtimeDirectory.appendingPathComponent("xdg-config", isDirectory: true).path)",
       "XDG_CACHE_HOME=\(runtimeDirectory.appendingPathComponent("xdg-cache", isDirectory: true).path)",
       "XDG_DATA_HOME=\(runtimeDirectory.appendingPathComponent("xdg-data", isDirectory: true).path)",

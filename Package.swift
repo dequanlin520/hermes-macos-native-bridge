@@ -19,7 +19,8 @@ let package = Package(
     ),
     .testTarget(
       name: "HermesRuntimeFoundationTests",
-      dependencies: ["HermesRuntimeFoundation"]
+      dependencies: ["HermesRuntimeFoundation"],
+      exclude: ["Fixtures"]
     ),
   ]
 )

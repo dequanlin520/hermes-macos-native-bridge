@@ -238,9 +238,27 @@ final class HermesProcessSupervisorTests: XCTestCase {
     XCTAssertFalse(hasResidualFixtureProcess())
   }
 
+  func testSupervisorInjectsOnlyDashboardSessionTokenHermesEnvironment() throws {
+    let token = HermesBackendSessionToken(rawValue: "supervisor-fixture-token")
+    let supervisor = HermesProcessSupervisor()
+    let launch = try supervisor.start(configuration: configuration(mode: "env-token", token: token))
+    let output = String(data: supervisor.outputSnapshot.stdout, encoding: .utf8) ?? ""
+
+    XCTAssertEqual(
+      launch.launchContext.endpoint,
+      try HermesBackendEndpoint(port: launch.launchContext.endpoint.port))
+    XCTAssertEqual(launch.launchContext.sessionToken, token)
+    XCTAssertTrue(output.contains("TOKEN_ENV_PRESENT=1"))
+    XCTAssertFalse(output.contains(token.rawValue))
+    XCTAssertFalse(String(describing: launch.launchContext).contains(token.rawValue))
+
+    _ = try supervisor.stop()
+  }
+
   private func configuration(
     mode: String,
     port: Int = 19000,
+    token: HermesBackendSessionToken? = nil,
     startupTimeout: TimeInterval = 2,
     gracefulShutdownTimeout: TimeInterval = 1,
     forcedShutdownTimeout: TimeInterval = 1,
@@ -250,6 +268,7 @@ final class HermesProcessSupervisorTests: XCTestCase {
       executable: candidate(mode: mode),
       port: port == 19000 ? try freePort() : port,
       runtimeRoot: temporaryDirectory,
+      sessionToken: token,
       startupTimeout: startupTimeout,
       gracefulShutdownTimeout: gracefulShutdownTimeout,
       forcedShutdownTimeout: forcedShutdownTimeout,
@@ -397,6 +416,8 @@ private let fixtureSource = #"""
   #include <sys/types.h>
   #include <unistd.h>
 
+  extern char **environ;
+
   static volatile sig_atomic_t keep_running = 1;
 
   static void stop_handler(int sig) {
@@ -487,6 +508,16 @@ private let fixtureSource = #"""
     if (strcmp(mode, "large-output") == 0) {
       for (int i = 0; i < 10000; i++) fputc('X', stdout);
       fputc('\n', stdout);
+      fflush(stdout);
+    }
+    if (strcmp(mode, "env-token") == 0) {
+      int token_present = 0;
+      for (char **env = environ; *env != NULL; env++) {
+        if (strncmp(*env, "HERMES_DASHBOARD_SESSION_TOKEN=", 31) == 0) {
+          token_present = 1;
+        }
+      }
+      fprintf(stdout, "TOKEN_ENV_PRESENT=%d\n", token_present);
       fflush(stdout);
     }
     if (strcmp(mode, "tree") == 0) fork_tree(0);
