@@ -196,6 +196,18 @@ public struct HermesSessionCreationResult: Decodable, Equatable, Sendable {
     case desktopContract = "desktop_contract"
   }
 
+  public init(
+    sessionID: String,
+    storedSessionID: String? = nil,
+    messageCount: Int? = nil,
+    desktopContract: Int? = nil
+  ) {
+    self.sessionID = sessionID
+    self.storedSessionID = storedSessionID
+    self.messageCount = messageCount
+    self.desktopContract = desktopContract
+  }
+
   public init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
     sessionID = try container.decode(String.self, forKey: .sessionID)
@@ -214,18 +226,34 @@ public struct HermesSessionCreationResult: Decodable, Equatable, Sendable {
 
 public struct HermesPromptSubmissionResult: Decodable, Equatable, Sendable {
   public let status: String
+
+  public init(status: String) {
+    self.status = status
+  }
 }
 
 public struct HermesSessionStatusResult: Decodable, Equatable, Sendable {
   public let output: String?
+
+  public init(output: String?) {
+    self.output = output
+  }
 }
 
 public struct HermesSessionInterruptResult: Decodable, Equatable, Sendable {
   public let status: String
+
+  public init(status: String) {
+    self.status = status
+  }
 }
 
 public struct HermesApprovalResponseResult: Decodable, Equatable, Sendable {
   public let resolved: Bool
+
+  public init(resolved: Bool) {
+    self.resolved = resolved
+  }
 }
 
 public enum HermesProtocolClientError: Error, Equatable, Sendable, CustomStringConvertible {
