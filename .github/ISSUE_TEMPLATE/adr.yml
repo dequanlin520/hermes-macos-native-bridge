@@ -1,0 +1,39 @@
+name: Architecture decision record
+description: Propose an ADR for a scope, boundary, or architecture decision.
+title: "ADR: "
+labels:
+  - "type: adr"
+  - "priority: medium"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use ADRs for decisions that affect security boundaries, IPC contracts, execution surfaces, dependencies, or project scope.
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: What decision is needed and why now?
+    validations:
+      required: true
+  - type: textarea
+    id: options
+    attributes:
+      label: Options considered
+      description: List the viable options and tradeoffs.
+    validations:
+      required: true
+  - type: textarea
+    id: decision
+    attributes:
+      label: Proposed decision
+      description: State the preferred decision.
+    validations:
+      required: true
+  - type: textarea
+    id: consequences
+    attributes:
+      label: Consequences
+      description: Include security, maintenance, and compatibility implications.
+    validations:
+      required: true

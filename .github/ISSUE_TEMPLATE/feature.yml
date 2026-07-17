@@ -1,0 +1,47 @@
+name: Feature
+description: Scoped product or repository feature request.
+title: "FEAT: "
+labels:
+  - "type: feature"
+  - "priority: medium"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Features must stay within `Docs/PRODUCT-SCOPE.md` and preserve the security boundary.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user or project problem does this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed scope
+      description: Describe the smallest useful change.
+    validations:
+      required: true
+  - type: textarea
+    id: non-goals
+    attributes:
+      label: Non-goals
+      description: List related work that this issue must not include.
+      placeholder: "No arbitrary shell execution, GUI computer use, browser automation, or broad permission changes."
+    validations:
+      required: true
+  - type: textarea
+    id: security
+    attributes:
+      label: Security considerations
+      description: Identify permission, execution, data, or logging risks.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Concrete checks required before closing.
+    validations:
+      required: true

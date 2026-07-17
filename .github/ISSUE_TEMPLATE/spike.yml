@@ -1,0 +1,61 @@
+name: Technical spike
+description: Time-boxed validation work for a specific technical uncertainty.
+title: "SPK-XX "
+labels:
+  - "type: spike"
+  - "priority: medium"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for technical validation only. Do not request product runtime implementation in a spike.
+  - type: input
+    id: question
+    attributes:
+      label: Validation question
+      description: What uncertainty must this spike resolve?
+      placeholder: "Can the Bridge safely validate this topology?"
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: List the specific work allowed for this spike.
+      placeholder: |
+        In scope:
+        - ...
+
+        Out of scope:
+        - Product runtime implementation
+    validations:
+      required: true
+  - type: textarea
+    id: security-boundary
+    attributes:
+      label: Security boundary
+      description: Describe how this preserves the project security boundary.
+      placeholder: "No arbitrary shell, AppleScript/JXA, GUI computer use, browser automation, or unauthenticated remote control."
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: What evidence is required to close this spike?
+      placeholder: |
+        - Findings are documented.
+        - Risks and follow-up decisions are captured.
+        - No product runtime functionality is added.
+    validations:
+      required: true
+  - type: dropdown
+    id: risk
+    attributes:
+      label: Risk level
+      options:
+        - "risk: low"
+        - "risk: medium"
+        - "risk: high"
+    validations:
+      required: true

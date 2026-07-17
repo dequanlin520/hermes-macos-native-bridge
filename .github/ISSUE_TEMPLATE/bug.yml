@@ -1,0 +1,55 @@
+name: Bug
+description: Report a defect in documented behavior.
+title: "BUG: "
+labels:
+  - "type: bug"
+  - "priority: medium"
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include secrets, tokens, private prompts, private file paths, or unredacted diagnostics.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What is broken?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Provide minimal reproduction steps.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include macOS version, app version, and relevant configuration without secrets.
+    validations:
+      required: false
+  - type: textarea
+    id: impact
+    attributes:
+      label: Impact
+      description: Who is affected and how severe is it?
+    validations:
+      required: true
