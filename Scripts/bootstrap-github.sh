@@ -61,20 +61,33 @@ gh_read() {
 label_exists() {
   local name="$1"
 
-  gh_read label list --limit 500 --json name --jq '.[].name' | grep -Fx -- "$name" >/dev/null
+  gh_read api repos/:owner/:repo/labels \
+    --method GET \
+    --paginate \
+    --field per_page=100 |
+    jq -e -s --arg name "$name" 'any(.[][].name; . == $name)' >/dev/null
 }
 
 milestone_number() {
   local title="$1"
 
-  gh_read api repos/:owner/:repo/milestones --paginate --field state=all \
-    --jq ".[] | select(.title == \"$title\") | .number" | head -n 1
+  gh_read api repos/:owner/:repo/milestones \
+    --method GET \
+    --paginate \
+    --field state=all \
+    --field per_page=100 |
+    jq -r -s --arg title "$title" 'first(.[][] | select(.title == $title) | .number) // empty'
 }
 
 issue_exists() {
   local title="$1"
 
-  gh_read issue list --state all --limit 500 --json title --jq '.[].title' | grep -Fx -- "$title" >/dev/null
+  gh_read api repos/:owner/:repo/issues \
+    --method GET \
+    --paginate \
+    --field state=all \
+    --field per_page=100 |
+    jq -e -s --arg title "$title" 'any(.[][]; (has("pull_request") | not) and .title == $title)' >/dev/null
 }
 
 ensure_label() {
@@ -138,6 +151,7 @@ ensure_issue() {
 }
 
 require_command gh
+require_command jq
 
 if ! git rev-parse --show-toplevel >/dev/null 2>&1; then
   printf 'error: this script must be run inside a git repository\n' >&2
