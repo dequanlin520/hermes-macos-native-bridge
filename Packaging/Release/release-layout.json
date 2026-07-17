@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "project": "HermesMacOSNativeBridge",
+  "releaseName": "HermesBridgeRelease",
+  "payload": {
+    "binary": "Payload/HermesBridgeService",
+    "launchAgent": "Payload/com.hermes.bridge.plist"
+  },
+  "metadata": {
+    "manifest": "Metadata/release-manifest.json",
+    "checksums": "Metadata/checksums.sha256",
+    "buildInfo": "Metadata/build-info.json"
+  },
+  "archive": "HermesBridgeRelease.zip",
+  "label": "com.hermes.bridge",
+  "machService": "com.hermes.bridge.xpc"
+}
