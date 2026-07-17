@@ -16,6 +16,10 @@ let package = Package(
       name: "HermesBridgeXPC",
       targets: ["HermesBridgeXPC"]
     ),
+    .executable(
+      name: "HermesBridgeService",
+      targets: ["HermesBridgeServiceExecutable"]
+    ),
   ],
   targets: [
     .target(
@@ -25,6 +29,14 @@ let package = Package(
       name: "HermesBridgeXPC",
       dependencies: ["HermesRuntimeFoundation"]
     ),
+    .target(
+      name: "HermesBridgeService",
+      dependencies: ["HermesBridgeXPC", "HermesRuntimeFoundation"]
+    ),
+    .executableTarget(
+      name: "HermesBridgeServiceExecutable",
+      dependencies: ["HermesBridgeService"]
+    ),
     .testTarget(
       name: "HermesRuntimeFoundationTests",
       dependencies: ["HermesRuntimeFoundation"],
@@ -33,6 +45,10 @@ let package = Package(
     .testTarget(
       name: "HermesBridgeXPCTests",
       dependencies: ["HermesBridgeXPC", "HermesRuntimeFoundation"]
+    ),
+    .testTarget(
+      name: "HermesBridgeServiceTests",
+      dependencies: ["HermesBridgeService", "HermesBridgeXPC", "HermesRuntimeFoundation"]
     ),
   ]
 )
