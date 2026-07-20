@@ -183,8 +183,11 @@ public enum HermesBridgeCLICommand: Equatable, Sendable {
   case recentAuditEvents
   case verifyAudit
   case auditSigningStatus
+  case configureAuditSigningAccess
   case createAuditSigningKey
   case rotateAuditSigningKey
+  case resumeAuditKeyRotation
+  case verifyAuditSigning
   case exportAuditTrustAnchors(URL)
   case exportAudit(URL)
   case capabilities
@@ -290,10 +293,16 @@ public struct HermesBridgeCLIInvocation: Equatable, Sendable {
       self.command = .verifyAudit
     case "audit-signing-status":
       self.command = .auditSigningStatus
+    case "configure-audit-signing-access":
+      self.command = .configureAuditSigningAccess
     case "create-audit-signing-key":
       self.command = .createAuditSigningKey
     case "rotate-audit-signing-key":
       self.command = .rotateAuditSigningKey
+    case "resume-audit-key-rotation":
+      self.command = .resumeAuditKeyRotation
+    case "verify-audit-signing":
+      self.command = .verifyAuditSigning
     case "export-audit-trust-anchors":
       guard let outputDirectory else {
         throw HermesBridgeCLIUsageError.missingOption("--output-directory")
@@ -520,9 +529,17 @@ public struct HermesBridgeControlRunner: Sendable {
           stderr: ""
         )
       case .auditSigningStatus:
-        let status = signingStatus(layout: layout)
+        let status = operationalStatus(layout: layout)
         return success(
-          HermesBridgeControlRenderer.renderAuditSigningStatus(status, format: invocation.format))
+          HermesBridgeControlRenderer.renderAuditSigningOperationalStatus(
+            status,
+            format: invocation.format))
+      case .configureAuditSigningAccess:
+        let status = try await configureAuditSigningAccess(layout: layout)
+        return success(
+          HermesBridgeControlRenderer.renderAuditSigningOperationalStatus(
+            status,
+            format: invocation.format))
       case .createAuditSigningKey:
         let status = try createAuditSigningKey(layout: layout)
         return success(
@@ -531,6 +548,19 @@ public struct HermesBridgeControlRunner: Sendable {
         let status = try await rotateAuditSigningKey(layout: layout)
         return success(
           HermesBridgeControlRenderer.renderAuditSigningStatus(status, format: invocation.format))
+      case .resumeAuditKeyRotation:
+        let status = try await HermesAuditKeychainSetupCoordinator(
+          auditRoot: auditRoot(layout: layout)
+        ).resumeInterruptedRotation()
+        return success(
+          HermesBridgeControlRenderer.renderAuditSigningOperationalStatus(
+            status,
+            format: invocation.format))
+      case .verifyAuditSigning:
+        let verified = try HermesAuditKeychainSetupCoordinator(
+          auditRoot: auditRoot(layout: layout)
+        ).verifyAuditSigning()
+        return success("auditSigningVerified: \(verified)")
       case .exportAuditTrustAnchors(let outputDirectory):
         let count = try exportAuditTrustAnchors(layout: layout, outputDirectory: outputDirectory)
         return success("auditTrustAnchors: exported=\(count)")
@@ -626,6 +656,10 @@ public struct HermesBridgeControlRunner: Sendable {
       return failure(error: HermesBridgeControlMappedError(error), format: invocation.format)
     } catch let error as HermesBridgeServiceManagerError {
       return failure(error: HermesBridgeControlMappedError(error), format: invocation.format)
+    } catch let error as HermesAuditSigningOperationalError {
+      return failure(error: HermesBridgeControlMappedError(error), format: invocation.format)
+    } catch let error as HermesAuditSigningError {
+      return failure(error: HermesBridgeControlMappedError(error), format: invocation.format)
     } catch let error as HermesRequestStateStoreError {
       return failure(error: HermesBridgeControlMappedError(error), format: invocation.format)
     } catch {
@@ -705,6 +739,19 @@ public struct HermesBridgeControlRunner: Sendable {
 
   private func signingStatus(layout: HermesBridgeInstallationLayout) -> HermesAuditSigningStatus {
     HermesAuditPublicTrustAnchorStore(root: auditRoot(layout: layout)).status()
+  }
+
+  private func operationalStatus(layout: HermesBridgeInstallationLayout)
+    -> HermesAuditSigningOperationalStatus
+  {
+    HermesAuditKeychainSetupCoordinator(auditRoot: auditRoot(layout: layout)).status()
+  }
+
+  private func configureAuditSigningAccess(layout: HermesBridgeInstallationLayout) async throws
+    -> HermesAuditSigningOperationalStatus
+  {
+    try await HermesAuditKeychainSetupCoordinator(auditRoot: auditRoot(layout: layout))
+      .configureAuditSigningAccess()
   }
 
   private func createAuditSigningKey(layout: HermesBridgeInstallationLayout) throws
@@ -856,6 +903,66 @@ public struct HermesBridgeControlMappedError: Error, Sendable {
       self.init(exitCode: .internalFailure, code: "internal_failure", message: "internal failure")
     }
   }
+
+  public init(_ error: HermesAuditSigningOperationalError) {
+    switch error {
+    case .locked:
+      self.init(
+        exitCode: .operationRejected, code: "audit_keychain_locked", message: "keychain locked")
+    case .identityMismatch:
+      self.init(
+        exitCode: .operationRejected, code: "audit_signing_identity_mismatch",
+        message: "audit signing identity mismatch")
+    case .inaccessible:
+      self.init(
+        exitCode: .operationRejected, code: "audit_signing_inaccessible",
+        message: "audit signing inaccessible")
+    case .unsupported:
+      self.init(
+        exitCode: .operationRejected, code: "audit_signing_unsupported",
+        message: "audit signing unsupported")
+    case .confirmationRequired:
+      self.init(
+        exitCode: .usageError, code: "explicit_confirmation_required",
+        message: "explicit confirmation required")
+    case .signingRequired(let status):
+      self.init(
+        exitCode: .operationRejected, code: "audit_signing_required_\(status.rawValue)",
+        message: "audit signing required")
+    case .recoveryRequired(let operation):
+      self.init(
+        exitCode: .operationRejected, code: "audit_signing_recovery_\(operation.rawValue)",
+        message: "audit signing recovery required")
+    }
+  }
+
+  public init(_ error: HermesAuditSigningError) {
+    switch error {
+    case .keychainLocked:
+      self.init(
+        exitCode: .operationRejected, code: "audit_keychain_locked", message: "keychain locked")
+    case .keyMissing:
+      self.init(
+        exitCode: .operationRejected, code: "audit_signing_key_missing",
+        message: "audit signing key missing")
+    case .duplicateKey:
+      self.init(
+        exitCode: .operationRejected, code: "audit_signing_key_duplicate",
+        message: "duplicate audit signing key")
+    case .broadApplicationAccessRejected:
+      self.init(
+        exitCode: .operationRejected, code: "audit_signing_broad_access_rejected",
+        message: "broad audit signing access rejected")
+    case .keychainInaccessible, .keyCreationFailed, .signingFailed, .publicKeyExportFailed:
+      self.init(
+        exitCode: .operationRejected, code: "audit_signing_inaccessible",
+        message: "audit signing inaccessible")
+    case .invalidSignerID, .invalidFingerprint, .unsupportedKey:
+      self.init(
+        exitCode: .operationRejected, code: "audit_signing_unsupported",
+        message: "audit signing unsupported")
+    }
+  }
 }
 
 public enum HermesBridgeControlRenderer {
@@ -945,6 +1052,25 @@ public enum HermesBridgeControlRenderer {
       "activeFingerprintPrefix: \(status.activeFingerprintPrefix ?? "none")",
       "trustAnchors: \(status.trustAnchorCount)",
       "remediation: \(status.remediationCode)",
+    ].joined(separator: "\n")
+  }
+
+  public static func renderAuditSigningOperationalStatus(
+    _ status: HermesAuditSigningOperationalStatus,
+    format: HermesBridgeCLIOutputFormat
+  ) -> String {
+    if format == .json { return json(status) }
+    return [
+      "auditSigning: \(status.nonInteractiveSigningProven ? "nonInteractiveReady" : "setupRequired")",
+      "activeSigner: \(status.activeSignerID?.rawValue ?? "none")",
+      "activeFingerprintPrefix: \(status.activeFingerprintPrefix ?? "none")",
+      "accessPolicy: \(status.accessPolicyState.rawValue)",
+      "signingPolicy: \(status.signingRequiredPolicy.rawValue)",
+      "lastSuccessfulSignature: \(status.lastSuccessfulSignatureAt.map(String.init(describing:)) ?? "none")",
+      "rotationTransaction: \(status.rotationTransactionState?.rawValue ?? "none")",
+      "recoveryRequired: \(status.recoveryRequired?.rawValue ?? "none")",
+      "releaseIdentity: \(status.releaseIdentityValidation.validationPassed ? "passed" : "blocked")",
+      "developerIDAvailable: \(status.releaseIdentityValidation.developerIDAvailable)",
     ].joined(separator: "\n")
   }
 

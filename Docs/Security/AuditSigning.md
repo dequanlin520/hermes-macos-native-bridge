@@ -49,3 +49,21 @@ state, key generation identifier and checksum.
 
 Trust anchors do not contain private-key bytes or private-key persistent
 references.
+
+## Operational Setup
+
+M6-004 adds an explicit setup operation described in
+`Docs/Security/AuditSigningOperations.md`. `configureAuditSigningAccess` is
+required before unattended per-user service signing is considered ready. It
+verifies code identity, applies the narrowest supported Keychain
+trusted-application access policy, performs and verifies a test signature, and
+records only safe access-policy metadata.
+
+Hermes Bridge does not configure audit signing access automatically at launch.
+When `signingRequired` is configured, locked, missing, inaccessible, or
+identity-mismatched signing state fails closed and is reported as typed state.
+Unsigned compatibility remains available only under explicit legacy/preferred
+policy.
+
+Private-key backup and export remain forbidden. Public trust-anchor export and
+import are allowed for verification recovery.

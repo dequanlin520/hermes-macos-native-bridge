@@ -153,10 +153,16 @@ public struct HermesMenuBarAuditIntegrityViewState: Codable, Equatable, Sendable
   public let verifiedAt: Date
   public let signingAvailable: Bool
   public let activeFingerprintPrefix: String?
+  public let accessPolicyState: String?
+  public let signingRequiredPolicy: String?
+  public let nonInteractiveSigningProven: Bool
+  public let rotationTransactionState: String?
+  public let recoveryRequired: String?
 
   public init(
     report: HermesAuditVerificationReport,
-    signingStatus: HermesAuditSigningStatus? = nil
+    signingStatus: HermesAuditSigningStatus? = nil,
+    operationalStatus: HermesAuditSigningOperationalStatus? = nil
   ) {
     self.state = report.state.rawValue
     self.verifiedSegmentCount = report.verifiedSegmentCount
@@ -165,6 +171,11 @@ public struct HermesMenuBarAuditIntegrityViewState: Codable, Equatable, Sendable
     self.verifiedAt = report.verifiedAt
     self.signingAvailable = signingStatus?.signingAvailable ?? false
     self.activeFingerprintPrefix = signingStatus?.activeFingerprintPrefix
+    self.accessPolicyState = operationalStatus?.accessPolicyState.rawValue
+    self.signingRequiredPolicy = operationalStatus?.signingRequiredPolicy.rawValue
+    self.nonInteractiveSigningProven = operationalStatus?.nonInteractiveSigningProven ?? false
+    self.rotationTransactionState = operationalStatus?.rotationTransactionState?.rawValue
+    self.recoveryRequired = operationalStatus?.recoveryRequired?.rawValue
   }
 }
 
@@ -1373,7 +1384,8 @@ public struct ProductionMenuBarAuditViewer: HermesBridgeMenuBarAuditViewing {
     ).verify()
     return HermesMenuBarAuditIntegrityViewState(
       report: report,
-      signingStatus: HermesAuditPublicTrustAnchorStore(root: auditRoot).status()
+      signingStatus: HermesAuditPublicTrustAnchorStore(root: auditRoot).status(),
+      operationalStatus: HermesAuditKeychainSetupCoordinator(auditRoot: auditRoot).status()
     )
   }
 

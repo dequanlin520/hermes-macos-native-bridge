@@ -52,6 +52,9 @@ public enum HermesPermissionRemediationCode: String, Codable, CaseIterable, Equa
   case exportAuditTrustAnchor
   case rotateAuditSigningKey
   case verifyAuditLog
+  case configureAuditSigningAccess
+  case resumeAuditKeyRotation
+  case resetAuditSigningConfiguration
 }
 
 public struct HermesPermissionCheck: Codable, Equatable, Sendable {
@@ -127,7 +130,8 @@ public struct HermesSystemSettingsRemediationURL: Equatable, Sendable {
       return notifications
     case .reinstallService, .restartService, .refreshFolderAuthorization, .rebuildSignedApp,
       .configureDeveloperID, .notarizeRelease, .createAuditSigningKey, .unlockKeychain,
-      .exportAuditTrustAnchor, .rotateAuditSigningKey, .verifyAuditLog:
+      .exportAuditTrustAnchor, .rotateAuditSigningKey, .verifyAuditLog,
+      .configureAuditSigningAccess, .resumeAuditKeyRotation, .resetAuditSigningConfiguration:
       return nil
     }
   }
@@ -363,7 +367,7 @@ public struct HermesPermissionsDoctor: Sendable {
         state: evidence.auditSigningStatus?.signingAvailable == true ? .granted : .misconfigured,
         detailCode: evidence.auditSigningStatus?.state.rawValue ?? "not_configured",
         remediationCode: evidence.auditSigningStatus?.signingAvailable == true
-          ? nil : .createAuditSigningKey
+          ? nil : .configureAuditSigningAccess
       ),
       HermesPermissionCheck(
         kind: .auditKeychain,

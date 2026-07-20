@@ -76,7 +76,7 @@ final class HermesPermissionsDoctorTests: XCTestCase {
   }
 
   func testFixedRemediationCodesAndSystemSettingsURLs() {
-    XCTAssertEqual(HermesPermissionRemediationCode.allCases.count, 15)
+    XCTAssertEqual(HermesPermissionRemediationCode.allCases.count, 18)
     XCTAssertEqual(
       HermesSystemSettingsRemediationURL.url(for: .openAccessibilitySettings)?.absoluteString,
       "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"

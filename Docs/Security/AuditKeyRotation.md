@@ -14,6 +14,21 @@ The rotation flow is:
 6. Activate the new signer for subsequent segment manifests.
 7. Keep historical segments verifiable through retained public trust anchors.
 
+M6-004 persists a crash-safe rotation transaction with these stages:
+
+- `prepared`
+- `oldSegmentFinalized`
+- `newKeyCreated`
+- `oldAnchorRetired`
+- `newAnchorActivated`
+- `rotationEventWritten`
+- `completed`
+
+On restart Hermes Bridge reports incomplete rotation state and can explicitly
+resume or abandon the transaction. Resume must never activate two current
+signers and must never discard the prior public trust anchor. Recovery details
+are in `Docs/Security/AuditSigningRecovery.md`.
+
 Verification distinguishes `verifiedUnsigned`, `verifiedSigned`,
 `retiredSignerValid`, `signatureUnavailable`, `signatureInvalid`,
 `unknownSigner` and `keyUnavailable`.

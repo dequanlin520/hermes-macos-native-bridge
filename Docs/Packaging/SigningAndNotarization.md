@@ -208,3 +208,23 @@ Public distribution remains blocked until:
   app;
 - a future installer or lifecycle issue owns final per-user placement,
   LaunchAgent installation, upgrade, removal, and user-facing controls.
+
+## Audit Signing Release Identity Validation
+
+M6-004 validates the intended app and service identities for compatibility with
+audit signing Keychain access policy. Validation reports:
+
+- bundle identifier;
+- designated requirement when available from Security.framework;
+- Team ID when present;
+- hardened runtime status;
+- app sandbox entitlement status;
+- service signing status;
+- app/service Team ID consistency;
+- Keychain access identity compatibility.
+
+When Developer ID is unavailable, local ad-hoc identities are reported
+honestly and release validation is blocked. Hermes Bridge must not fabricate a
+Team ID or Developer ID state. Operational signing integration may still return
+`PARTIAL` when all isolated Keychain signing tests pass and the only blocker is
+missing Developer ID release identity.
