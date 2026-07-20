@@ -237,7 +237,7 @@ wait_for_run() {
   local success_var="$4"
   local failure_log="$5"
   local deadline=$(( $(now_seconds) + timeout_seconds ))
-  local status=""
+  local run_status=""
   local conclusion=""
 
   while (( $(now_seconds) < deadline )); do
@@ -245,10 +245,10 @@ wait_for_run() {
       --repo "$expected_repo" \
       --json databaseId,url,status,conclusion,workflowName,headBranch,headSha,event,createdAt,updatedAt,jobs \
       > "$output_json" || return 1
-    status="$(json_value "$output_json" status)"
+    run_status="$(json_value "$output_json" status)"
     conclusion="$(json_value "$output_json" conclusion)"
-    log "run $run_id status=$status conclusion=${conclusion:-none}"
-    if [[ "$status" == "completed" ]]; then
+    log "run $run_id status=$run_status conclusion=${conclusion:-none}"
+    if [[ "$run_status" == "completed" ]]; then
       typeset -g "$completed_var=yes"
       if [[ "$conclusion" == "success" ]]; then
         typeset -g "$success_var=yes"
