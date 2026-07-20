@@ -268,9 +268,27 @@ wait_for_run() {
 }
 
 download_rc_artifacts() {
+  local download_pid
+  local deadline
+
   rm -rf "$download_root"
   mkdir -p "$download_root"
-  gh run download "$rc_run_id" --repo "$expected_repo" --dir "$download_root" || return 1
+  gh run download "$rc_run_id" \
+    --repo "$expected_repo" \
+    --name hermes-bridge-release-candidate \
+    --dir "$download_root" &
+  download_pid=$!
+  deadline=$(( $(now_seconds) + 300 ))
+  while kill -0 "$download_pid" >/dev/null 2>&1; do
+    if (( $(now_seconds) >= deadline )); then
+      kill "$download_pid" >/dev/null 2>&1 || true
+      wait "$download_pid" >/dev/null 2>&1 || true
+      return 1
+    fi
+    sleep 2
+  done
+  wait "$download_pid" || return 1
+
   find "$download_root" -type f | LC_ALL=C sort | sed "s#^$artifact_root/##" > "$artifact_inventory"
   rc_artifact_downloaded="yes"
 }
