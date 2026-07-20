@@ -19,6 +19,21 @@ final class HermesBridgeControlTests: XCTestCase {
     XCTAssertEqual(invocation.command, .requestStatus(validRequestID))
   }
 
+  func testAuditSigningOperationCommandParsing() throws {
+    XCTAssertEqual(
+      try HermesBridgeCLIInvocation(arguments: ["configure-audit-signing-access"]).command,
+      .configureAuditSigningAccess
+    )
+    XCTAssertEqual(
+      try HermesBridgeCLIInvocation(arguments: ["resume-audit-key-rotation"]).command,
+      .resumeAuditKeyRotation
+    )
+    XCTAssertEqual(
+      try HermesBridgeCLIInvocation(arguments: ["verify-audit-signing"]).command,
+      .verifyAuditSigning
+    )
+  }
+
   func testUnknownCommandRejected() async throws {
     let result = await runner().run(arguments: ["execute"])
     XCTAssertEqual(result.exitCode, .usageError)
@@ -205,6 +220,46 @@ final class HermesBridgeControlTests: XCTestCase {
   func testPromptAbsent() async throws {
     let result = await runner().run(arguments: ["request-status", "--request-id", validRequestID])
     XCTAssertFalse(result.stdout.localizedCaseInsensitiveContains("prompt"))
+  }
+
+  func testAuditSigningOperationalRendererRedactsCLIOutput() {
+    let identity = HermesAuditAuthorizedCodeIdentity(
+      role: "currentApp",
+      bundleIdentifier: "com.hermes.bridge",
+      designatedRequirement: "identifier com.hermes.bridge",
+      teamIdentifier: nil,
+      signingKind: "adhoc",
+      hardenedRuntime: false,
+      appSandbox: true,
+      fingerprint: String(repeating: "a", count: 64)
+    )
+    let status = HermesAuditSigningOperationalStatus(
+      activeSignerID: try? HermesAuditSignerID(rawValue: "hasg_test"),
+      activeFingerprintPrefix: "abcdef123456",
+      accessPolicyState: .configuredForAppAndService,
+      signingRequiredPolicy: .signingRequired,
+      nonInteractiveSigningProven: true,
+      lastSuccessfulSignatureAt: Date(timeIntervalSince1970: 1),
+      rotationTransactionState: .prepared,
+      recoveryRequired: .resumeInterruptedRotation,
+      releaseIdentityValidation: HermesAuditSigningReleaseIdentityValidation(
+        appIdentity: identity,
+        serviceIdentity: nil,
+        developerIDAvailable: false,
+        validationPassed: false,
+        blocked: true,
+        issueCodes: ["developer_id_unavailable"]
+      ),
+      trustAnchorCount: 1
+    )
+    let output = HermesBridgeControlRenderer.renderAuditSigningOperationalStatus(
+      status,
+      format: .text
+    )
+    XCTAssertFalse(output.localizedCaseInsensitiveContains("private"))
+    XCTAssertFalse(output.localizedCaseInsensitiveContains("token"))
+    XCTAssertFalse(output.contains("/Users/"))
+    XCTAssertTrue(output.contains("accessPolicy: configuredForAppAndService"))
   }
 
   func testRawResultBodyAbsent() async throws {

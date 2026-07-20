@@ -361,6 +361,7 @@ public enum HermesAuditSigningError: Error, Equatable, Sendable, CustomStringCon
   case signingFailed(OSStatus)
   case publicKeyExportFailed(OSStatus)
   case unsupportedKey
+  case broadApplicationAccessRejected
 
   public var description: String {
     switch self {
@@ -374,6 +375,7 @@ public enum HermesAuditSigningError: Error, Equatable, Sendable, CustomStringCon
     case .signingFailed: return "audit signing failed"
     case .publicKeyExportFailed: return "audit signing public key export failed"
     case .unsupportedKey: return "unsupported audit signing key"
+    case .broadApplicationAccessRejected: return "broad audit signing key access rejected"
     }
   }
 }
@@ -476,6 +478,9 @@ public struct HermesAuditSigningKeyManager: Sendable {
   public func lookup(signerID: HermesAuditSignerID, keyGenerationID: String) throws
     -> HermesKeychainAuditManifestSigner
   {
+    if Self.defaultKeychainIsLocked() {
+      throw HermesAuditSigningError.keychainLocked
+    }
     let tag = applicationTag(signerID: signerID, keyGenerationID: keyGenerationID)
     var query = baseQuery(tag: tag)
     query[kSecReturnRef as String] = true
@@ -500,6 +505,21 @@ public struct HermesAuditSigningKeyManager: Sendable {
   public func createKey(signerID: HermesAuditSignerID, keyGenerationID: String) throws
     -> HermesKeychainAuditManifestSigner
   {
+    try createKey(
+      signerID: signerID,
+      keyGenerationID: keyGenerationID,
+      trustedApplicationPaths: Self.currentExecutableTrustedPaths()
+    )
+  }
+
+  public func createKey(
+    signerID: HermesAuditSignerID,
+    keyGenerationID: String,
+    trustedApplicationPaths: [String]
+  ) throws -> HermesKeychainAuditManifestSigner {
+    if Self.defaultKeychainIsLocked() {
+      throw HermesAuditSigningError.keychainLocked
+    }
     do {
       let existing = try lookup(signerID: signerID, keyGenerationID: keyGenerationID)
       return existing
@@ -509,18 +529,11 @@ public struct HermesAuditSigningKeyManager: Sendable {
       throw error
     }
     let tag = applicationTag(signerID: signerID, keyGenerationID: keyGenerationID)
-    var access: SecAccess?
-    let accessStatus = SecAccessCreate(
-      "Hermes Bridge Audit Manifest Signing Key" as CFString,
-      [] as CFArray,
-      &access
-    )
-    guard accessStatus == errSecSuccess, let access else {
-      throw HermesAuditSigningError.keyCreationFailed(accessStatus)
-    }
+    let access = try keyAccess(trustedApplicationPaths: trustedApplicationPaths)
     let attributes: [String: Any] = [
       kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
       kSecAttrKeySizeInBits as String: 256,
+      kSecAttrIsExtractable as String: false,
       kSecAttrIsPermanent as String: true,
       kSecPrivateKeyAttrs as String: [
         kSecAttrApplicationTag as String: tag,
@@ -545,8 +558,35 @@ public struct HermesAuditSigningKeyManager: Sendable {
     try createKey(signerID: .generate(), keyGenerationID: UUID().uuidString.lowercased())
   }
 
+  public func createKey(trustedApplicationPaths: [String]) throws
+    -> HermesKeychainAuditManifestSigner
+  {
+    try createKey(
+      signerID: .generate(),
+      keyGenerationID: UUID().uuidString.lowercased(),
+      trustedApplicationPaths: trustedApplicationPaths
+    )
+  }
+
   public func rotateKey() throws -> HermesKeychainAuditManifestSigner {
     try createKey()
+  }
+
+  public func configureAccess(
+    signerID: HermesAuditSignerID,
+    keyGenerationID: String,
+    trustedApplicationPaths: [String]
+  ) throws {
+    if Self.defaultKeychainIsLocked() {
+      throw HermesAuditSigningError.keychainLocked
+    }
+    let access = try keyAccess(trustedApplicationPaths: trustedApplicationPaths)
+    let tag = applicationTag(signerID: signerID, keyGenerationID: keyGenerationID)
+    let query = baseQuery(tag: tag)
+    let attributes: [String: Any] = [kSecAttrAccess as String: access]
+    let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+    if status == errSecItemNotFound { throw HermesAuditSigningError.keyMissing }
+    try mapKeychainStatus(status)
   }
 
   public func state(signerID: HermesAuditSignerID, keyGenerationID: String)
@@ -572,6 +612,7 @@ public struct HermesAuditSigningKeyManager: Sendable {
       kSecAttrKeyClass as String: kSecAttrKeyClassPrivate,
       kSecAttrKeyType as String: kSecAttrKeyTypeECSECPrimeRandom,
       kSecAttrApplicationTag as String: tag,
+      kSecUseAuthenticationUI as String: kSecUseAuthenticationUIFail,
     ]
     if let accessGroup {
       query[kSecAttrAccessGroup as String] = accessGroup
@@ -583,6 +624,48 @@ public struct HermesAuditSigningKeyManager: Sendable {
     Data(
       "\(HermesKeychainAuditManifestSigner.applicationTagPrefix).\(signerID.rawValue).\(keyGenerationID)"
         .utf8)
+  }
+
+  private func keyAccess(trustedApplicationPaths: [String]) throws -> SecAccess {
+    let safePaths = trustedApplicationPaths.filter { !$0.isEmpty }
+    guard !safePaths.isEmpty else {
+      throw HermesAuditSigningError.broadApplicationAccessRejected
+    }
+    var trustedApplications: [SecTrustedApplication] = []
+    for path in Array(Set(safePaths)).sorted() {
+      var trustedApplication: SecTrustedApplication?
+      let status = SecTrustedApplicationCreateFromPath(path, &trustedApplication)
+      guard status == errSecSuccess, let trustedApplication else {
+        throw HermesAuditSigningError.keyCreationFailed(status)
+      }
+      trustedApplications.append(trustedApplication)
+    }
+    var access: SecAccess?
+    let accessStatus = SecAccessCreate(
+      "Hermes Bridge Audit Manifest Signing Key" as CFString,
+      trustedApplications as CFArray,
+      &access
+    )
+    guard accessStatus == errSecSuccess, let access else {
+      throw HermesAuditSigningError.keyCreationFailed(accessStatus)
+    }
+    return access
+  }
+
+  private static func currentExecutableTrustedPaths() -> [String] {
+    if let path = Bundle.main.executableURL?.path, !path.isEmpty {
+      return [path]
+    }
+    let path = CommandLine.arguments.first ?? ""
+    return path.isEmpty ? [] : [path]
+  }
+
+  private static func defaultKeychainIsLocked() -> Bool {
+    var keychain: SecKeychain?
+    guard SecKeychainCopyDefault(&keychain) == errSecSuccess, let keychain else { return false }
+    var status = SecKeychainStatus()
+    guard SecKeychainGetStatus(keychain, &status) == errSecSuccess else { return false }
+    return status & UInt32(kSecUnlockStateStatus) == 0
   }
 
   private func mapKeychainStatus(_ status: OSStatus) throws {

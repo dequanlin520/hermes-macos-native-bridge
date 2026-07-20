@@ -86,9 +86,29 @@ Remediation uses fixed codes:
 - `exportAuditTrustAnchor`
 - `rotateAuditSigningKey`
 - `verifyAuditLog`
+- `configureAuditSigningAccess`
+- `resumeAuditKeyRotation`
+- `resetAuditSigningConfiguration`
 
 System Settings remediation opens only fixed documented URL schemes after an
 explicit user click. The Bridge never changes a permission automatically.
+
+## Audit Signing Operations
+
+Doctor status may include M6-004 audit signing fields:
+
+- active signer fingerprint prefix;
+- access-policy state;
+- signing-required policy;
+- non-interactive signing proof;
+- last successful signature timestamp;
+- rotation transaction state;
+- recovery operation;
+- release identity validation.
+
+These fields are diagnostic only. Doctor does not run
+`configureAuditSigningAccess`, does not unlock the Keychain, does not rotate
+keys, and does not export private-key material.
 
 ## Limitations
 
