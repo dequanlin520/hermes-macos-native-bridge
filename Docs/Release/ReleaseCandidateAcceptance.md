@@ -17,3 +17,9 @@ cleanup gates.
 The only fake product dependency is the artifact-owned Hermes backend created
 inside the run root. It accepts the fixed safe serve argument shape used by
 `HermesProcessSupervisor` and binds only to `127.0.0.1`.
+
+M8-002 integrates this harness into release-candidate and production workflows.
+The harness is invoked once per release workflow run and its
+`artifacts/m8-001/result.txt` file is consumed by
+`Scripts/release/generate-release-manifest.zsh`. Release packaging must not
+duplicate the functional acceptance logic.

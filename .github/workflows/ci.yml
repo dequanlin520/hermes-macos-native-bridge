@@ -1,0 +1,165 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  repository-policy:
+    name: Repository policy validation
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate repository policy
+        run: |
+          test -f AGENTS.md
+          test -f SECURITY.md
+          test -f Docs/PRODUCT-SCOPE.md
+          ! grep -R -I -n -E 'curl[[:space:]].*\|[[:space:]]*(sh|bash|zsh)|eval[[:space:]]' Scripts .github/workflows
+
+  build:
+    name: Swift package build
+    runs-on: macos-14
+    needs: repository-policy
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Capture toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+      - name: Swift build
+        run: swift build
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-build-failure-logs
+          path: |
+            .build/**/*.log
+            artifacts/**/*.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  test:
+    name: Swift tests
+    runs-on: macos-14
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Swift tests
+        run: swift test
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-test-failure-logs
+          path: |
+            .build/**/*.log
+            artifacts/**/*.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  xcode-app-build:
+    name: Xcode HermesBridgeApp build
+    runs-on: macos-14
+    needs: repository-policy
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Xcode build
+        run: |
+          xcodebuild \
+            -project Packaging/HermesBridgeApp/HermesBridgeApp.xcodeproj \
+            -scheme HermesBridgeApp \
+            -destination 'platform=macOS' \
+            -derivedDataPath artifacts/ci/DerivedData \
+            build
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-xcode-failure-logs
+          path: artifacts/ci/DerivedData/Logs/**
+          if-no-files-found: ignore
+          retention-days: 14
+
+  shell-validation:
+    name: Shell syntax validation
+    runs-on: macos-14
+    needs: repository-policy
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate zsh syntax
+        run: |
+          find Scripts -name '*.zsh' -type f -print0 | xargs -0 -n1 zsh -n
+
+  integration-fixtures:
+    name: Selected integration fixture validation
+    runs-on: macos-14
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate selected fixtures
+        run: |
+          Scripts/integration/m6-001-permissions-audit.zsh
+          Scripts/integration/m6-002-audit-integrity.zsh
+      - name: Upload integration evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-integration-evidence
+          path: artifacts/**
+          if-no-files-found: ignore
+          retention-days: 14
+
+  privacy-action-surface:
+    name: Privacy and action-surface scan
+    runs-on: macos-14
+    needs: repository-policy
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Scan forbidden surfaces
+        run: |
+          ! grep -R -I -n -E 'JavaScript for Automation|jxa|curl[[:space:]].*\|[[:space:]]*(sh|bash|zsh)|eval[[:space:]]' Sources Scripts/release .github/workflows
+          ! grep -R -I -n -E 'BEGIN (RSA|EC|OPENSSH|PRIVATE) KEY|APPLE_APP_SPECIFIC_PASSWORD=.*[^}]|APPLE_DEVELOPER_ID_APPLICATION_PASSWORD=.*[^}]|APPLE_API_PRIVATE_KEY_BASE64=.*[^}]' .
+
+  dependency-review:
+    name: Dependency review
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Dependency review
+        uses: actions/dependency-review-action@v4

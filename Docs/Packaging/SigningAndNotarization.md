@@ -216,6 +216,22 @@ Public distribution remains blocked until:
 - a future installer or lifecycle issue owns final per-user placement,
   LaunchAgent installation, upgrade, removal, and user-facing controls.
 
+## M8-002 GitHub Release Pipeline
+
+The M8-002 production workflow consumes only encrypted GitHub Actions secrets
+for Developer ID signing and notarization. App Store Connect API key
+notarization is preferred when `APPLE_API_KEY_ID`,
+`APPLE_API_ISSUER_ID`, and `APPLE_API_PRIVATE_KEY_BASE64` are available. Apple
+ID notarization is also supported with `APPLE_ID`,
+`APPLE_APP_SPECIFIC_PASSWORD`, and `APPLE_TEAM_ID`.
+
+The workflow creates a temporary keychain for signing and deletes it at the end
+of the job. Unsigned/ad-hoc release candidates are allowed only as
+`CONDITIONAL` artifacts. Production release publication requires Developer ID
+signing, hardened runtime, notarization acceptance, staple verification,
+Gatekeeper assessment, checksums, SBOM, manifest validation, and M8-001
+acceptance.
+
 ## Audit Signing Release Identity Validation
 
 M6-004 validates the intended app and service identities for compatibility with

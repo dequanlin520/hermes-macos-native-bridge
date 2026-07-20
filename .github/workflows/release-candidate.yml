@@ -1,0 +1,93 @@
+name: Release Candidate
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*-rc.*'
+
+permissions:
+  contents: read
+
+jobs:
+  release-candidate:
+    name: Build release candidate
+    runs-on: macos-14
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write
+    outputs:
+      result: ${{ steps.gates.outputs.result }}
+    steps:
+      - name: Clean checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Capture toolchain versions
+        run: |
+          mkdir -p artifacts/m8-002
+          {
+            xcodebuild -version
+            swift --version
+            sw_vers
+            uname -a
+          } | tee artifacts/m8-002/toolchain.txt
+      - name: Build unsigned or ad-hoc release candidate
+        env:
+          SOURCE_DATE_EPOCH: ${{ github.event.repository.pushed_at }}
+        run: |
+          Scripts/release/build-release-candidate.zsh --version "${GITHUB_REF_NAME:-manual-rc}" --signing-mode adhoc
+      - name: Run M8-001 acceptance harness
+        run: Scripts/integration/m8-001-release-candidate-acceptance.zsh
+      - name: Generate release manifest
+        run: |
+          rc_root="$(find artifacts/m8-002/release-candidates -maxdepth 1 -type d -name 'HermesBridge-*' | sort | tail -n 1)"
+          Scripts/release/generate-release-manifest.zsh --staging-root "$rc_root/staging" --mode rc --acceptance-result artifacts/m8-001/result.txt
+          Scripts/release/package-release.zsh --staging-root "$rc_root/staging" --version "${GITHUB_REF_NAME:-manual-rc}" --mode adhoc
+      - name: Verify release candidate
+        run: |
+          rc_root="$(find artifacts/m8-002/release-candidates -maxdepth 1 -type d -name 'HermesBridge-*' | sort | tail -n 1)"
+          Scripts/release/verify-release.zsh --staging-root "$rc_root/staging" --archive "$rc_root/HermesBridge-${GITHUB_REF_NAME:-manual-rc}-unsigned-rc.tar.gz" --mode rc
+      - name: Gate summary
+        id: gates
+        run: |
+          rc_root="$(find artifacts/m8-002/release-candidates -maxdepth 1 -type d -name 'HermesBridge-*' | sort | tail -n 1)"
+          cat "$rc_root/staging/ReleaseEvidence/release-gate-summary.env"
+          result="$(sed -n 's/^M8_002_RESULT=//p' "$rc_root/staging/ReleaseEvidence/release-gate-summary.env")"
+          echo "result=$result" >> "$GITHUB_OUTPUT"
+      - name: Generate artifact attestation
+        uses: actions/attest-build-provenance@v1
+        with:
+          subject-path: artifacts/m8-002/release-candidates/*/*.tar.gz
+      - name: Upload release candidate artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-bridge-release-candidate
+          path: artifacts/m8-002/release-candidates/**
+          if-no-files-found: error
+          retention-days: 30
+
+  publish-prerelease:
+    name: Publish trusted prerelease
+    needs: release-candidate
+    if: startsWith(github.ref, 'refs/tags/v') && contains(github.ref_name, '-rc.') && github.repository_owner == 'dequanlin520'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: hermes-bridge-release-candidate
+          path: release-candidate
+      - name: Publish GitHub prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" release-candidate/**/*.tar.gz release-candidate/**/ReleaseEvidence/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --prerelease \
+            --title "Hermes Bridge $GITHUB_REF_NAME" \
+            --notes "Unsigned/ad-hoc release candidates are conditional and are not notarized or production-ready unless the manifest says Developer ID signing and notarization passed."
