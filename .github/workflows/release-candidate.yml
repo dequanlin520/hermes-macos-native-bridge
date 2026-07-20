@@ -36,19 +36,22 @@ jobs:
           } | tee artifacts/m8-002/toolchain.txt
       - name: Build unsigned or ad-hoc release candidate
         run: |
+          version="$(printf '%s' "${GITHUB_REF_NAME:-manual-rc}" | tr -c 'A-Za-z0-9._-' '-')"
           SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" \
-            Scripts/release/build-release-candidate.zsh --version "${GITHUB_REF_NAME:-manual-rc}" --signing-mode adhoc
+            Scripts/release/build-release-candidate.zsh --version "$version" --signing-mode adhoc
       - name: Run M8-001 acceptance harness
         run: Scripts/integration/m8-001-release-candidate-acceptance.zsh
       - name: Generate release manifest
         run: |
+          version="$(printf '%s' "${GITHUB_REF_NAME:-manual-rc}" | tr -c 'A-Za-z0-9._-' '-')"
           rc_root="$(find artifacts/m8-002/release-candidates -maxdepth 1 -type d -name 'HermesBridge-*' | sort | tail -n 1)"
           Scripts/release/generate-release-manifest.zsh --staging-root "$rc_root/staging" --mode rc --acceptance-result artifacts/m8-001/result.txt
-          Scripts/release/package-release.zsh --staging-root "$rc_root/staging" --version "${GITHUB_REF_NAME:-manual-rc}" --mode adhoc
+          Scripts/release/package-release.zsh --staging-root "$rc_root/staging" --version "$version" --mode adhoc
       - name: Verify release candidate
         run: |
+          version="$(printf '%s' "${GITHUB_REF_NAME:-manual-rc}" | tr -c 'A-Za-z0-9._-' '-')"
           rc_root="$(find artifacts/m8-002/release-candidates -maxdepth 1 -type d -name 'HermesBridge-*' | sort | tail -n 1)"
-          Scripts/release/verify-release.zsh --staging-root "$rc_root/staging" --archive "$rc_root/HermesBridge-${GITHUB_REF_NAME:-manual-rc}-unsigned-rc.tar.gz" --mode rc
+          Scripts/release/verify-release.zsh --staging-root "$rc_root/staging" --archive "$rc_root/HermesBridge-$version-unsigned-rc.tar.gz" --mode rc
       - name: Gate summary
         id: gates
         run: |
