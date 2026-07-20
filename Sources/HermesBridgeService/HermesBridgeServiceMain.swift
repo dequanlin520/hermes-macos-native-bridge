@@ -17,7 +17,8 @@ public enum HermesBridgeServiceMain {
     let allowTest = environment["HERMES_BRIDGE_SERVICE_ALLOW_TEST_CONFIG"] == "1"
     let url = URL(fileURLWithPath: configPath).standardizedFileURL
     if allowTest {
-      guard url.path.contains("/artifacts/m2-008/") else {
+      guard url.path.contains("/artifacts/m2-008/") || url.path.contains("/artifacts/m8-001/")
+      else {
         throw HermesBridgeServiceConfigurationError.invalidRoot("test_config_outside_artifacts")
       }
       return try HermesBridgeServiceConfiguration.decodeTrustedConfiguration(

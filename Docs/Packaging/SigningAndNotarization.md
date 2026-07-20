@@ -1,5 +1,12 @@
 # Signing And Notarization
 
+## Release Candidate Acceptance
+
+M8-001 records Developer ID and notarization availability in
+`artifacts/m8-001/release-candidate-manifest.json`. The acceptance harness must
+not report either gate as passed unless the local machine has usable signing or
+notary credentials. Missing credentials are reported as `conditionallyBlocked`.
+
 ## Scope
 
 M3-002 adds a deterministic release-packaging pipeline for

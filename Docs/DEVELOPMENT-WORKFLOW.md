@@ -2,6 +2,18 @@
 
 Development is issue-driven and pull-request-driven.
 
+## M8 Release Candidate Acceptance
+
+Run the release-candidate acceptance harness from the repository root:
+
+```zsh
+Scripts/integration/m8-001-release-candidate-acceptance.zsh
+```
+
+The script writes deterministic evidence to `artifacts/m8-001` and uses only
+artifact-owned runtime state, a test LaunchAgent label, and an artifact-owned
+fake Hermes backend.
+
 ## Standard Flow
 
 1. Open or select a scoped issue.
