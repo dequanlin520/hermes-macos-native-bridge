@@ -13,7 +13,9 @@ struct M6001AuditFixture {
         maximumFileBytes: 4096,
         maximumRetainedFiles: 3,
         maximumRetainedEvents: 200
-      ))
+      ),
+      signingProvider: signingProvider(auditRoot: root)
+    )
 
     let kinds: [HermesAuditEventKind] = [
       .serviceInstalled,
@@ -99,5 +101,15 @@ struct M6001AuditFixture {
     default:
       return nil
     }
+  }
+
+  private static func signingProvider(auditRoot: URL) -> any HermesAuditManifestSigningProvider {
+    guard let active = try? HermesAuditPublicTrustAnchorStore(root: auditRoot).activeAnchor(),
+      let signer = try? HermesAuditSigningKeyManager().lookup(
+        signerID: active.signerID,
+        keyGenerationID: active.keyGenerationID
+      )
+    else { return HermesUnsignedAuditManifestSigningProvider() }
+    return signer
   }
 }

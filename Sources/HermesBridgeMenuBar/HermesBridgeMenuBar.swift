@@ -151,13 +151,20 @@ public struct HermesMenuBarAuditIntegrityViewState: Codable, Equatable, Sendable
   public let verifiedEventCount: Int
   public let issueCodes: [String]
   public let verifiedAt: Date
+  public let signingAvailable: Bool
+  public let activeFingerprintPrefix: String?
 
-  public init(report: HermesAuditVerificationReport) {
+  public init(
+    report: HermesAuditVerificationReport,
+    signingStatus: HermesAuditSigningStatus? = nil
+  ) {
     self.state = report.state.rawValue
     self.verifiedSegmentCount = report.verifiedSegmentCount
     self.verifiedEventCount = report.verifiedEventCount
     self.issueCodes = report.issueCodes.map(\.rawValue)
     self.verifiedAt = report.verifiedAt
+    self.signingAvailable = signingStatus?.signingAvailable ?? false
+    self.activeFingerprintPrefix = signingStatus?.activeFingerprintPrefix
   }
 }
 
@@ -1358,10 +1365,16 @@ public struct ProductionMenuBarAuditViewer: HermesBridgeMenuBarAuditViewing {
   }
 
   public func integrityStatus() async throws -> HermesMenuBarAuditIntegrityViewState {
+    let auditRoot = layout.logsRoot.appendingPathComponent("Audit", isDirectory: true)
+    let anchors = (try? HermesAuditPublicTrustAnchorStore(root: auditRoot).load()) ?? []
     let report = try HermesAuditIntegrityVerifier(
-      root: layout.logsRoot.appendingPathComponent("Audit", isDirectory: true)
+      root: auditRoot,
+      trustAnchors: anchors
     ).verify()
-    return HermesMenuBarAuditIntegrityViewState(report: report)
+    return HermesMenuBarAuditIntegrityViewState(
+      report: report,
+      signingStatus: HermesAuditPublicTrustAnchorStore(root: auditRoot).status()
+    )
   }
 
   public func exportAudit(to outputDirectory: URL) async -> HermesBridgeMenuBarActionResult {
@@ -1386,9 +1399,22 @@ public struct ProductionMenuBarAuditViewer: HermesBridgeMenuBarAuditViewing {
   }
 
   private func auditStore() throws -> FileBackedHermesAuditStore {
-    try FileBackedHermesAuditStore(
+    let auditRoot = layout.logsRoot.appendingPathComponent("Audit", isDirectory: true)
+    return try FileBackedHermesAuditStore(
       configuration: HermesAuditStoreConfiguration(
-        root: layout.logsRoot.appendingPathComponent("Audit", isDirectory: true)
-      ))
+        root: auditRoot
+      ),
+      signingProvider: Self.signingProvider(auditRoot: auditRoot)
+    )
+  }
+
+  private static func signingProvider(auditRoot: URL) -> any HermesAuditManifestSigningProvider {
+    guard let active = try? HermesAuditPublicTrustAnchorStore(root: auditRoot).activeAnchor(),
+      let signer = try? HermesAuditSigningKeyManager().lookup(
+        signerID: active.signerID,
+        keyGenerationID: active.keyGenerationID
+      )
+    else { return HermesUnsignedAuditManifestSigningProvider() }
+    return signer
   }
 }

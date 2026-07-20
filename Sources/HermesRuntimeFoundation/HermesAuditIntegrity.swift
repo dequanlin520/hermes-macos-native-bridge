@@ -103,81 +103,6 @@ public struct HermesAuditRecord: Codable, Equatable, Sendable {
   }
 }
 
-public struct HermesAuditManifestSignature: Codable, Equatable, Sendable {
-  public let algorithm: String
-  public let keyID: String
-  public let signature: String
-
-  public init(algorithm: String, keyID: String, signature: String) {
-    self.algorithm = String(algorithm.prefix(64))
-    self.keyID = String(keyID.prefix(96))
-    self.signature = String(signature.prefix(512))
-  }
-}
-
-public protocol HermesAuditManifestSigningProvider: Sendable {
-  var signerID: String? { get }
-  func sign(manifestDigest: HermesAuditDigest) throws -> HermesAuditManifestSignature?
-  func verify(signature: HermesAuditManifestSignature, manifestDigest: HermesAuditDigest) throws
-    -> Bool
-}
-
-public struct HermesUnsignedAuditManifestSigningProvider: HermesAuditManifestSigningProvider {
-  public let signerID: String? = nil
-  public init() {}
-  public func sign(manifestDigest _: HermesAuditDigest) throws -> HermesAuditManifestSignature? {
-    nil
-  }
-  public func verify(signature _: HermesAuditManifestSignature, manifestDigest _: HermesAuditDigest)
-    throws -> Bool
-  {
-    false
-  }
-}
-
-public struct HermesEphemeralTestAuditManifestSigningProvider:
-  HermesAuditManifestSigningProvider
-{
-  private let privateKey: P256.Signing.PrivateKey?
-  private let publicKey: P256.Signing.PublicKey
-  public let signerID: String?
-
-  public init(keyID: String = "ephemeral_test") {
-    let key = P256.Signing.PrivateKey()
-    self.privateKey = key
-    self.publicKey = key.publicKey
-    self.signerID = keyID
-  }
-
-  public init(publicKey: P256.Signing.PublicKey, keyID: String = "ephemeral_test_public") {
-    self.privateKey = nil
-    self.publicKey = publicKey
-    self.signerID = keyID
-  }
-
-  public var exportedPublicKey: P256.Signing.PublicKey { publicKey }
-
-  public func sign(manifestDigest: HermesAuditDigest) throws -> HermesAuditManifestSignature? {
-    guard let privateKey else { return nil }
-    let signature = try privateKey.signature(for: Data(manifestDigest.rawValue.utf8))
-    return HermesAuditManifestSignature(
-      algorithm: "p256_sha256_manifest_digest_v1",
-      keyID: signerID ?? "ephemeral_test",
-      signature: signature.derRepresentation.base64EncodedString()
-    )
-  }
-
-  public func verify(signature: HermesAuditManifestSignature, manifestDigest: HermesAuditDigest)
-    throws -> Bool
-  {
-    guard signature.algorithm == "p256_sha256_manifest_digest_v1",
-      let data = Data(base64Encoded: signature.signature)
-    else { return false }
-    let p256Signature = try P256.Signing.ECDSASignature(derRepresentation: data)
-    return publicKey.isValidSignature(p256Signature, for: Data(manifestDigest.rawValue.utf8))
-  }
-}
-
 public struct HermesAuditSegmentManifest: Codable, Equatable, Sendable {
   public static let currentSchemaVersion = 1
   public let schemaVersion: Int
@@ -231,11 +156,15 @@ public struct HermesAuditSegmentManifest: Codable, Equatable, Sendable {
 public enum HermesAuditIntegrityState: String, Codable, CaseIterable, Equatable, Sendable {
   case verified
   case verifiedUnsigned
+  case verifiedSigned
   case incompleteRecoverableTail
   case corrupted
   case unsupported
   case signatureUnavailable
   case signatureInvalid
+  case unknownSigner
+  case retiredSignerValid
+  case keyUnavailable
 }
 
 public enum HermesAuditIntegrityIssue: String, Codable, CaseIterable, Equatable, Sendable {
@@ -254,6 +183,9 @@ public enum HermesAuditIntegrityIssue: String, Codable, CaseIterable, Equatable,
   case unsupportedSchema
   case signatureUnavailable
   case signatureInvalid
+  case unknownSigner
+  case retiredSignerValid
+  case keyUnavailable
   case recoverableActiveTail
   case corruptActiveTail
   case retainedChainAnchor
@@ -423,6 +355,7 @@ public struct HermesAuditIntegrityVerifier {
   private let root: URL
   private let fileManager: FileManager
   private let signingProvider: any HermesAuditManifestSigningProvider
+  private let manifestVerifier: HermesAuditManifestVerifier?
   private let decoder: JSONDecoder
   private let verifiedAt: @Sendable () -> Date
 
@@ -431,11 +364,15 @@ public struct HermesAuditIntegrityVerifier {
     fileManager: FileManager = .default,
     signingProvider: any HermesAuditManifestSigningProvider =
       HermesUnsignedAuditManifestSigningProvider(),
+    trustAnchors: [HermesAuditPublicTrustAnchor] = [],
     verifiedAt: @escaping @Sendable () -> Date = { Date() }
   ) {
     self.root = root.standardizedFileURL
     self.fileManager = fileManager
     self.signingProvider = signingProvider
+    self.manifestVerifier =
+      trustAnchors.isEmpty
+      ? nil : HermesAuditManifestVerifier(trustAnchors: trustAnchors)
     self.decoder = JSONDecoder()
     self.decoder.dateDecodingStrategy = .iso8601
     self.verifiedAt = verifiedAt
@@ -461,6 +398,7 @@ public struct HermesAuditIntegrityVerifier {
     var lastClosedManifestDigest: HermesAuditDigest?
     var seenSegments: Set<HermesAuditSegmentID> = []
     var anySignature = false
+    var anyRetiredSignerValid = false
     var closedCount = 0
 
     let segmentFileNames = Set(segmentFiles.map(\.lastPathComponent))
@@ -592,8 +530,28 @@ public struct HermesAuditIntegrityVerifier {
               closedAt: manifest.closedAt,
               signature: nil
             ))
-          if signingProvider.signerID == nil {
+          if let manifestVerifier {
+            switch manifestVerifier.verify(signature: signature, manifestDigest: signatureDigest) {
+            case .verifiedSigned:
+              break
+            case .retiredSignerValid:
+              anyRetiredSignerValid = true
+              issues.append(.retiredSignerValid)
+            case .signatureUnavailable:
+              issues.append(.signatureUnavailable)
+            case .signatureInvalid:
+              issues.append(.signatureInvalid)
+            case .unknownSigner:
+              issues.append(.unknownSigner)
+            case .keyUnavailable:
+              issues.append(.keyUnavailable)
+            }
+          } else if signingProvider.signerID == nil {
             issues.append(.signatureUnavailable)
+          } else if signingProvider.signerID != signature.signerID
+            || signingProvider.publicKeyFingerprint != signature.publicKeyFingerprint
+          {
+            issues.append(.unknownSigner)
           } else if (try? signingProvider.verify(
             signature: signature, manifestDigest: signatureDigest))
             != true
@@ -615,7 +573,11 @@ public struct HermesAuditIntegrityVerifier {
       issues.append(.previousSegmentMismatch)
     }
 
-    let state = state(for: issues, anySignature: anySignature)
+    let state = state(
+      for: issues,
+      anySignature: anySignature,
+      anyRetiredSignerValid: anyRetiredSignerValid
+    )
     return HermesAuditVerificationReport(
       state: state,
       verifiedSegmentCount: verifiedSegments,
@@ -661,12 +623,17 @@ public struct HermesAuditIntegrityVerifier {
 
   private func state(
     for issues: [HermesAuditIntegrityIssue],
-    anySignature: Bool
+    anySignature: Bool,
+    anyRetiredSignerValid: Bool
   ) -> HermesAuditIntegrityState {
     if issues.contains(.unsupportedSchema) { return .unsupported }
     if issues.contains(.signatureInvalid) { return .signatureInvalid }
+    if issues.contains(.unknownSigner) { return .unknownSigner }
+    if issues.contains(.keyUnavailable) { return .keyUnavailable }
     if issues.contains(.signatureUnavailable) { return .signatureUnavailable }
-    var nonCorrupt = Set<HermesAuditIntegrityIssue>([.recoverableActiveTail, .retainedChainAnchor])
+    var nonCorrupt = Set<HermesAuditIntegrityIssue>([
+      .recoverableActiveTail, .retainedChainAnchor, .retiredSignerValid,
+    ])
     if issues.contains(.retainedChainAnchor) {
       nonCorrupt.formUnion([.missingSegment, .previousEventMismatch, .previousSegmentMismatch])
     }
@@ -674,7 +641,8 @@ public struct HermesAuditIntegrityVerifier {
       return .incompleteRecoverableTail
     }
     if issues.contains(where: { !nonCorrupt.contains($0) }) { return .corrupted }
-    return anySignature ? .verified : .verifiedUnsigned
+    if anyRetiredSignerValid { return .retiredSignerValid }
+    return anySignature ? .verifiedSigned : .verifiedUnsigned
   }
 
   private func manifestURL(for segmentID: HermesAuditSegmentID) -> URL {

@@ -6,9 +6,10 @@ import XCTest
 
 final class HermesAuditLogTests: XCTestCase {
   func testEventKindCatalogIsFixedAndComplete() {
-    XCTAssertEqual(HermesAuditEventKind.allCases.count, 24)
+    XCTAssertEqual(HermesAuditEventKind.allCases.count, 25)
     XCTAssertTrue(HermesAuditEventKind.allCases.contains(.doctorExecuted))
     XCTAssertTrue(HermesAuditEventKind.allCases.contains(.auditExported))
+    XCTAssertTrue(HermesAuditEventKind.allCases.contains(.auditSigningKeyRotated))
   }
 
   func testAuditEventIDValidation() throws {
@@ -353,13 +354,14 @@ final class HermesAuditLogTests: XCTestCase {
     try await store.rotateActiveSegment()
     XCTAssertEqual(
       try HermesAuditIntegrityVerifier(root: root, signingProvider: signer).verify().state,
-      .verified
+      .verifiedSigned
     )
 
     let invalid = try copyDirectory(root)
     let manifest = try firstManifest(in: invalid)
     var data = try String(contentsOf: manifest, encoding: .utf8)
-    data = data.replacingOccurrences(of: "\"signature\":\"", with: "\"signature\":\"AA")
+    data = data.replacingOccurrences(
+      of: "\"encodedSignature\":\"", with: "\"encodedSignature\":\"AA")
     try data.write(to: manifest, atomically: true, encoding: .utf8)
     let invalidReport = try HermesAuditIntegrityVerifier(root: invalid, signingProvider: signer)
       .verify()
@@ -368,7 +370,120 @@ final class HermesAuditLogTests: XCTestCase {
     let wrong = HermesEphemeralTestAuditManifestSigningProvider()
     XCTAssertEqual(
       try HermesAuditIntegrityVerifier(root: root, signingProvider: wrong).verify().state,
+      .unknownSigner
+    )
+  }
+
+  func testM6003SigningModelsAndTrustAnchorVerification() async throws {
+    XCTAssertNoThrow(try HermesAuditSignerID(rawValue: "hasg_valid-01"))
+    XCTAssertThrowsError(try HermesAuditSignerID(rawValue: "bad"))
+
+    let signer = HermesEphemeralTestAuditManifestSigningProvider(keyID: "hasg_m6003")
+    let fingerprint = signer.publicKeyFingerprint!
+    XCTAssertEqual(
+      fingerprint,
+      HermesAuditSigningKeyFingerprint(publicKeyDER: signer.exportedPublicKey.derRepresentation)
+    )
+
+    let anchor = signer.publicTrustAnchor
+    XCTAssertTrue(anchor.checksumIsValid())
+    XCTAssertEqual(anchor.publicKeyDER, signer.exportedPublicKey.derRepresentation)
+    XCTAssertFalse(String(describing: anchor).localizedCaseInsensitiveContains("private"))
+
+    let root = try temporaryDirectory()
+    let store = try FileBackedHermesAuditStore(
+      configuration: HermesAuditStoreConfiguration(root: root),
+      signingProvider: signer
+    )
+    try await appendFixtureEvents(to: store, count: 2)
+    try await store.rotateActiveSegment()
+
+    XCTAssertEqual(
+      try HermesAuditIntegrityVerifier(root: root, trustAnchors: [anchor]).verify().state,
+      .verifiedSigned
+    )
+
+    let retired = try HermesAuditPublicTrustAnchor(
+      signerID: anchor.signerID,
+      publicKeyDER: anchor.publicKeyDER!,
+      fingerprint: anchor.fingerprint,
+      createdAt: anchor.createdAt,
+      state: .retired,
+      keyGenerationID: anchor.keyGenerationID
+    )
+    XCTAssertEqual(
+      try HermesAuditIntegrityVerifier(root: root, trustAnchors: [retired]).verify().state,
+      .retiredSignerValid
+    )
+
+    let unknown = HermesEphemeralTestAuditManifestSigningProvider(keyID: "hasg_unknown")
+    XCTAssertEqual(
+      try HermesAuditIntegrityVerifier(root: root, trustAnchors: [unknown.publicTrustAnchor])
+        .verify().state,
+      .unknownSigner
+    )
+  }
+
+  func testM6003ModifiedManifestSignatureAndFingerprintFailures() async throws {
+    let signer = HermesEphemeralTestAuditManifestSigningProvider(keyID: "hasg_m6003_failure")
+    let root = try temporaryDirectory()
+    let store = try FileBackedHermesAuditStore(
+      configuration: HermesAuditStoreConfiguration(root: root),
+      signingProvider: signer
+    )
+    try await appendFixtureEvents(to: store, count: 2)
+    try await store.rotateActiveSegment()
+
+    let modifiedManifest = try copyDirectory(root)
+    try rewriteFirstManifest(in: modifiedManifest) { object in
+      object["eventCount"] = 99
+    }
+    XCTAssertEqual(
+      try HermesAuditIntegrityVerifier(
+        root: modifiedManifest,
+        trustAnchors: [
+          signer.publicTrustAnchor
+        ]
+      ).verify().state,
       .signatureInvalid
+    )
+
+    let wrongFingerprint = try copyDirectory(root)
+    try rewriteFirstManifest(in: wrongFingerprint) { object in
+      var signature = object["signature"] as! [String: Any]
+      signature["publicKeyFingerprint"] = ["rawValue": String(repeating: "f", count: 64)]
+      object["signature"] = signature
+    }
+    XCTAssertEqual(
+      try HermesAuditIntegrityVerifier(
+        root: wrongFingerprint,
+        trustAnchors: [
+          signer.publicTrustAnchor
+        ]
+      ).verify().state,
+      .signatureInvalid
+    )
+  }
+
+  func testM6003TrustAnchorStoreStatusAndPrivateKeychainStatesAreTyped() throws {
+    let root = try temporaryDirectory()
+    let store = HermesAuditPublicTrustAnchorStore(root: root)
+    XCTAssertEqual(store.status().state, .missing)
+
+    let signer = HermesEphemeralTestAuditManifestSigningProvider(keyID: "hasg_anchor_store")
+    try store.appendCreatedAnchor(signer.publicTrustAnchor)
+    let loaded = try store.load()
+    XCTAssertEqual(loaded.count, 1)
+    XCTAssertTrue(loaded[0].checksumIsValid())
+
+    XCTAssertThrowsError(
+      try HermesAuditSigningKeyFingerprint(rawValue: String(repeating: "A", count: 64)))
+    XCTAssertEqual(
+      HermesAuditSigningKeyManager().state(
+        signerID: try HermesAuditSignerID(rawValue: "hasg_missing"),
+        keyGenerationID: "missing"
+      ),
+      .missing
     )
   }
 
@@ -503,6 +618,17 @@ final class HermesAuditLogTests: XCTestCase {
       let data = try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
       return [String(decoding: data, as: UTF8.self)] + lines.dropFirst()
     }
+  }
+
+  private func rewriteFirstManifest(
+    in root: URL,
+    mutate: (inout [String: Any]) -> Void
+  ) throws {
+    let file = try firstManifest(in: root)
+    var object = try JSONSerialization.jsonObject(with: Data(contentsOf: file)) as! [String: Any]
+    mutate(&object)
+    let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+    try data.write(to: file)
   }
 
   private func directoryFingerprint(_ root: URL) throws -> [String: String] {

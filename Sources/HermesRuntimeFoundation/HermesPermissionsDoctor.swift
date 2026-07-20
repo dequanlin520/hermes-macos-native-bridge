@@ -14,6 +14,12 @@ public enum HermesPermissionKind: String, Codable, CaseIterable, Equatable, Send
   case authorizedFileRoots
   case notifications
   case appIntentMetadata
+  case auditSigningKey
+  case auditKeychain
+  case auditTrustAnchor
+  case auditUnsignedLegacySegments
+  case auditInvalidSignatures
+  case auditUnknownSigner
   case signing
   case hardenedRuntime
   case notarization
@@ -41,6 +47,11 @@ public enum HermesPermissionRemediationCode: String, Codable, CaseIterable, Equa
   case rebuildSignedApp
   case configureDeveloperID
   case notarizeRelease
+  case createAuditSigningKey
+  case unlockKeychain
+  case exportAuditTrustAnchor
+  case rotateAuditSigningKey
+  case verifyAuditLog
 }
 
 public struct HermesPermissionCheck: Codable, Equatable, Sendable {
@@ -115,7 +126,8 @@ public struct HermesSystemSettingsRemediationURL: Equatable, Sendable {
     case .openNotificationsSettings:
       return notifications
     case .reinstallService, .restartService, .refreshFolderAuthorization, .rebuildSignedApp,
-      .configureDeveloperID, .notarizeRelease:
+      .configureDeveloperID, .notarizeRelease, .createAuditSigningKey, .unlockKeychain,
+      .exportAuditTrustAnchor, .rotateAuditSigningKey, .verifyAuditLog:
       return nil
     }
   }
@@ -131,6 +143,7 @@ public struct HermesPermissionsDoctorEvidence: Equatable, Sendable {
   public let appIntentMetadataPresent: Bool?
   public let notificationsRelevant: Bool
   public let auditIntegrity: HermesAuditExportIntegrityEvidence?
+  public let auditSigningStatus: HermesAuditSigningStatus?
 
   public init(
     executableURL: URL? = nil,
@@ -141,7 +154,8 @@ public struct HermesPermissionsDoctorEvidence: Equatable, Sendable {
     securityScopedBookmarkAvailable: Bool? = nil,
     appIntentMetadataPresent: Bool? = nil,
     notificationsRelevant: Bool = true,
-    auditIntegrity: HermesAuditExportIntegrityEvidence? = nil
+    auditIntegrity: HermesAuditExportIntegrityEvidence? = nil,
+    auditSigningStatus: HermesAuditSigningStatus? = nil
   ) {
     self.executableURL = executableURL?.standardizedFileURL
     self.launchAgentInstalled = launchAgentInstalled
@@ -152,6 +166,7 @@ public struct HermesPermissionsDoctorEvidence: Equatable, Sendable {
     self.appIntentMetadataPresent = appIntentMetadataPresent
     self.notificationsRelevant = notificationsRelevant
     self.auditIntegrity = auditIntegrity
+    self.auditSigningStatus = auditSigningStatus
   }
 }
 
@@ -344,6 +359,52 @@ public struct HermesPermissionsDoctor: Sendable {
         remediationCode: evidence.appIntentMetadataPresent == true ? nil : .rebuildSignedApp
       ),
       HermesPermissionCheck(
+        kind: .auditSigningKey,
+        state: evidence.auditSigningStatus?.signingAvailable == true ? .granted : .misconfigured,
+        detailCode: evidence.auditSigningStatus?.state.rawValue ?? "not_configured",
+        remediationCode: evidence.auditSigningStatus?.signingAvailable == true
+          ? nil : .createAuditSigningKey
+      ),
+      HermesPermissionCheck(
+        kind: .auditKeychain,
+        state: auditKeychainState(evidence.auditSigningStatus),
+        detailCode: auditKeychainDetail(evidence.auditSigningStatus),
+        remediationCode: auditKeychainState(evidence.auditSigningStatus) == .granted
+          ? nil : .unlockKeychain
+      ),
+      HermesPermissionCheck(
+        kind: .auditTrustAnchor,
+        state: (evidence.auditSigningStatus?.trustAnchorCount ?? 0) > 0 ? .granted : .misconfigured,
+        detailCode: (evidence.auditSigningStatus?.trustAnchorCount ?? 0) > 0
+          ? "anchor_present" : "anchor_missing",
+        remediationCode: (evidence.auditSigningStatus?.trustAnchorCount ?? 0) > 0
+          ? nil : .exportAuditTrustAnchor
+      ),
+      HermesPermissionCheck(
+        kind: .auditUnsignedLegacySegments,
+        state: evidence.auditIntegrity?.state == .verifiedUnsigned ? .restricted : .notApplicable,
+        detailCode: evidence.auditIntegrity?.state == .verifiedUnsigned
+          ? "unsigned_legacy_segments" : "no_unsigned_legacy_state",
+        remediationCode: evidence.auditIntegrity?.state == .verifiedUnsigned
+          ? .rotateAuditSigningKey : nil
+      ),
+      HermesPermissionCheck(
+        kind: .auditInvalidSignatures,
+        state: evidence.auditIntegrity?.state == .signatureInvalid ? .misconfigured : .granted,
+        detailCode: evidence.auditIntegrity?.state == .signatureInvalid
+          ? "invalid_signature" : "no_invalid_signature",
+        remediationCode: evidence.auditIntegrity?.state == .signatureInvalid
+          ? .verifyAuditLog : nil
+      ),
+      HermesPermissionCheck(
+        kind: .auditUnknownSigner,
+        state: evidence.auditIntegrity?.state == .unknownSigner ? .misconfigured : .granted,
+        detailCode: evidence.auditIntegrity?.state == .unknownSigner
+          ? "unknown_signer" : "known_signers_only",
+        remediationCode: evidence.auditIntegrity?.state == .unknownSigner
+          ? .exportAuditTrustAnchor : nil
+      ),
+      HermesPermissionCheck(
         kind: .signing,
         state: signing.signed ? .granted : .misconfigured,
         detailCode: signing.signed ? "signed" : "unsigned",
@@ -380,5 +441,35 @@ public struct HermesPermissionsDoctor: Sendable {
     guard let count else { return "unknown" }
     if (stale ?? 0) > 0 { return "stale_authorization" }
     return count > 0 ? "roots_present" : "no_roots"
+  }
+
+  private func auditKeychainState(_ status: HermesAuditSigningStatus?) -> HermesPermissionState {
+    guard let status else { return .unknown }
+    switch status.state {
+    case .active, .missing:
+      return .granted
+    case .locked:
+      return .restricted
+    case .duplicate, .inaccessible:
+      return .misconfigured
+    case .retired:
+      return .notApplicable
+    }
+  }
+
+  private func auditKeychainDetail(_ status: HermesAuditSigningStatus?) -> String {
+    guard let status else { return "not_checked" }
+    switch status.state {
+    case .active, .missing:
+      return "available"
+    case .locked:
+      return "locked"
+    case .duplicate:
+      return "duplicate_key"
+    case .inaccessible:
+      return "inaccessible"
+    case .retired:
+      return "retired"
+    }
   }
 }

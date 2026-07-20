@@ -76,6 +76,7 @@ public enum HermesAuditEventKind: String, Codable, CaseIterable, Equatable, Send
   case emergencyStopRequested
   case emergencyStopCompleted
   case auditExported
+  case auditSigningKeyRotated
 }
 
 public enum HermesAuditActor: String, Codable, CaseIterable, Equatable, Sendable {
