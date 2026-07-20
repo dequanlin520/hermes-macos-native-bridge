@@ -23,6 +23,7 @@ public enum HermesPermissionKind: String, Codable, CaseIterable, Equatable, Send
   case signing
   case hardenedRuntime
   case notarization
+  case realBackendCompatibility
 }
 
 public enum HermesPermissionState: String, Codable, CaseIterable, Equatable, Sendable {
@@ -55,6 +56,9 @@ public enum HermesPermissionRemediationCode: String, Codable, CaseIterable, Equa
   case configureAuditSigningAccess
   case resumeAuditKeyRotation
   case resetAuditSigningConfiguration
+  case installHermes
+  case upgradeHermes
+  case validateHermesBackend
 }
 
 public struct HermesPermissionCheck: Codable, Equatable, Sendable {
@@ -131,7 +135,8 @@ public struct HermesSystemSettingsRemediationURL: Equatable, Sendable {
     case .reinstallService, .restartService, .refreshFolderAuthorization, .rebuildSignedApp,
       .configureDeveloperID, .notarizeRelease, .createAuditSigningKey, .unlockKeychain,
       .exportAuditTrustAnchor, .rotateAuditSigningKey, .verifyAuditLog,
-      .configureAuditSigningAccess, .resumeAuditKeyRotation, .resetAuditSigningConfiguration:
+      .configureAuditSigningAccess, .resumeAuditKeyRotation, .resetAuditSigningConfiguration,
+      .installHermes, .upgradeHermes, .validateHermesBackend:
       return nil
     }
   }
@@ -148,6 +153,7 @@ public struct HermesPermissionsDoctorEvidence: Equatable, Sendable {
   public let notificationsRelevant: Bool
   public let auditIntegrity: HermesAuditExportIntegrityEvidence?
   public let auditSigningStatus: HermesAuditSigningStatus?
+  public let realBackendCompatibility: HermesBackendCompatibilityReport?
 
   public init(
     executableURL: URL? = nil,
@@ -159,7 +165,8 @@ public struct HermesPermissionsDoctorEvidence: Equatable, Sendable {
     appIntentMetadataPresent: Bool? = nil,
     notificationsRelevant: Bool = true,
     auditIntegrity: HermesAuditExportIntegrityEvidence? = nil,
-    auditSigningStatus: HermesAuditSigningStatus? = nil
+    auditSigningStatus: HermesAuditSigningStatus? = nil,
+    realBackendCompatibility: HermesBackendCompatibilityReport? = nil
   ) {
     self.executableURL = executableURL?.standardizedFileURL
     self.launchAgentInstalled = launchAgentInstalled
@@ -171,6 +178,7 @@ public struct HermesPermissionsDoctorEvidence: Equatable, Sendable {
     self.notificationsRelevant = notificationsRelevant
     self.auditIntegrity = auditIntegrity
     self.auditSigningStatus = auditSigningStatus
+    self.realBackendCompatibility = realBackendCompatibility
   }
 }
 
@@ -426,6 +434,13 @@ public struct HermesPermissionsDoctor: Sendable {
         detailCode: signing.notarization == .granted ? "notarized" : "not_checked_locally",
         remediationCode: signing.notarization == .granted ? nil : .notarizeRelease
       ),
+      HermesPermissionCheck(
+        kind: .realBackendCompatibility,
+        state: realBackendPermissionState(evidence.realBackendCompatibility),
+        detailCode: evidence.realBackendCompatibility?.compatibilityState.rawValue
+          ?? "not_checked",
+        remediationCode: realBackendRemediation(evidence.realBackendCompatibility)
+      ),
     ]
     return HermesPermissionsDoctorReport(checks: checks, auditIntegrity: evidence.auditIntegrity)
   }
@@ -474,6 +489,38 @@ public struct HermesPermissionsDoctor: Sendable {
       return "inaccessible"
     case .retired:
       return "retired"
+    }
+  }
+
+  private func realBackendPermissionState(
+    _ report: HermesBackendCompatibilityReport?
+  ) -> HermesPermissionState {
+    guard let report else { return .unknown }
+    switch report.compatibilityState {
+    case .supported:
+      return .granted
+    case .supportedWithWarnings:
+      return .restricted
+    case .executableUnavailable:
+      return .notDetermined
+    case .unsupportedTooOld, .unsupportedTooNew, .incompatibleProtocol, .versionUnknown:
+      return .misconfigured
+    }
+  }
+
+  private func realBackendRemediation(
+    _ report: HermesBackendCompatibilityReport?
+  ) -> HermesPermissionRemediationCode? {
+    guard let report else { return .validateHermesBackend }
+    switch report.compatibilityState {
+    case .supported:
+      return nil
+    case .supportedWithWarnings, .incompatibleProtocol, .versionUnknown:
+      return .validateHermesBackend
+    case .executableUnavailable:
+      return .installHermes
+    case .unsupportedTooOld, .unsupportedTooNew:
+      return .upgradeHermes
     }
   }
 }

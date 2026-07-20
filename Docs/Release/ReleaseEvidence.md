@@ -14,6 +14,22 @@ Evidence must not contain home-directory paths, usernames, credentials, tokens,
 prompt bodies, or private file paths. Public manifests should use
 `artifacts/m8-001` relative references for artifact-owned files.
 
+M9-001 real Hermes compatibility evidence is persisted under `artifacts/m9-001`:
+
+- `result.txt`
+- `compatibility-report.json`
+- `executable-identity.json`
+- `sanitized-version.txt`
+- `sanitized-capabilities.json`
+- `isolated-environment.json`
+- `cleanup-report.json`
+- `validation-report.md`
+- bounded sanitized logs
+
+The release evidence manifest may include the redacted real-backend
+compatibility report. It must not include absolute home paths, executable
+paths, tokens, Prompt text, credentials, or real profile contents.
+
 M8-002 local release pipeline evidence is generated with:
 
 ```sh

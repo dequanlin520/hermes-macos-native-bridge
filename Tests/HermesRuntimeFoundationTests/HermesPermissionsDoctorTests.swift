@@ -28,6 +28,7 @@ final class HermesPermissionsDoctorTests: XCTestCase {
         "signing",
         "hardenedRuntime",
         "notarization",
+        "realBackendCompatibility",
       ])
   }
 
@@ -76,7 +77,7 @@ final class HermesPermissionsDoctorTests: XCTestCase {
   }
 
   func testFixedRemediationCodesAndSystemSettingsURLs() {
-    XCTAssertEqual(HermesPermissionRemediationCode.allCases.count, 18)
+    XCTAssertEqual(HermesPermissionRemediationCode.allCases.count, 21)
     XCTAssertEqual(
       HermesSystemSettingsRemediationURL.url(for: .openAccessibilitySettings)?.absoluteString,
       "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
@@ -172,6 +173,31 @@ final class HermesPermissionsDoctorTests: XCTestCase {
     XCTAssertEqual(report.check(.auditTrustAnchor).state, .granted)
     XCTAssertEqual(report.check(.auditUnknownSigner).state, .misconfigured)
     XCTAssertFalse(String(describing: report).contains("/Users/"))
+  }
+
+  func testRealBackendCompatibilityPermissionCheck() {
+    let supported = HermesBackendCompatibilityReport(
+      executableAvailable: true,
+      version: "0.18.2",
+      compatibilityState: .supported,
+      capabilities: [HermesBackendCapability("version_output")],
+      checksumPrefix: "abcdef123456",
+      codeSigningClassification: "ad_hoc_or_locally_signed",
+      remediationCode: "NONE"
+    )
+    let unavailable = HermesBackendCompatibilityReport.unavailable()
+
+    let supportedCheck = doctor().report(
+      evidence: HermesPermissionsDoctorEvidence(realBackendCompatibility: supported)
+    ).check(.realBackendCompatibility)
+    XCTAssertEqual(supportedCheck.state, .granted)
+    XCTAssertNil(supportedCheck.remediationCode)
+
+    let unavailableCheck = doctor().report(
+      evidence: HermesPermissionsDoctorEvidence(realBackendCompatibility: unavailable)
+    ).check(.realBackendCompatibility)
+    XCTAssertEqual(unavailableCheck.state, .notDetermined)
+    XCTAssertEqual(unavailableCheck.remediationCode, .installHermes)
   }
 
   private func doctor(
