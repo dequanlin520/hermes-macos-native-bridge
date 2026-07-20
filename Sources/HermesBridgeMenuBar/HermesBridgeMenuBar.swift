@@ -68,6 +68,8 @@ public struct HermesBridgeMenuBarState: Codable, Equatable, Sendable {
   public var capabilities: [String]
   public var enabledBindingCount: Int
   public var recentRequests: [HermesBridgeMenuBarRequestSummary]
+  public var permissionChecks: [HermesMenuBarPermissionCheckViewState]
+  public var recentAuditEvents: [HermesMenuBarAuditEventViewState]
   public var lastActionMessage: String?
 
   public init(
@@ -80,6 +82,8 @@ public struct HermesBridgeMenuBarState: Codable, Equatable, Sendable {
     capabilities: [String] = [],
     enabledBindingCount: Int = 0,
     recentRequests: [HermesBridgeMenuBarRequestSummary] = [],
+    permissionChecks: [HermesMenuBarPermissionCheckViewState] = [],
+    recentAuditEvents: [HermesMenuBarAuditEventViewState] = [],
     lastActionMessage: String? = nil
   ) {
     self.serviceStatus = serviceStatus
@@ -92,7 +96,49 @@ public struct HermesBridgeMenuBarState: Codable, Equatable, Sendable {
     self.enabledBindingCount = min(
       max(0, enabledBindingCount), HermesBridgeBindingSummary.maximumCount)
     self.recentRequests = Array(recentRequests.prefix(8))
+    self.permissionChecks = Array(permissionChecks.prefix(HermesPermissionKind.allCases.count))
+    self.recentAuditEvents = Array(recentAuditEvents.prefix(20))
     self.lastActionMessage = lastActionMessage.map { String($0.prefix(120)) }
+  }
+}
+
+public struct HermesMenuBarPermissionCheckViewState: Codable, Equatable, Sendable,
+  Identifiable
+{
+  public let id: String
+  public let kind: String
+  public let state: String
+  public let detailCode: String
+  public let remediationCode: String?
+
+  public init(check: HermesPermissionCheck) {
+    self.id = check.kind.rawValue
+    self.kind = check.kind.rawValue
+    self.state = check.state.rawValue
+    self.detailCode = check.detailCode
+    self.remediationCode = check.remediationCode?.rawValue
+  }
+}
+
+public struct HermesMenuBarAuditEventViewState: Codable, Equatable, Sendable,
+  Identifiable
+{
+  public let id: String
+  public let timestamp: Date
+  public let kind: String
+  public let actor: String
+  public let outcome: String
+  public let reasonCode: String
+  public let correlationID: String?
+
+  public init(event: HermesAuditEvent) {
+    self.id = event.eventID.rawValue
+    self.timestamp = event.timestamp
+    self.kind = event.kind.rawValue
+    self.actor = event.actor.rawValue
+    self.outcome = event.outcome.rawValue
+    self.reasonCode = event.reasonCode
+    self.correlationID = event.correlationID
   }
 }
 
@@ -494,6 +540,17 @@ public protocol HermesBridgeMenuBarDoctorRunning: Sendable {
   func runDoctor() async -> HermesBridgeMenuBarActionResult
 }
 
+public protocol HermesBridgeMenuBarPermissionViewing: Sendable {
+  func viewPermissions() async -> [HermesMenuBarPermissionCheckViewState]
+  func openSettings(remediationCode: HermesPermissionRemediationCode) async
+    -> HermesBridgeMenuBarActionResult
+}
+
+public protocol HermesBridgeMenuBarAuditViewing: Sendable {
+  func recentAuditEvents() async throws -> [HermesMenuBarAuditEventViewState]
+  func exportAudit(to outputDirectory: URL) async -> HermesBridgeMenuBarActionResult
+}
+
 public protocol HermesAuthorizedRootAppClient: Sendable {
   func listRoots() async throws -> HermesBridgeAuthorizedRootListPayload
   func registerBookmark(displayName: String, bookmarkData: Data) async throws
@@ -865,17 +922,23 @@ public struct HermesBridgeMenuBarEnvironment: Sendable {
   public let xpcClient: any HermesBridgeMenuBarXPCClient
   public let requestLister: any HermesBridgeMenuBarRequestListing
   public let doctor: any HermesBridgeMenuBarDoctorRunning
+  public let permissions: any HermesBridgeMenuBarPermissionViewing
+  public let audit: any HermesBridgeMenuBarAuditViewing
 
   public init(
     serviceManager: any HermesBridgeMenuBarServiceManaging,
     xpcClient: any HermesBridgeMenuBarXPCClient,
     requestLister: any HermesBridgeMenuBarRequestListing,
-    doctor: any HermesBridgeMenuBarDoctorRunning
+    doctor: any HermesBridgeMenuBarDoctorRunning,
+    permissions: any HermesBridgeMenuBarPermissionViewing = NoopMenuBarPermissionViewer(),
+    audit: any HermesBridgeMenuBarAuditViewing = NoopMenuBarAuditViewer()
   ) {
     self.serviceManager = serviceManager
     self.xpcClient = xpcClient
     self.requestLister = requestLister
     self.doctor = doctor
+    self.permissions = permissions
+    self.audit = audit
   }
 
   public static func production() -> HermesBridgeMenuBarEnvironment {
@@ -884,7 +947,9 @@ public struct HermesBridgeMenuBarEnvironment: Sendable {
       serviceManager: ProductionMenuBarServiceManager(layout: layout),
       xpcClient: ProductionMenuBarXPCClient(layout: layout),
       requestLister: ProductionMenuBarRequestLister(layout: layout),
-      doctor: ProductionMenuBarDoctor(layout: layout)
+      doctor: ProductionMenuBarDoctor(layout: layout),
+      permissions: ProductionMenuBarPermissionViewer(layout: layout),
+      audit: ProductionMenuBarAuditViewer(layout: layout)
     )
   }
 }
@@ -930,6 +995,37 @@ public actor HermesBridgeMenuBarViewModel {
 
   public func runDoctor() async -> HermesBridgeMenuBarActionResult {
     let result = await environment.doctor.runDoctor()
+    state.lastActionMessage = result.safeMessage
+    return result
+  }
+
+  public func viewPermissions() async -> [HermesMenuBarPermissionCheckViewState] {
+    let checks = await environment.permissions.viewPermissions()
+    state.permissionChecks = checks
+    return checks
+  }
+
+  public func openSettings(
+    remediationCode: HermesPermissionRemediationCode
+  ) async -> HermesBridgeMenuBarActionResult {
+    let result = await environment.permissions.openSettings(remediationCode: remediationCode)
+    state.lastActionMessage = result.safeMessage
+    return result
+  }
+
+  public func latestAuditEvents() async -> [HermesMenuBarAuditEventViewState] {
+    do {
+      let events = try await environment.audit.recentAuditEvents()
+      state.recentAuditEvents = events
+      return events
+    } catch {
+      state.lastActionMessage = "audit unavailable"
+      return []
+    }
+  }
+
+  public func exportAudit(to outputDirectory: URL) async -> HermesBridgeMenuBarActionResult {
+    let result = await environment.audit.exportAudit(to: outputDirectory)
     state.lastActionMessage = result.safeMessage
     return result
   }
@@ -1145,5 +1241,104 @@ public struct ProductionMenuBarDoctor: HermesBridgeMenuBarDoctorRunning {
       succeeded: report.overallStatus != .fail,
       safeMessage: "doctor \(report.overallStatus.rawValue)"
     )
+  }
+}
+
+public struct NoopMenuBarPermissionViewer: HermesBridgeMenuBarPermissionViewing {
+  public init() {}
+
+  public func viewPermissions() async -> [HermesMenuBarPermissionCheckViewState] {
+    []
+  }
+
+  public func openSettings(remediationCode _: HermesPermissionRemediationCode) async
+    -> HermesBridgeMenuBarActionResult
+  {
+    HermesBridgeMenuBarActionResult(succeeded: false, safeMessage: "settings unavailable")
+  }
+}
+
+public struct ProductionMenuBarPermissionViewer: HermesBridgeMenuBarPermissionViewing {
+  private let layout: HermesBridgeInstallationLayout
+  private let doctor = ProductionDoctorChecker()
+
+  public init(layout: HermesBridgeInstallationLayout) {
+    self.layout = layout
+  }
+
+  public func viewPermissions() async -> [HermesMenuBarPermissionCheckViewState] {
+    let report = await doctor.report(layout: layout, timeout: 5)
+    return report.permissions.checks.map(HermesMenuBarPermissionCheckViewState.init(check:))
+  }
+
+  @MainActor
+  public func openSettings(remediationCode: HermesPermissionRemediationCode) async
+    -> HermesBridgeMenuBarActionResult
+  {
+    guard let url = HermesSystemSettingsRemediationURL.url(for: remediationCode) else {
+      return HermesBridgeMenuBarActionResult(
+        succeeded: false,
+        safeMessage: "settings pane unavailable"
+      )
+    }
+    let opened = NSWorkspace.shared.open(url)
+    return HermesBridgeMenuBarActionResult(
+      succeeded: opened,
+      safeMessage: opened ? "settings opened" : "settings unavailable"
+    )
+  }
+}
+
+public struct NoopMenuBarAuditViewer: HermesBridgeMenuBarAuditViewing {
+  public init() {}
+
+  public func recentAuditEvents() async throws -> [HermesMenuBarAuditEventViewState] {
+    []
+  }
+
+  public func exportAudit(to _: URL) async -> HermesBridgeMenuBarActionResult {
+    HermesBridgeMenuBarActionResult(succeeded: false, safeMessage: "audit export unavailable")
+  }
+}
+
+public struct ProductionMenuBarAuditViewer: HermesBridgeMenuBarAuditViewing {
+  private let layout: HermesBridgeInstallationLayout
+
+  public init(layout: HermesBridgeInstallationLayout) {
+    self.layout = layout
+  }
+
+  public func recentAuditEvents() async throws -> [HermesMenuBarAuditEventViewState] {
+    let store = try auditStore()
+    let events = try await store.query(try HermesAuditQuery(limit: 20))
+    return events.map(HermesMenuBarAuditEventViewState.init(event:))
+  }
+
+  public func exportAudit(to outputDirectory: URL) async -> HermesBridgeMenuBarActionResult {
+    do {
+      let store = try auditStore()
+      let manifest = try await HermesAuditExporter(store: store).export(
+        HermesAuditExportRequest(
+          query: try HermesAuditQuery(limit: 500),
+          outputDirectory: outputDirectory,
+          format: .jsonl
+        ))
+      return HermesBridgeMenuBarActionResult(
+        succeeded: true,
+        safeMessage: "audit exported \(manifest.eventCount)"
+      )
+    } catch {
+      return HermesBridgeMenuBarActionResult(
+        succeeded: false,
+        safeMessage: "audit export failed"
+      )
+    }
+  }
+
+  private func auditStore() throws -> FileBackedHermesAuditStore {
+    try FileBackedHermesAuditStore(
+      configuration: HermesAuditStoreConfiguration(
+        root: layout.logsRoot.appendingPathComponent("Audit", isDirectory: true)
+      ))
   }
 }

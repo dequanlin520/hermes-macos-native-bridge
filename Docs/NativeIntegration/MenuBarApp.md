@@ -44,12 +44,27 @@ It offers only:
 - Start Service;
 - Restart Service;
 - Run Doctor;
+- View Permissions;
+- Run Permissions Doctor;
+- Open exact System Settings panes after an explicit click;
+- Latest Audit Events;
+- Export Audit Log;
 - Authorized Folders;
 - Open Shortcuts;
 - Quit.
 
 All displayed request values are bounded and redacted. Prompts, backend tokens,
 raw result bodies, process identifiers, and private paths are not displayed.
+
+Permission views render only permission kind, state, detail code and fixed
+remediation code. Opening System Settings uses the fixed URLs documented in
+`Docs/Security/PermissionsDoctor.md` and happens only after a user click.
+
+Audit views render only recent safe structured events: event ID, timestamp,
+kind, actor, outcome, reason code and safe correlation ID. The app does not
+provide a raw log viewer, arbitrary filesystem browser or generic file-read
+operation. Audit export requires explicit user folder selection and writes a
+redacted archive with manifest and checksum.
 
 ## Lifecycle
 
@@ -136,3 +151,7 @@ paths, process arguments, endpoints, JSON-RPC methods, environment variables,
 backend tokens, Prompts, result bodies, result locators, arbitrary filesystem
 paths, arbitrary AppleScript/JXA/shell execution, GUI control, browser
 automation, or remote-control APIs.
+
+Audit and permissions UI follows the same boundary: no Prompt, token, bookmark
+bytes, file contents, absolute authorized-root paths, raw stdout/stderr,
+arbitrary environment or raw exception text are displayed.

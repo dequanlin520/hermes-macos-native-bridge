@@ -149,6 +149,7 @@ extension HermesBridgeRequestHandling {
 
 public actor HermesBridgeXPCRequestDispatcher {
   private let handler: HermesBridgeRequestHandling
+  private let auditStore: any HermesAuditStore
   private let maximumConcurrentRequests: Int
   private let decoder: JSONDecoder
   private let encoder: JSONEncoder
@@ -156,9 +157,11 @@ public actor HermesBridgeXPCRequestDispatcher {
 
   public init(
     handler: HermesBridgeRequestHandling,
+    auditStore: any HermesAuditStore = NoopHermesAuditStore(),
     maximumConcurrentRequests: Int = 8
   ) {
     self.handler = handler
+    self.auditStore = auditStore
     self.maximumConcurrentRequests = max(1, maximumConcurrentRequests)
     self.decoder = JSONDecoder()
     self.encoder = JSONEncoder()
@@ -194,13 +197,16 @@ public actor HermesBridgeXPCRequestDispatcher {
     do {
       let envelope = try decoder.decode(HermesBridgeRequestEnvelope.self, from: requestData)
       try validateEnvelope(envelope)
+      try await auditOperationStarted(envelope)
       let payload = try await dispatch(envelope)
+      try await auditOperationCompleted(envelope, payload: payload)
       return encodeResponse(
         HermesBridgeResponseEnvelope(
           correlationID: envelope.correlationID,
           result: .success(payload)
         ))
     } catch let error as HermesBridgeXPCError {
+      try? await auditOperationFailed(preflight: preflight, error: error)
       return encodeFailure(error, correlationID: preflight.correlationID)
     } catch is DecodingError {
       return encodeFailure(.malformedPayload, correlationID: preflight.correlationID)
@@ -665,6 +671,226 @@ public actor HermesBridgeXPCRequestDispatcher {
       return "File-event rescan is required."
     }
   }
+
+  private func auditOperationStarted(_ envelope: HermesBridgeRequestEnvelope) async throws {
+    switch envelope.operation {
+    case .submit:
+      try await appendAudit(
+        .requestAccepted,
+        envelope: envelope,
+        outcome: .accepted,
+        reasonCode: "accepted"
+      )
+    case .approvalResponse:
+      try await appendAudit(
+        .approvalResponded,
+        envelope: envelope,
+        outcome: .started,
+        reasonCode: envelope.approvalResponse?.decision.rawValue ?? "responded"
+      )
+    default:
+      return
+    }
+  }
+
+  private func auditOperationCompleted(
+    _ envelope: HermesBridgeRequestEnvelope,
+    payload: HermesBridgeSuccessPayload
+  ) async throws {
+    switch payload {
+    case .submit(let result):
+      try await appendAudit(
+        .requestStarted,
+        envelope: envelope,
+        outcome: .started,
+        reasonCode: "submitted",
+        requestID: result.requestID
+      )
+    case .cancel(let result):
+      try await appendAudit(
+        .requestCancelled,
+        envelope: envelope,
+        outcome: .cancelled,
+        reasonCode: "cancelled",
+        requestID: result.requestID
+      )
+    case .status(let result):
+      if result.lifecycleState == HermesRequestLifecycleState.completed.rawValue {
+        try await appendAudit(
+          .requestCompleted,
+          envelope: envelope,
+          outcome: .succeeded,
+          reasonCode: "completed",
+          requestID: result.requestID
+        )
+      } else if result.lifecycleState == HermesRequestLifecycleState.failed.rawValue {
+        try await appendAudit(
+          .requestFailed,
+          envelope: envelope,
+          outcome: .failed,
+          reasonCode: result.failureCode ?? "failed",
+          requestID: result.requestID
+        )
+      } else if result.lifecycleState == HermesRequestLifecycleState.waitingForApproval.rawValue {
+        try await appendAudit(
+          .approvalRequested,
+          envelope: envelope,
+          outcome: .started,
+          reasonCode: "waiting_for_approval",
+          requestID: result.requestID
+        )
+      }
+    case .approvalResponse(let result):
+      try await appendAudit(
+        .approvalResponded,
+        envelope: envelope,
+        outcome: .succeeded,
+        reasonCode: envelope.approvalResponse?.decision.rawValue ?? "responded",
+        requestID: result.requestID
+      )
+    case .registerAuthorizedRoot(let payload):
+      try await appendAudit(
+        .authorizedRootAdded,
+        envelope: envelope,
+        outcome: .succeeded,
+        reasonCode: "root_added",
+        rootID: payload.root.rootID
+      )
+    case .refreshAuthorizedRoot(let payload), .reactivateAuthorizedRoot(let payload):
+      try await appendAudit(
+        .authorizedRootRefreshed,
+        envelope: envelope,
+        outcome: .succeeded,
+        reasonCode: "root_refreshed",
+        rootID: payload.root.rootID
+      )
+    case .deactivateAuthorizedRoot(let payload):
+      try await appendAudit(
+        .authorizedRootDeactivated,
+        envelope: envelope,
+        outcome: .succeeded,
+        reasonCode: "root_deactivated",
+        rootID: payload.root.rootID
+      )
+      try await appendAudit(
+        .fileRescanRequired,
+        envelope: envelope,
+        outcome: .started,
+        reasonCode: "root_deactivated",
+        rootID: payload.root.rootID
+      )
+    case .removeAuthorizedRoot(let payload):
+      try await appendAudit(
+        .authorizedRootRemoved,
+        envelope: envelope,
+        outcome: .succeeded,
+        reasonCode: "root_removed",
+        rootID: payload.root.rootID
+      )
+      try await appendAudit(
+        .fileRescanRequired,
+        envelope: envelope,
+        outcome: .started,
+        reasonCode: "root_removed",
+        rootID: payload.root.rootID
+      )
+    case .createFileEventSubscription(let payload):
+      try await appendAudit(
+        .fileSubscriptionCreated,
+        envelope: envelope,
+        outcome: .succeeded,
+        reasonCode: "subscription_created",
+        subscriptionID: payload.subscriptionID
+      )
+    case .cancelFileEventSubscription(let payload):
+      try await appendAudit(
+        .fileSubscriptionCancelled,
+        envelope: envelope,
+        outcome: .cancelled,
+        reasonCode: "subscription_cancelled",
+        subscriptionID: payload.subscriptionID
+      )
+    case .pollFileEventSubscription(let payload):
+      if payload.rescanRequired {
+        try await appendAudit(
+          .fileRescanRequired,
+          envelope: envelope,
+          outcome: .started,
+          reasonCode: payload.droppedEventReason ?? "rescan_required",
+          rootID: payload.rootID,
+          subscriptionID: payload.subscriptionID
+        )
+      }
+    case .protocolVersion, .capabilities, .listEnabledBindings, .listAuthorizedRoots,
+      .authorizedRootStatus, .resolveAuthorizedRoot, .acknowledgeFileEventBatch,
+      .fileEventMonitorStatus:
+      return
+    }
+  }
+
+  private func auditOperationFailed(
+    preflight: HermesBridgeRequestPreflight,
+    error: HermesBridgeXPCError
+  ) async throws {
+    guard let operation = HermesBridgeOperation(rawValue: preflight.operation) else {
+      return
+    }
+    let kind: HermesAuditEventKind
+    switch operation {
+    case .submit, .status:
+      kind = .requestFailed
+    case .cancel:
+      kind = .requestCancelled
+    case .approvalResponse:
+      kind = .approvalResponded
+    case .registerAuthorizedRoot, .refreshAuthorizedRoot, .deactivateAuthorizedRoot,
+      .reactivateAuthorizedRoot, .removeAuthorizedRoot:
+      kind = .authorizedRootRefreshed
+    case .createFileEventSubscription:
+      kind = .fileSubscriptionCreated
+    case .cancelFileEventSubscription:
+      kind = .fileSubscriptionCancelled
+    case .pollFileEventSubscription, .acknowledgeFileEventBatch, .fileEventMonitorStatus,
+      .protocolVersion, .capabilities, .listEnabledBindings, .listAuthorizedRoots,
+      .authorizedRootStatus, .resolveAuthorizedRoot:
+      return
+    }
+    try await auditStore.append(
+      HermesAuditEvent.make(
+        kind: kind,
+        actor: .xpcClient,
+        outcome: .failed,
+        reasonCode: error.rawValue,
+        correlationID: preflight.correlationID.rawValue
+      ))
+  }
+
+  private func appendAudit(
+    _ kind: HermesAuditEventKind,
+    envelope: HermesBridgeRequestEnvelope,
+    outcome: HermesAuditOutcome,
+    reasonCode: String,
+    requestID: String? = nil,
+    rootID: String? = nil,
+    subscriptionID: String? = nil
+  ) async throws {
+    try await auditStore.append(
+      HermesAuditEvent.make(
+        kind: kind,
+        actor: .xpcClient,
+        outcome: outcome,
+        reasonCode: reasonCode,
+        correlationID: envelope.correlationID.rawValue,
+        requestID: requestID ?? envelope.status?.requestID ?? envelope.cancel?.requestID
+          ?? envelope.approvalResponse?.requestID,
+        rootID: rootID ?? envelope.deactivateAuthorizedRoot?.rootID
+          ?? envelope.removeAuthorizedRoot?.rootID
+          ?? envelope.refreshAuthorizedRoot?.rootID
+          ?? envelope.reactivateAuthorizedRoot?.rootID,
+        subscriptionID: subscriptionID ?? envelope.pollFileEventSubscription?.subscriptionID
+          ?? envelope.cancelFileEventSubscription?.subscriptionID
+      ))
+  }
 }
 
 extension HermesBridgeRequestEnvelope {
@@ -695,11 +921,13 @@ public final class HermesBridgeXPCService: NSObject, HermesBridgeXPCProtocol, @u
 
   public convenience init(
     handler: HermesBridgeRequestHandling,
+    auditStore: any HermesAuditStore = NoopHermesAuditStore(),
     maximumConcurrentRequests: Int = 8
   ) {
     self.init(
       dispatcher: HermesBridgeXPCRequestDispatcher(
         handler: handler,
+        auditStore: auditStore,
         maximumConcurrentRequests: maximumConcurrentRequests
       ))
   }

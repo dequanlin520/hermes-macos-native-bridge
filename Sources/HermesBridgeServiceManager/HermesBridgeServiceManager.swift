@@ -3,6 +3,7 @@ import Darwin
 import Foundation
 import HermesBridgeService
 import HermesBridgeXPC
+import HermesRuntimeFoundation
 
 public struct HermesBridgeInstallationLayout: Codable, Equatable, Sendable {
   public static let serviceBinaryName = "HermesBridgeService"
@@ -216,6 +217,7 @@ public struct HermesBridgeServiceManager {
   private let architectureValidator: HermesBridgeArchitectureValidating
   private let plistValidator: HermesBridgePlistValidating
   private let healthChecker: HermesBridgeServiceHealthChecking
+  private let auditStore: any HermesAuditStore
   private let now: @Sendable () -> Date
 
   public init(
@@ -225,6 +227,7 @@ public struct HermesBridgeServiceManager {
     architectureValidator: HermesBridgeArchitectureValidating = CurrentHostArchitectureValidator(),
     plistValidator: HermesBridgePlistValidating = PlutilPlistValidator(),
     healthChecker: HermesBridgeServiceHealthChecking = DefaultHermesBridgeServiceHealthChecker(),
+    auditStore: any HermesAuditStore = NoopHermesAuditStore(),
     now: @escaping @Sendable () -> Date = Date.init
   ) {
     self.layout = layout
@@ -233,6 +236,7 @@ public struct HermesBridgeServiceManager {
     self.architectureValidator = architectureValidator
     self.plistValidator = plistValidator
     self.healthChecker = healthChecker
+    self.auditStore = auditStore
     self.now = now
   }
 
@@ -282,6 +286,26 @@ public struct HermesBridgeServiceManager {
       try pruneVersions(
         keep: options.keepVersions, active: state.activeVersion, previous: state.previousVersion)
       state.installedVersions = try loadState()?.installedVersions ?? state.installedVersions
+      let auditStore = auditStore
+      let bootstrapped = options.bootstrap
+      Task { [auditStore, bootstrapped] in
+        try? await auditStore.append(
+          HermesAuditEvent.make(
+            kind: .serviceInstalled,
+            actor: .controlCLI,
+            outcome: .succeeded,
+            reasonCode: bootstrapped ? "installed_bootstrapped" : "installed"
+          ))
+        if bootstrapped {
+          try? await auditStore.append(
+            HermesAuditEvent.make(
+              kind: .serviceStarted,
+              actor: .controlCLI,
+              outcome: .started,
+              reasonCode: "bootstrap_requested"
+            ))
+        }
+      }
       return state
     } catch {
       if let previousActive {
@@ -313,6 +337,16 @@ public struct HermesBridgeServiceManager {
   public func bootstrap() throws {
     try validateInstalledPlistBoundary()
     try launchctl.bootstrap(plist: layout.launchAgentPlist, layout: layout)
+    let auditStore = auditStore
+    Task { [auditStore] in
+      try? await auditStore.append(
+        HermesAuditEvent.make(
+          kind: .serviceStarted,
+          actor: .controlCLI,
+          outcome: .started,
+          reasonCode: "bootstrap_requested"
+        ))
+    }
   }
 
   public func status() async -> HermesBridgeServiceStatus {
@@ -346,13 +380,36 @@ public struct HermesBridgeServiceManager {
   public func stop() throws {
     try validateInstalledPlistBoundary()
     try? launchctl.bootout(plist: layout.launchAgentPlist, layout: layout)
+    let auditStore = auditStore
+    Task { [auditStore] in
+      try? await auditStore.append(
+        HermesAuditEvent.make(
+          kind: .serviceStopped,
+          actor: .controlCLI,
+          outcome: .succeeded,
+          reasonCode: "bootout_requested"
+        ))
+    }
   }
 
   public func restart() async throws -> HermesBridgeHealthCheckResult {
     try stop()
     try bootstrap()
     try launchctl.kickstart(layout: layout)
-    return await healthChecker.check(layout: layout, launchctl: launchctl)
+    let health = await healthChecker.check(layout: layout, launchctl: launchctl)
+    let auditStore = auditStore
+    let outcome: HermesAuditOutcome = health.isHealthy ? .succeeded : .failed
+    let reason = health.failureCode ?? "restart_complete"
+    Task { [auditStore, outcome, reason] in
+      try? await auditStore.append(
+        HermesAuditEvent.make(
+          kind: .serviceRestarted,
+          actor: .controlCLI,
+          outcome: outcome,
+          reasonCode: reason
+        ))
+    }
+    return health
   }
 
   @discardableResult
@@ -362,7 +419,18 @@ public struct HermesBridgeServiceManager {
     let previous = try loadState()
     try stop()
     do {
-      return try await install(serviceBinary: serviceBinary, options: options)
+      let state = try await install(serviceBinary: serviceBinary, options: options)
+      let auditStore = auditStore
+      Task { [auditStore] in
+        try? await auditStore.append(
+          HermesAuditEvent.make(
+            kind: .serviceUpgraded,
+            actor: .controlCLI,
+            outcome: .succeeded,
+            reasonCode: "upgrade_complete"
+          ))
+      }
+      return state
     } catch {
       if let previousActive = previous?.activeVersion {
         try? activate(version: previousActive)
@@ -403,6 +471,16 @@ public struct HermesBridgeServiceManager {
         throw HermesBridgeServiceManagerError.healthCheckFailed(
           health.failureCode ?? "rollback_unhealthy")
       }
+    }
+    let auditStore = auditStore
+    Task { [auditStore] in
+      try? await auditStore.append(
+        HermesAuditEvent.make(
+          kind: .serviceRolledBack,
+          actor: .controlCLI,
+          outcome: .succeeded,
+          reasonCode: "rollback_complete"
+        ))
     }
     return state
   }

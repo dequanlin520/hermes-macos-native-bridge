@@ -69,6 +69,36 @@ final class HermesBridgeMenuBarTests: XCTestCase {
     XCTAssertEqual(doctorCount, 1)
   }
 
+  func testPermissionsAndAuditSafeRendering() async throws {
+    let permissions = FakePermissions()
+    let auditEvent = try HermesAuditEvent.make(
+      kind: .doctorExecuted,
+      actor: .controlCLI,
+      outcome: .succeeded,
+      reasonCode: "complete"
+    )
+    let audit = FakeAudit(events: [HermesMenuBarAuditEventViewState(event: auditEvent)])
+    let viewModel = HermesBridgeMenuBarViewModel(
+      environment: .fake(permissions: permissions, audit: audit))
+    let checks = await viewModel.viewPermissions()
+    let events = await viewModel.latestAuditEvents()
+    XCTAssertEqual(checks.first?.kind, "accessibility")
+    XCTAssertEqual(events.first?.kind, "doctorExecuted")
+    XCTAssertFalse(String(describing: checks).localizedCaseInsensitiveContains("token"))
+    XCTAssertFalse(String(describing: events).localizedCaseInsensitiveContains("prompt"))
+  }
+
+  func testOpenSettingsAndExportAuditAreExplicitActions() async {
+    let permissions = FakePermissions()
+    let audit = FakeAudit(events: [])
+    let viewModel = HermesBridgeMenuBarViewModel(
+      environment: .fake(permissions: permissions, audit: audit))
+    let settings = await viewModel.openSettings(remediationCode: .openAccessibilitySettings)
+    let export = await viewModel.exportAudit(to: URL(fileURLWithPath: "/tmp/hermes-audit"))
+    XCTAssertTrue(settings.succeeded)
+    XCTAssertTrue(export.succeeded)
+  }
+
   func testRefreshCancellation() async {
     let viewModel = HermesBridgeMenuBarViewModel(environment: .fake(serviceStatus: .runningHealthy))
 
@@ -375,13 +405,17 @@ extension HermesBridgeMenuBarEnvironment {
   fileprivate static func fake(
     service: FakeServiceManager = FakeServiceManager(status: .runningHealthy),
     xpc: FakeXPC = FakeXPC(),
-    doctor: FakeDoctor = FakeDoctor()
+    doctor: FakeDoctor = FakeDoctor(),
+    permissions: HermesBridgeMenuBarPermissionViewing = NoopMenuBarPermissionViewer(),
+    audit: HermesBridgeMenuBarAuditViewing = NoopMenuBarAuditViewer()
   ) -> HermesBridgeMenuBarEnvironment {
     HermesBridgeMenuBarEnvironment(
       serviceManager: service,
       xpcClient: xpc,
       requestLister: FakeLister(),
-      doctor: doctor
+      doctor: doctor,
+      permissions: permissions,
+      audit: audit
     )
   }
 }
@@ -461,6 +495,38 @@ private actor FakeDoctor: HermesBridgeMenuBarDoctorRunning {
   func runDoctor() async -> HermesBridgeMenuBarActionResult {
     count += 1
     return HermesBridgeMenuBarActionResult(succeeded: true, safeMessage: "doctor pass")
+  }
+}
+
+private struct FakePermissions: HermesBridgeMenuBarPermissionViewing {
+  func viewPermissions() async -> [HermesMenuBarPermissionCheckViewState] {
+    [
+      HermesMenuBarPermissionCheckViewState(
+        check: HermesPermissionCheck(
+          kind: .accessibility,
+          state: .notDetermined,
+          detailCode: "preflight_only",
+          remediationCode: .openAccessibilitySettings
+        ))
+    ]
+  }
+
+  func openSettings(remediationCode _: HermesPermissionRemediationCode) async
+    -> HermesBridgeMenuBarActionResult
+  {
+    HermesBridgeMenuBarActionResult(succeeded: true, safeMessage: "settings opened")
+  }
+}
+
+private struct FakeAudit: HermesBridgeMenuBarAuditViewing {
+  let events: [HermesMenuBarAuditEventViewState]
+
+  func recentAuditEvents() async throws -> [HermesMenuBarAuditEventViewState] {
+    events
+  }
+
+  func exportAudit(to _: URL) async -> HermesBridgeMenuBarActionResult {
+    HermesBridgeMenuBarActionResult(succeeded: true, safeMessage: "audit exported 1")
   }
 }
 

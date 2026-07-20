@@ -1,6 +1,7 @@
 import AppIntents
 import HermesAppIntents
 import HermesBridgeMenuBar
+import HermesRuntimeFoundation
 import SwiftUI
 
 @main
@@ -49,6 +50,21 @@ struct HermesBridgeApp: App {
         Button("Run Doctor") {
           model.doctor()
         }
+        Button("View Permissions") {
+          model.permissions()
+          openWindow(id: "permissions")
+        }
+        Button("Run Permissions Doctor") {
+          model.permissions()
+          openWindow(id: "permissions")
+        }
+        Button("Latest Audit Events") {
+          model.auditEvents()
+          openWindow(id: "audit-events")
+        }
+        Button("Export Audit Log") {
+          model.exportAudit()
+        }
         Button("Authorized Folders") {
           openWindow(id: "authorized-folders")
         }
@@ -73,6 +89,16 @@ struct HermesBridgeApp: App {
       HermesAuthorizedFoldersWindow()
     }
     .defaultSize(width: 560, height: 520)
+
+    WindowGroup("Permissions", id: "permissions") {
+      HermesPermissionsWindow(model: model)
+    }
+    .defaultSize(width: 560, height: 520)
+
+    WindowGroup("Audit Events", id: "audit-events") {
+      HermesAuditEventsWindow(model: model)
+    }
+    .defaultSize(width: 640, height: 520)
   }
 }
 
@@ -120,9 +146,99 @@ final class HermesBridgeAppModel: ObservableObject {
     }
   }
 
+  func permissions() {
+    Task {
+      _ = await viewModel.viewPermissions()
+      state = await viewModel.state
+    }
+  }
+
+  func openSettings(_ code: HermesPermissionRemediationCode) {
+    Task {
+      _ = await viewModel.openSettings(remediationCode: code)
+      state = await viewModel.state
+    }
+  }
+
+  func auditEvents() {
+    Task {
+      _ = await viewModel.latestAuditEvents()
+      state = await viewModel.state
+    }
+  }
+
+  func exportAudit() {
+    Task { @MainActor in
+      let panel = NSOpenPanel()
+      panel.canChooseDirectories = true
+      panel.canChooseFiles = false
+      panel.allowsMultipleSelection = false
+      panel.canCreateDirectories = true
+      panel.prompt = "Export"
+      panel.title = "Choose Audit Export Folder"
+      let response = await panel.begin()
+      guard response == .OK, let url = panel.urls.first else {
+        return
+      }
+      _ = await viewModel.exportAudit(to: url)
+      state = await viewModel.state
+    }
+  }
+
   func cancel() {
     Task {
       await viewModel.cancelRefresh()
+    }
+  }
+}
+
+struct HermesPermissionsWindow: View {
+  @ObservedObject var model: HermesBridgeAppModel
+
+  var body: some View {
+    List {
+      ForEach(model.state.permissionChecks) { check in
+        HStack {
+          VStack(alignment: .leading) {
+            Text(check.kind)
+              .font(.headline)
+            Text("\(check.state) · \(check.detailCode)")
+              .foregroundStyle(.secondary)
+          }
+          Spacer()
+          if let code = check.remediationCode,
+            let remediation = HermesPermissionRemediationCode(rawValue: code),
+            HermesSystemSettingsRemediationURL.url(for: remediation) != nil
+          {
+            Button("Open Settings") {
+              model.openSettings(remediation)
+            }
+          }
+        }
+      }
+    }
+    .task {
+      model.permissions()
+    }
+  }
+}
+
+struct HermesAuditEventsWindow: View {
+  @ObservedObject var model: HermesBridgeAppModel
+
+  var body: some View {
+    List {
+      ForEach(model.state.recentAuditEvents) { event in
+        VStack(alignment: .leading) {
+          Text("\(event.kind) · \(event.outcome)")
+            .font(.headline)
+          Text("\(event.reasonCode) · \(event.actor)")
+            .foregroundStyle(.secondary)
+        }
+      }
+    }
+    .task {
+      model.auditEvents()
     }
   }
 }

@@ -3,6 +3,10 @@
 `HermesBridgeControl doctor` reports typed, redacted health checks for the
 Bridge installation and runtime boundary. It does not repair anything.
 
+The JSON report also embeds the typed Permissions Doctor report documented in
+`Docs/Security/PermissionsDoctor.md`. `HermesBridgeControl permissions-doctor`
+prints only the permission report.
+
 Each check returns:
 
 - stable check ID;
@@ -60,6 +64,15 @@ Each check returns:
 Doctor output is redacted. It must not include backend authentication material,
 request text, full result content, captured process streams, credential-store
 data, private launch metadata, or arbitrary private paths.
+
+Permissions diagnostics are non-prompting. They use public APIs such as
+`AXIsProcessTrusted`, `CGPreflightScreenCaptureAccess`, code-signing metadata,
+fixed LaunchAgent evidence, typed XPC evidence and authorized-root summaries.
+They do not read private TCC databases and do not automatically request or
+change permissions.
+
+Doctor execution emits a structured `doctorExecuted` audit event containing
+only bounded IDs, outcome, reason code and redacted metadata.
 
 ## Example
 
