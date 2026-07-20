@@ -86,8 +86,8 @@ swift build --configuration release \
   --product HermesBridgeControl > "$log_root/swift-build.log"
 swift build --product HermesBridgeApp >> "$log_root/swift-build.log"
 
-bin_path="$repo_root/.build/out/Products/Release"
-debug_bin_path="$repo_root/.build/out/Products/Debug"
+bin_path="$(swift build --configuration release --show-bin-path | tail -n 1)"
+debug_bin_path="$(swift build --show-bin-path | tail -n 1)"
 for product in HermesBridgeService HermesBridgeControl; do
   [[ -x "$bin_path/$product" && ! -L "$bin_path/$product" ]] || die "missing executable product: $product"
 done
