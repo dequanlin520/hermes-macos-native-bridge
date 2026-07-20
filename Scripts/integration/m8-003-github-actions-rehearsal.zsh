@@ -60,6 +60,10 @@ log() {
   print -- "m8-003: $*"
 }
 
+now_seconds() {
+  date -u +%s
+}
+
 write_result() {
   {
     print "GH_AUTHENTICATED=$gh_authenticated"
@@ -180,6 +184,20 @@ find_new_run_id() {
   ' "$before_file" "$after_file"
 }
 
+capture_existing_run() {
+  local run_id="$1"
+  local output_json="$2"
+  local url_var="$3"
+
+  gh run view "$run_id" \
+    --repo "$expected_repo" \
+    --json databaseId,url,status,conclusion,workflowName,headBranch,headSha,event,createdAt,updatedAt \
+    > "$output_json" || return 1
+  local url
+  url="$(json_value "$output_json" url)"
+  typeset -g "$url_var=$url"
+}
+
 trigger_workflow() {
   local workflow_file="$1"
   local run_id_var="$2"
@@ -191,8 +209,8 @@ trigger_workflow() {
   run_ids "$workflow_file" > "$before_file" || return 1
   gh workflow run "$workflow_file" --repo "$expected_repo" --ref "$branch" || return 1
 
-  local deadline=$(( EPOCHSECONDS + 180 ))
-  while (( EPOCHSECONDS < deadline )); do
+  local deadline=$(( $(now_seconds) + 180 ))
+  while (( $(now_seconds) < deadline )); do
     sleep 5
     run_ids "$workflow_file" > "$after_file" || continue
     run_id="$(find_new_run_id "$before_file" "$after_file" 2>/dev/null || true)"
@@ -218,11 +236,11 @@ wait_for_run() {
   local completed_var="$3"
   local success_var="$4"
   local failure_log="$5"
-  local deadline=$(( EPOCHSECONDS + timeout_seconds ))
+  local deadline=$(( $(now_seconds) + timeout_seconds ))
   local status=""
   local conclusion=""
 
-  while (( EPOCHSECONDS < deadline )); do
+  while (( $(now_seconds) < deadline )); do
     gh run view "$run_id" \
       --repo "$expected_repo" \
       --json databaseId,url,status,conclusion,workflowName,headBranch,headSha,event,createdAt,updatedAt,jobs \
@@ -419,13 +437,21 @@ main() {
   discover_workflows || { write_result; return 1; }
   capture_release_list "$release_before_file" || { write_result; return 1; }
 
-  log "triggering CI workflow_dispatch on $branch"
-  if trigger_workflow "$ci_workflow_file" ci_run_id ci_run_url; then
+  if [[ -n "${M8_003_CI_RUN_ID:-}" ]]; then
+    ci_run_id="$M8_003_CI_RUN_ID"
     ci_workflow_triggered="yes"
+    capture_existing_run "$ci_run_id" "$ci_run_json" ci_run_url || { write_result; return 1; }
     print -- "$ci_run_url" > "$ci_run_url_file"
+    log "resuming CI workflow_dispatch run $ci_run_id"
   else
-    write_result
-    return 1
+    log "triggering CI workflow_dispatch on $branch"
+    if trigger_workflow "$ci_workflow_file" ci_run_id ci_run_url; then
+      ci_workflow_triggered="yes"
+      print -- "$ci_run_url" > "$ci_run_url_file"
+    else
+      write_result
+      return 1
+    fi
   fi
 
   if ! wait_for_run "$ci_run_id" "$ci_run_json" ci_run_completed ci_run_success "$artifact_root/sanitized-ci-failure-log.txt"; then
@@ -439,13 +465,21 @@ main() {
     return 1
   fi
 
-  log "triggering unsigned/ad-hoc RC workflow_dispatch on $branch"
-  if trigger_workflow "$rc_workflow_file" rc_run_id rc_run_url; then
+  if [[ -n "${M8_003_RC_RUN_ID:-}" ]]; then
+    rc_run_id="$M8_003_RC_RUN_ID"
     rc_workflow_triggered="yes"
+    capture_existing_run "$rc_run_id" "$rc_run_json" rc_run_url || { write_result; return 1; }
     print -- "$rc_run_url" > "$rc_run_url_file"
+    log "resuming RC workflow_dispatch run $rc_run_id"
   else
-    write_result
-    return 1
+    log "triggering unsigned/ad-hoc RC workflow_dispatch on $branch"
+    if trigger_workflow "$rc_workflow_file" rc_run_id rc_run_url; then
+      rc_workflow_triggered="yes"
+      print -- "$rc_run_url" > "$rc_run_url_file"
+    else
+      write_result
+      return 1
+    fi
   fi
 
   if ! wait_for_run "$rc_run_id" "$rc_run_json" rc_run_completed rc_run_success "$artifact_root/sanitized-rc-failure-log.txt"; then
