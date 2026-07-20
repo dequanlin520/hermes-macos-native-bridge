@@ -10,6 +10,7 @@ public enum HermesBridgeCompositionRootError: Error, Equatable, Sendable {
   case bindingRegistryFailed(String)
   case authorizedRootRegistryFailed(String)
   case eventPolicyStoreFailed(String)
+  case eventPolicyApprovalStoreFailed(String)
 }
 
 public final class HermesBridgeCompositionRoot: @unchecked Sendable {
@@ -24,6 +25,8 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
   public let fileIntegration: HermesBridgeFileIntegrationCoordinator
   public let systemEventIntegration: HermesBridgeSystemEventCoordinator
   public let eventPolicyStore: FileBackedHermesEventPolicyStore
+  public let eventPolicyApprovalStore: FileBackedHermesEventPolicyApprovalStore
+  public let eventPolicyApprovalCoordinator: HermesEventPolicyApprovalCoordinator
   public let eventPolicyEngine: HermesEventPolicyEngine
   public let orchestrator: HermesRequestOrchestrator
   public let auditStore: any HermesAuditStore
@@ -83,6 +86,13 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
     } catch {
       throw HermesBridgeCompositionRootError.eventPolicyStoreFailed(Self.safeCode(for: error))
     }
+    do {
+      self.eventPolicyApprovalStore = try FileBackedHermesEventPolicyApprovalStore(
+        root: resolvedPaths.eventPolicyApprovalsRoot)
+    } catch {
+      throw HermesBridgeCompositionRootError.eventPolicyApprovalStoreFailed(
+        Self.safeCode(for: error))
+    }
     let monitor = HermesFSEventsMonitor(registry: authorizedRootRegistry) {
       [fileIntegration] batch in
       await fileIntegration.ingest(batch: batch)
@@ -121,12 +131,21 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
         configuration: HermesAuditStoreConfiguration(
           root: resolvedPaths.logsRoot.appendingPathComponent("Audit", isDirectory: true)
         ))) ?? NoopHermesAuditStore()
+    self.eventPolicyApprovalCoordinator = HermesEventPolicyApprovalCoordinator(
+      store: eventPolicyApprovalStore,
+      policyStore: eventPolicyStore,
+      bindingDiscovery: bindingRegistry,
+      submitter: HermesBridgeEventPolicyRequestSubmitter(orchestrator: orchestrator),
+      serviceManager: HermesBridgeEventPolicyServiceAdapter(),
+      auditStore: auditStore
+    )
     self.eventPolicyEngine = HermesEventPolicyEngine(
       store: eventPolicyStore,
       bindingDiscovery: bindingRegistry,
       submitter: HermesBridgeEventPolicyRequestSubmitter(orchestrator: orchestrator),
       serviceManager: HermesBridgeEventPolicyServiceAdapter(),
-      auditStore: auditStore
+      auditStore: auditStore,
+      approvalCoordinator: eventPolicyApprovalCoordinator
     )
     self.requestHandler = HermesBridgeServiceRequestHandler(
       orchestrator: orchestrator,
@@ -441,6 +460,47 @@ public struct HermesBridgeServiceRequestHandler: HermesBridgeRequestHandling {
 
   public func resumeEventPolicies() async throws -> HermesBridgeEventPolicyEngineStatusPayload {
     HermesBridgeEventPolicyEngineStatusPayload(status: try await eventPolicyEngine.resume())
+  }
+
+  public func listEventPolicyApprovals() async throws -> HermesBridgeEventPolicyApprovalListPayload
+  {
+    try HermesBridgeEventPolicyApprovalListPayload(
+      approvals: try await eventPolicyEngine.listApprovals())
+  }
+
+  public func eventPolicyApprovalStatus(id: HermesEventPolicyApprovalID) async throws
+    -> HermesBridgeEventPolicyApprovalPayload
+  {
+    HermesBridgeEventPolicyApprovalPayload(
+      approval: try await eventPolicyEngine.approvalStatus(id: id))
+  }
+
+  public func approveEventPolicyExecution(id: HermesEventPolicyApprovalID) async throws
+    -> HermesBridgeEventPolicyApprovalPayload
+  {
+    HermesBridgeEventPolicyApprovalPayload(
+      approval: try await eventPolicyEngine.approveApproval(id: id))
+  }
+
+  public func denyEventPolicyExecution(id: HermesEventPolicyApprovalID) async throws
+    -> HermesBridgeEventPolicyApprovalPayload
+  {
+    HermesBridgeEventPolicyApprovalPayload(
+      approval: try await eventPolicyEngine.denyApproval(id: id))
+  }
+
+  public func cancelEventPolicyApproval(id: HermesEventPolicyApprovalID) async throws
+    -> HermesBridgeEventPolicyApprovalPayload
+  {
+    HermesBridgeEventPolicyApprovalPayload(
+      approval: try await eventPolicyEngine.cancelApproval(id: id))
+  }
+
+  public func eventPolicyApprovalQueueStatus() async throws
+    -> HermesBridgeEventPolicyApprovalQueueStatusPayload
+  {
+    HermesBridgeEventPolicyApprovalQueueStatusPayload(
+      status: try await eventPolicyEngine.approvalQueueStatus())
   }
 
   public func submit(bindingID: HermesRequestBindingID, prompt: String) async throws

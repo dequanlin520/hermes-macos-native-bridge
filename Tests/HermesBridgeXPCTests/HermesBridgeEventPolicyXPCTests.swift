@@ -13,8 +13,9 @@ final class HermesBridgeEventPolicyXPCTests: XCTestCase {
       timeout: 1
     )
     let capabilities = try await client.capabilities()
-    XCTAssertEqual(capabilities.protocolVersion, HermesBridgeProtocolVersion(major: 1, minor: 5))
+    XCTAssertEqual(capabilities.protocolVersion, HermesBridgeProtocolVersion(major: 1, minor: 6))
     XCTAssertTrue(capabilities.capabilities.contains(.systemEventPolicyManagement))
+    XCTAssertTrue(capabilities.capabilities.contains(.eventPolicyApprovalManagement))
 
     let policy = try makePolicy("hepol_xpc")
     let created = try await client.createEventPolicy(policy).policy
@@ -28,11 +29,21 @@ final class HermesBridgeEventPolicyXPCTests: XCTestCase {
     let resumed = try await client.resumeEventPolicies().status.paused
     XCTAssertTrue(paused)
     XCTAssertFalse(resumed)
+    let approvalID = try HermesEventPolicyApprovalID.generate()
+    let approval = try await handler.insertApproval(id: approvalID, policy: created)
+    XCTAssertEqual(approval.snapshot.approvalID, approvalID)
+    let approvals = try await client.listEventPolicyApprovals()
+    XCTAssertEqual(approvals.approvals.map(\.approvalID), [approvalID.rawValue])
+    let status = try await client.eventPolicyApprovalStatus(id: approvalID)
+    XCTAssertEqual(status.approval.state, .pending)
+    let denied = try await client.denyEventPolicyExecution(id: approvalID)
+    XCTAssertEqual(denied.approval.state, .denied)
     _ = try await client.disableEventPolicy(id: policy.id, expectedRevision: created.revision)
 
     let fixture = AnonymousFixture(handler: handler)
     let anonymous = HermesBridgeXPCClient(transport: fixture.makeTransport(), timeout: 1)
     _ = try await anonymous.eventPolicyEngineStatus()
+    _ = try await anonymous.eventPolicyApprovalQueueStatus()
     await anonymous.close()
     fixture.close()
   }
@@ -51,6 +62,7 @@ final class HermesBridgeEventPolicyXPCTests: XCTestCase {
 
 private actor PolicyHandler: HermesBridgeRequestHandling {
   private var policies: [HermesEventPolicyID: HermesEventPolicy] = [:]
+  private var approvals: [HermesEventPolicyApprovalID: HermesEventPolicyApprovalRequest] = [:]
   private var paused = false
 
   nonisolated func submit(bindingID _: HermesRequestBindingID, prompt _: String) async throws
@@ -157,9 +169,85 @@ private actor PolicyHandler: HermesBridgeRequestHandling {
     return try await eventPolicyEngineStatus()
   }
 
+  func listEventPolicyApprovals() async throws -> HermesBridgeEventPolicyApprovalListPayload {
+    try HermesBridgeEventPolicyApprovalListPayload(
+      approvals: approvals.values.sorted {
+        $0.snapshot.approvalID.rawValue < $1.snapshot.approvalID.rawValue
+      })
+  }
+
+  func eventPolicyApprovalStatus(id: HermesEventPolicyApprovalID) async throws
+    -> HermesBridgeEventPolicyApprovalPayload
+  {
+    guard let approval = approvals[id] else { throw HermesBridgeXPCError.requestNotFound }
+    return HermesBridgeEventPolicyApprovalPayload(approval: approval)
+  }
+
+  func approveEventPolicyExecution(id: HermesEventPolicyApprovalID) async throws
+    -> HermesBridgeEventPolicyApprovalPayload
+  {
+    try transitionApproval(id: id, state: .executed, result: .executed, reasonCode: "executed")
+  }
+
+  func denyEventPolicyExecution(id: HermesEventPolicyApprovalID) async throws
+    -> HermesBridgeEventPolicyApprovalPayload
+  {
+    try transitionApproval(id: id, state: .denied, result: .denied, reasonCode: "denied")
+  }
+
+  func cancelEventPolicyApproval(id: HermesEventPolicyApprovalID) async throws
+    -> HermesBridgeEventPolicyApprovalPayload
+  {
+    try transitionApproval(id: id, state: .cancelled, result: .cancelled, reasonCode: "cancelled")
+  }
+
+  func eventPolicyApprovalQueueStatus() async throws
+    -> HermesBridgeEventPolicyApprovalQueueStatusPayload
+  {
+    HermesBridgeEventPolicyApprovalQueueStatusPayload(
+      status: HermesEventPolicyApprovalQueueStatus(requests: Array(approvals.values)))
+  }
+
+  func insertApproval(
+    id: HermesEventPolicyApprovalID,
+    policy: HermesEventPolicy
+  ) throws -> HermesEventPolicyApprovalRequest {
+    let eventID = try HermesSystemEventID.generate()
+    let snapshot = try HermesEventPolicyApprovalSnapshot(
+      approvalID: id,
+      policyID: policy.id,
+      policyRevision: policy.revision,
+      eventID: eventID,
+      eventKind: .networkAvailable,
+      action: policy.actions[0],
+      safeRenderedSummary: "Policy \(policy.id.rawValue) networkAvailable",
+      createdAt: Date(),
+      expiresAt: Date().addingTimeInterval(60),
+      approvalRequirement: .requireUserApproval,
+      correlationID: "xpc"
+    )
+    let approval = try HermesEventPolicyApprovalRequest(snapshot: snapshot)
+    approvals[id] = approval
+    return approval
+  }
+
   private func existing(_ id: HermesEventPolicyID) throws -> HermesEventPolicy {
     guard let policy = policies[id] else { throw HermesBridgeXPCError.requestNotFound }
     return policy
+  }
+
+  private func transitionApproval(
+    id: HermesEventPolicyApprovalID,
+    state: HermesEventPolicyApprovalState,
+    result: HermesEventPolicyApprovalExecutionResult,
+    reasonCode: String
+  ) throws -> HermesBridgeEventPolicyApprovalPayload {
+    guard var approval = approvals[id] else { throw HermesBridgeXPCError.requestNotFound }
+    approval.state = state
+    approval.result = result
+    approval.reasonCode = reasonCode
+    approvals[id] = approval
+    return HermesBridgeEventPolicyApprovalPayload(approval: approval)
   }
 }
 

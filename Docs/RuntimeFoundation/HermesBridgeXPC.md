@@ -36,7 +36,7 @@ The current protocol version is:
 
 ```text
 major: 1
-minor: 5
+minor: 6
 ```
 
 The service rejects unsupported major versions before operation dispatch.
@@ -58,6 +58,7 @@ The confirmed capability set is:
 - `fileEventObservation`
 - `systemEventObservation`
 - `systemEventPolicyManagement`
+- `eventPolicyApprovalManagement`
 
 The service does not advertise or accept generic execution, generic JSON-RPC,
 generic HTTP, filesystem path, process, browser, GUI, AppleScript, JXA, or shell
@@ -108,6 +109,12 @@ Supported operations are:
 - `eventPolicyEngineStatus`: no payload.
 - `pauseEventPolicies`: no payload.
 - `resumeEventPolicies`: no payload.
+- `listEventPolicyApprovals`: no payload.
+- `eventPolicyApprovalStatus`: approval ID.
+- `approveEventPolicyExecution`: approval ID.
+- `denyEventPolicyExecution`: approval ID.
+- `cancelEventPolicyApproval`: approval ID.
+- `eventPolicyApprovalQueueStatus`: no payload.
 
 The envelope contains no arbitrary dictionaries and no generic JSON blob field.
 Payloads are Swift `Codable` types with fixed fields. Unknown operation strings
@@ -167,6 +174,13 @@ service-health classification, replay/coalescing state and a bounded reason
 code. They do not include executable paths, PIDs, window titles, document
 titles, URLs, clipboard contents, keystrokes, process arguments, environments,
 Prompts, backend tokens or user content.
+
+Event-policy approval summaries include approval ID, state, policy ID and
+revision, event ID and event kind, action kind, optional binding ID, reviewed
+template digest, safe rendered summary, timestamps, approval requirement,
+correlation ID, result and reason code. They do not include raw events,
+arbitrary Prompt bodies, tokens, absolute paths, clipboard data, window content,
+file content or process arguments.
 
 ## Size Limits
 

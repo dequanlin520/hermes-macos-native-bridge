@@ -596,6 +596,100 @@ public actor HermesBridgeXPCClient {
     return payload
   }
 
+  public func listEventPolicyApprovals() async throws
+    -> HermesBridgeEventPolicyApprovalListPayload
+  {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .listEventPolicyApprovals
+      ))
+    guard case .success(.listEventPolicyApprovals(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
+  public func eventPolicyApprovalStatus(id: HermesEventPolicyApprovalID) async throws
+    -> HermesBridgeEventPolicyApprovalPayload
+  {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .eventPolicyApprovalStatus,
+        eventPolicyApprovalID: HermesBridgeEventPolicyApprovalIDPayload(approvalID: id)
+      ))
+    guard case .success(.eventPolicyApprovalStatus(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
+  public func approveEventPolicyExecution(id: HermesEventPolicyApprovalID) async throws
+    -> HermesBridgeEventPolicyApprovalPayload
+  {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .approveEventPolicyExecution,
+        eventPolicyApprovalID: HermesBridgeEventPolicyApprovalIDPayload(approvalID: id)
+      ))
+    guard case .success(.approveEventPolicyExecution(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
+  public func denyEventPolicyExecution(id: HermesEventPolicyApprovalID) async throws
+    -> HermesBridgeEventPolicyApprovalPayload
+  {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .denyEventPolicyExecution,
+        eventPolicyApprovalID: HermesBridgeEventPolicyApprovalIDPayload(approvalID: id)
+      ))
+    guard case .success(.denyEventPolicyExecution(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
+  public func cancelEventPolicyApproval(id: HermesEventPolicyApprovalID) async throws
+    -> HermesBridgeEventPolicyApprovalPayload
+  {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .cancelEventPolicyApproval,
+        eventPolicyApprovalID: HermesBridgeEventPolicyApprovalIDPayload(approvalID: id)
+      ))
+    guard case .success(.cancelEventPolicyApproval(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
+  public func eventPolicyApprovalQueueStatus() async throws
+    -> HermesBridgeEventPolicyApprovalQueueStatusPayload
+  {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .eventPolicyApprovalQueueStatus
+      ))
+    guard case .success(.eventPolicyApprovalQueueStatus(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
   public func submit(bindingID: HermesRequestBindingID, prompt: String) async throws
     -> HermesRequestID
   {

@@ -151,6 +151,46 @@ public struct HermesBridgeMenuBarPolicyDecisionSummary: Codable, Equatable, Iden
   }
 }
 
+public struct HermesBridgeMenuBarApprovalSummary: Codable, Equatable, Identifiable, Sendable {
+  public let id: String
+  public let approvalID: String
+  public let state: String
+  public let policyID: String
+  public let eventKind: String
+  public let actionKind: String
+  public let safeSummary: String
+  public let expiresAt: Date
+  public let result: String
+  public let reasonCode: String
+
+  public init(summary: HermesBridgeEventPolicyApprovalSummary) {
+    self.id = Self.safeID(summary.approvalID)
+    self.approvalID = Self.safeID(summary.approvalID)
+    self.state = Self.safeID(summary.state.rawValue)
+    self.policyID = Self.safeID(summary.policyID)
+    self.eventKind = summary.eventKind.rawValue
+    self.actionKind = summary.actionKind.rawValue
+    self.safeSummary = Self.safeText(summary.safeRenderedSummary, maximumCharacters: 240)
+    self.expiresAt = summary.expiresAt
+    self.result = Self.safeID(summary.result.rawValue)
+    self.reasonCode = Self.safeID(summary.reasonCode)
+  }
+
+  private static func safeID(_ value: String) -> String {
+    let filtered = value.filter {
+      $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "." || $0 == "_" || $0 == "-")
+    }
+    return String(filtered.prefix(160))
+  }
+
+  private static func safeText(_ value: String, maximumCharacters: Int) -> String {
+    let filtered = value.unicodeScalars.filter { scalar in
+      scalar.value >= 0x20 && scalar.value != 0x7F
+    }
+    return String(String.UnicodeScalarView(filtered)).prefixString(maximumCharacters)
+  }
+}
+
 public struct HermesBridgeMenuBarState: Codable, Equatable, Sendable {
   public var serviceStatus: HermesBridgeMenuBarServiceStatus
   public var installed: Bool
@@ -170,6 +210,10 @@ public struct HermesBridgeMenuBarState: Codable, Equatable, Sendable {
   public var enabledPolicyCount: Int
   public var eventPoliciesPaused: Bool
   public var recentPolicyDecisions: [HermesBridgeMenuBarPolicyDecisionSummary]
+  public var pendingApprovalCount: Int
+  public var pendingApprovals: [HermesBridgeMenuBarApprovalSummary]
+  public var recentCompletedApprovals: [HermesBridgeMenuBarApprovalSummary]
+  public var approvalInboxUnavailable: Bool
   public var serviceDegraded: Bool
   public var lastActionMessage: String?
 
@@ -192,6 +236,10 @@ public struct HermesBridgeMenuBarState: Codable, Equatable, Sendable {
     enabledPolicyCount: Int = 0,
     eventPoliciesPaused: Bool = false,
     recentPolicyDecisions: [HermesBridgeMenuBarPolicyDecisionSummary] = [],
+    pendingApprovalCount: Int = 0,
+    pendingApprovals: [HermesBridgeMenuBarApprovalSummary] = [],
+    recentCompletedApprovals: [HermesBridgeMenuBarApprovalSummary] = [],
+    approvalInboxUnavailable: Bool = false,
     serviceDegraded: Bool = false,
     lastActionMessage: String? = nil
   ) {
@@ -214,6 +262,10 @@ public struct HermesBridgeMenuBarState: Codable, Equatable, Sendable {
     self.enabledPolicyCount = max(0, enabledPolicyCount)
     self.eventPoliciesPaused = eventPoliciesPaused
     self.recentPolicyDecisions = Array(recentPolicyDecisions.prefix(8))
+    self.pendingApprovalCount = max(0, pendingApprovalCount)
+    self.pendingApprovals = Array(pendingApprovals.prefix(16))
+    self.recentCompletedApprovals = Array(recentCompletedApprovals.prefix(8))
+    self.approvalInboxUnavailable = approvalInboxUnavailable
     self.serviceDegraded = serviceDegraded
     self.lastActionMessage = lastActionMessage.map { String($0.prefix(120)) }
   }
@@ -703,6 +755,13 @@ public protocol HermesBridgeMenuBarXPCClient: Sendable {
     -> HermesBridgeEventPolicyPayload
   func evaluateEventPolicyDryRun(event: HermesSystemEvent) async throws
     -> HermesBridgeEventPolicyEvaluationResultPayload
+  func listEventPolicyApprovals() async throws -> HermesBridgeEventPolicyApprovalListPayload
+  func approveEventPolicyExecution(id: HermesEventPolicyApprovalID) async throws
+    -> HermesBridgeEventPolicyApprovalPayload
+  func denyEventPolicyExecution(id: HermesEventPolicyApprovalID) async throws
+    -> HermesBridgeEventPolicyApprovalPayload
+  func eventPolicyApprovalQueueStatus() async throws
+    -> HermesBridgeEventPolicyApprovalQueueStatusPayload
   func close() async
 }
 
@@ -737,6 +796,29 @@ extension HermesBridgeMenuBarXPCClient {
 
   public func evaluateEventPolicyDryRun(event _: HermesSystemEvent) async throws
     -> HermesBridgeEventPolicyEvaluationResultPayload
+  {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func listEventPolicyApprovals() async throws -> HermesBridgeEventPolicyApprovalListPayload
+  {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func approveEventPolicyExecution(id _: HermesEventPolicyApprovalID) async throws
+    -> HermesBridgeEventPolicyApprovalPayload
+  {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func denyEventPolicyExecution(id _: HermesEventPolicyApprovalID) async throws
+    -> HermesBridgeEventPolicyApprovalPayload
+  {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func eventPolicyApprovalQueueStatus() async throws
+    -> HermesBridgeEventPolicyApprovalQueueStatusPayload
   {
     throw HermesBridgeXPCError.unsupportedCapability
   }
@@ -1324,6 +1406,43 @@ public actor HermesBridgeMenuBarViewModel {
     }
   }
 
+  public func refreshApprovalInbox() async -> [HermesBridgeMenuBarApprovalSummary] {
+    do {
+      let payload = try await environment.xpcClient.listEventPolicyApprovals()
+      applyApprovals(payload.approvals)
+      state.approvalInboxUnavailable = false
+      return state.pendingApprovals
+    } catch {
+      state.approvalInboxUnavailable = true
+      state.lastActionMessage = "approval inbox unavailable"
+      return []
+    }
+  }
+
+  public func approvePolicyApproval(id: HermesEventPolicyApprovalID) async
+    -> HermesBridgeMenuBarActionResult
+  {
+    do {
+      _ = try await environment.xpcClient.approveEventPolicyExecution(id: id)
+      _ = await refreshApprovalInbox()
+      return HermesBridgeMenuBarActionResult(succeeded: true, safeMessage: "approval approved")
+    } catch {
+      return HermesBridgeMenuBarActionResult(succeeded: false, safeMessage: "approval failed")
+    }
+  }
+
+  public func denyPolicyApproval(id: HermesEventPolicyApprovalID) async
+    -> HermesBridgeMenuBarActionResult
+  {
+    do {
+      _ = try await environment.xpcClient.denyEventPolicyExecution(id: id)
+      _ = await refreshApprovalInbox()
+      return HermesBridgeMenuBarActionResult(succeeded: true, safeMessage: "approval denied")
+    } catch {
+      return HermesBridgeMenuBarActionResult(succeeded: false, safeMessage: "approval deny failed")
+    }
+  }
+
   private func performRefresh() async {
     if Task.isCancelled { return }
     let serviceStatus = await environment.serviceManager.status()
@@ -1354,6 +1473,9 @@ public actor HermesBridgeMenuBarViewModel {
       let policyStatus =
         capabilities.capabilities.contains(.systemEventPolicyManagement)
         ? try? await environment.xpcClient.eventPolicyEngineStatus() : nil
+      let approvalPayload =
+        capabilities.capabilities.contains(.eventPolicyApprovalManagement)
+        ? try? await environment.xpcClient.listEventPolicyApprovals() : nil
       next.protocolCompatible = compatible
       next.serviceStatus = compatible ? next.serviceStatus : .protocolIncompatible
       next.protocolVersion = version.version.description
@@ -1372,11 +1494,26 @@ public actor HermesBridgeMenuBarViewModel {
         next.recentPolicyDecisions = policyStatus.status.recentDecisions.map(
           HermesBridgeMenuBarPolicyDecisionSummary.init)
       }
+      if let approvalPayload {
+        let summaries = approvalPayload.approvals.map(HermesBridgeMenuBarApprovalSummary.init)
+        next.pendingApprovals = summaries.filter { $0.state == "pending" }
+        next.pendingApprovalCount = next.pendingApprovals.count
+        next.recentCompletedApprovals = summaries.filter { $0.state != "pending" }
+      } else {
+        next.approvalInboxUnavailable = true
+      }
       state = next
     } catch {
       next.serviceStatus = .unavailable
       state = next
     }
+  }
+
+  private func applyApprovals(_ approvals: [HermesBridgeEventPolicyApprovalSummary]) {
+    let summaries = approvals.map(HermesBridgeMenuBarApprovalSummary.init)
+    state.pendingApprovals = summaries.filter { $0.state == "pending" }
+    state.pendingApprovalCount = state.pendingApprovals.count
+    state.recentCompletedApprovals = summaries.filter { $0.state != "pending" }
   }
 
   private func recentSafeSystemEvents() async -> [HermesBridgeMenuBarSystemEventSummary] {
@@ -1544,6 +1681,29 @@ public actor ProductionMenuBarXPCClient: HermesBridgeMenuBarXPCClient {
     -> HermesBridgeEventPolicyEvaluationResultPayload
   {
     try await client.evaluateEventPolicyDryRun(event: event)
+  }
+
+  public func listEventPolicyApprovals() async throws -> HermesBridgeEventPolicyApprovalListPayload
+  {
+    try await client.listEventPolicyApprovals()
+  }
+
+  public func approveEventPolicyExecution(id: HermesEventPolicyApprovalID) async throws
+    -> HermesBridgeEventPolicyApprovalPayload
+  {
+    try await client.approveEventPolicyExecution(id: id)
+  }
+
+  public func denyEventPolicyExecution(id: HermesEventPolicyApprovalID) async throws
+    -> HermesBridgeEventPolicyApprovalPayload
+  {
+    try await client.denyEventPolicyExecution(id: id)
+  }
+
+  public func eventPolicyApprovalQueueStatus() async throws
+    -> HermesBridgeEventPolicyApprovalQueueStatusPayload
+  {
+    try await client.eventPolicyApprovalQueueStatus()
   }
 
   public func close() async {

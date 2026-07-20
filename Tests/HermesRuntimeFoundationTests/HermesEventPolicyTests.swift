@@ -252,11 +252,195 @@ final class HermesEventPolicyTests: XCTestCase {
     XCTAssertGreaterThanOrEqual(recentCount, 1)
   }
 
+  func testApprovalStoreSnapshotTransitionsBoundsAndPrivacy() async throws {
+    XCTAssertTrue(
+      HermesEventPolicyApprovalID.isValid(try HermesEventPolicyApprovalID.generate().rawValue))
+    XCTAssertThrowsError(try HermesEventPolicyApprovalID(rawValue: "bad"))
+    XCTAssertEqual(
+      Set(HermesEventPolicyApprovalState.allCases),
+      [
+        .pending, .approved, .denied, .expired, .cancelled, .executing, .executed,
+        .failedRedacted, .invalidatedByPolicyChange, .blockedByEmergencyStop,
+      ])
+
+    let root = try temporaryDirectory()
+    let store = try FileBackedHermesEventPolicyApprovalStore(root: root, retentionSeconds: 60)
+    let policy = try makePolicy(id: "hepol_approval_store")
+    let event = try event(kind: .networkAvailable, networkStatus: .available)
+    let request = try approvalRequest(policy: policy, event: event)
+    let created = try await store.createPending(request)
+    XCTAssertEqual(created.state, .pending)
+    XCTAssertNil(created.snapshot.bindingID)
+    XCTAssertFalse(String(describing: created).localizedCaseInsensitiveContains("Prompt"))
+    XCTAssertFalse(String(describing: created).localizedCaseInsensitiveContains("token"))
+    XCTAssertFalse(String(describing: created).localizedCaseInsensitiveContains("clipboard"))
+    XCTAssertFalse(String(describing: created).localizedCaseInsensitiveContains("window"))
+    XCTAssertFalse(String(describing: created).contains("/Users/"))
+
+    let reloaded = try FileBackedHermesEventPolicyApprovalStore(root: root)
+    let reloadedIDs = try await reloaded.listApprovals().map(\.snapshot.approvalID)
+    XCTAssertEqual(
+      reloadedIDs,
+      [
+        request.snapshot.approvalID
+      ])
+
+    let denied = try await reloaded.transition(
+      id: request.snapshot.approvalID,
+      to: .denied,
+      result: .denied,
+      reasonCode: "denied",
+      decidedAt: Date(),
+      completedAt: Date()
+    )
+    XCTAssertEqual(denied.state, .denied)
+
+    try Data("{bad".utf8).write(
+      to: root.appendingPathComponent(FileBackedHermesEventPolicyApprovalStore.storeFileName)
+    )
+    await XCTAssertThrowsAsync(try await reloaded.listApprovals())
+
+    let parent = try temporaryDirectory()
+    let real = parent.appendingPathComponent("real", isDirectory: true)
+    let link = parent.appendingPathComponent("link", isDirectory: true)
+    try FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+    XCTAssertThrowsError(try FileBackedHermesEventPolicyApprovalStore(root: link))
+  }
+
+  func testApprovalCoordinatorResponsesExecutionAndInvalidation() async throws {
+    let clock = TestClock(Date(timeIntervalSince1970: 100))
+    let policy = try makePolicy(
+      id: "hepol_approval_exec",
+      actions: [.refreshBridgeHealth],
+      approvalRequirement: .requireUserApproval
+    )
+    let harness = try await makeApprovalHarness(policies: [policy], now: { clock.now })
+    let decisions = await harness.engine.evaluate(
+      try event(kind: .networkAvailable, networkStatus: .available))
+    XCTAssertEqual(decisions.map(\.decision), [.blockedApprovalRequired])
+    let approvalID = try extractApprovalID(from: decisions)
+    let initialRefreshCount = await harness.service.refreshCount
+    XCTAssertEqual(initialRefreshCount, 0)
+    let pending = try await harness.engine.approvalStatus(id: approvalID)
+    XCTAssertEqual(pending.state, .pending)
+
+    let executed = try await harness.engine.approveApproval(id: approvalID)
+    XCTAssertEqual(executed.state, .executed)
+    let executedRefreshCount = await harness.service.refreshCount
+    XCTAssertEqual(executedRefreshCount, 1)
+    let duplicate = try await harness.engine.approveApproval(id: approvalID)
+    XCTAssertEqual(duplicate.state, .executed)
+    let duplicateRefreshCount = await harness.service.refreshCount
+    XCTAssertEqual(duplicateRefreshCount, 1)
+
+    let denyPolicy = try makePolicy(
+      id: "hepol_approval_deny",
+      actions: [.recordAuditEvent(reasonCode: "audit_only")],
+      approvalRequirement: .requireUserApproval
+    )
+    let denyHarness = try await makeApprovalHarness(policies: [denyPolicy], now: { clock.now })
+    let denyDecision = await denyHarness.engine.evaluate(
+      try event(kind: .networkAvailable, networkStatus: .available))
+    let denyID = try extractApprovalID(from: denyDecision)
+    let denied = try await denyHarness.engine.denyApproval(id: denyID)
+    XCTAssertEqual(denied.state, .denied)
+    let deniedAgain = try await denyHarness.engine.denyApproval(id: denyID)
+    XCTAssertEqual(deniedAgain.state, .denied)
+    await XCTAssertThrowsAsync(try await denyHarness.engine.approveApproval(id: denyID))
+
+    let expiring = try await makeApprovalHarness(policies: [policy], now: { clock.now })
+    let expiringDecision = await expiring.engine.evaluate(
+      try event(kind: .networkAvailable, networkStatus: .available))
+    let expiringID = try extractApprovalID(from: expiringDecision)
+    clock.advance(700)
+    let expired = try await expiring.engine.approveApproval(id: expiringID)
+    XCTAssertEqual(expired.state, .expired)
+
+    let disabled = try await makeApprovalHarness(policies: [policy], now: { clock.now })
+    let disabledDecision = await disabled.engine.evaluate(
+      try event(kind: .networkAvailable, networkStatus: .available))
+    let disabledID = try extractApprovalID(from: disabledDecision)
+    _ = try await disabled.engine.disablePolicy(id: policy.id, expectedRevision: 1)
+    let invalid = try await disabled.engine.approveApproval(id: disabledID)
+    XCTAssertEqual(invalid.state, .invalidatedByPolicyChange)
+
+    let stopped = try await makeApprovalHarness(policies: [policy], now: { clock.now })
+    let stoppedDecision = await stopped.engine.evaluate(
+      try event(kind: .networkAvailable, networkStatus: .available))
+    let stoppedID = try extractApprovalID(from: stoppedDecision)
+    await stopped.engine.emergencyStop()
+    let blocked = try await stopped.engine.approveApproval(id: stoppedID)
+    XCTAssertEqual(blocked.state, .blockedByEmergencyStop)
+  }
+
+  func testApprovalBindingSnapshotTemplateAndConcurrentResponses() async throws {
+    let bindingID = try HermesRequestBindingID(rawValue: "binding:v1:safe")
+    let policy = try makePolicy(
+      id: "hepol_approval_binding",
+      actions: [
+        .submitApprovedBinding(
+          bindingID: bindingID,
+          prompt: try HermesEventPolicyPromptTemplate(
+            reviewedStaticTemplate: "approved {{eventKind}} {{reasonCode}} {{networkStatus}}")
+        )
+      ],
+      approvalRequirement: .requireUserApproval
+    )
+    let harness = try await makeApprovalHarness(policies: [policy])
+    let result = await harness.engine.evaluate(
+      try event(kind: .networkAvailable, networkStatus: .available))
+    let approvalID = try extractApprovalID(from: result)
+    let request = try await harness.engine.approvalStatus(id: approvalID)
+    XCTAssertEqual(
+      request.snapshot.reviewedStaticTemplateDigest,
+      HermesEventPolicyApprovalSnapshot.digest(
+        request.snapshot.reviewedStaticTemplate ?? "")
+    )
+    XCTAssertNil(request.snapshot.safeRenderedSummary.range(of: "{{"))
+
+    await withTaskGroup(of: Void.self) { group in
+      for _ in 0..<8 {
+        group.addTask {
+          _ = try? await harness.engine.approveApproval(id: approvalID)
+        }
+      }
+    }
+    let submittedBindings = await harness.submitter.submittedBindings
+    let submittedPrompts = await harness.submitter.submittedPrompts
+    XCTAssertEqual(submittedBindings, [bindingID])
+    XCTAssertEqual(submittedPrompts.count, 1)
+    XCTAssertTrue(submittedPrompts.first?.contains("networkAvailable") == true)
+
+    let disabledTrigger = try makePolicy(
+      id: "hepol_approval_disabled_trigger",
+      actions: [
+        .submitApprovedBinding(
+          bindingID: try HermesRequestBindingID(rawValue: "binding:v1:disabled-trigger"),
+          prompt: try HermesEventPolicyPromptTemplate(reviewedStaticTemplate: "{{eventKind}}")
+        )
+      ],
+      approvalRequirement: .requireUserApproval
+    )
+    let blockedHarness = try await makeApprovalHarness(policies: [disabledTrigger])
+    let blocked = await blockedHarness.engine.evaluate(
+      try event(kind: .networkAvailable, networkStatus: .available))
+    XCTAssertNil(blocked.first?.approvalID)
+    XCTAssertEqual(blocked.map(\.decision), [.blockedApprovalRequired])
+  }
+
   private struct Harness {
     let engine: HermesEventPolicyEngine
     let submitter: FakeSubmitter
     let service: FakePolicyService
     let notifications: FakeNotifications
+    let audit: InMemoryAuditStore
+  }
+
+  private struct ApprovalHarness {
+    let engine: HermesEventPolicyEngine
+    let submitter: FakeSubmitter
+    let service: FakePolicyService
     let audit: InMemoryAuditStore
   }
 
@@ -289,6 +473,74 @@ final class HermesEventPolicyTests: XCTestCase {
       notifications: notifications,
       audit: audit
     )
+  }
+
+  private func makeApprovalHarness(
+    policies: [HermesEventPolicy],
+    service: FakePolicyService = FakePolicyService(),
+    now: @escaping @Sendable () -> Date = Date.init
+  ) async throws -> ApprovalHarness {
+    let root = try temporaryDirectory()
+    let policyStore = try FileBackedHermesEventPolicyStore(
+      root: root.appendingPathComponent("policies", isDirectory: true))
+    for policy in policies {
+      _ = try await policyStore.createPolicy(policy)
+    }
+    let approvalStore = try FileBackedHermesEventPolicyApprovalStore(
+      root: root.appendingPathComponent("approvals", isDirectory: true))
+    let submitter = FakeSubmitter()
+    let audit = InMemoryAuditStore()
+    let coordinator = HermesEventPolicyApprovalCoordinator(
+      store: approvalStore,
+      policyStore: policyStore,
+      bindingDiscovery: FakeBindingDiscovery(),
+      submitter: submitter,
+      serviceManager: service,
+      auditStore: audit,
+      now: now
+    )
+    let engine = HermesEventPolicyEngine(
+      store: policyStore,
+      bindingDiscovery: FakeBindingDiscovery(),
+      submitter: submitter,
+      serviceManager: service,
+      auditStore: audit,
+      approvalCoordinator: coordinator,
+      now: now
+    )
+    return ApprovalHarness(engine: engine, submitter: submitter, service: service, audit: audit)
+  }
+
+  private func approvalRequest(
+    policy: HermesEventPolicy,
+    event: HermesSystemEvent
+  ) throws -> HermesEventPolicyApprovalRequest {
+    let snapshot = try HermesEventPolicyApprovalSnapshot(
+      approvalID: .generate(),
+      policyID: policy.id,
+      policyRevision: policy.revision,
+      eventID: event.eventID,
+      eventKind: event.kind,
+      action: policy.actions[0],
+      safeRenderedSummary: "Policy \(policy.id.rawValue) \(event.kind.rawValue)",
+      createdAt: Date(),
+      expiresAt: Date().addingTimeInterval(60),
+      approvalRequirement: .requireUserApproval,
+      correlationID: "test"
+    )
+    return try HermesEventPolicyApprovalRequest(snapshot: snapshot)
+  }
+
+  private func extractApprovalID(
+    from evaluations: [HermesEventPolicyEvaluation],
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) throws -> HermesEventPolicyApprovalID {
+    guard let id = evaluations.first?.approvalID else {
+      XCTFail("Expected approval ID", file: file, line: line)
+      throw HermesEventPolicyApprovalError.approvalNotFound
+    }
+    return id
   }
 
   private func makePolicy(

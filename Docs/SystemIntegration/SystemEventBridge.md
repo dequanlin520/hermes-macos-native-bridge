@@ -56,3 +56,7 @@ execute only the fixed action catalog documented in
 `Docs/SystemIntegration/EventPolicyEngine.md`. It does not add generic
 automation, shell, AppleScript, URL-opening, executable-path or arbitrary XPC
 operations.
+
+Protocol version `1.6` adds capability `eventPolicyApprovalManagement` for
+typed approval queue operations over immutable event-policy execution
+snapshots.

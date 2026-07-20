@@ -6,6 +6,12 @@ The file-backed policy store persists one bounded JSON document:
 event-policies.v1.json
 ```
 
+The file-backed approval store persists one bounded JSON document:
+
+```text
+event-policy-approvals.v1.json
+```
+
 The root is Bridge-owned, rejects symlink roots and is created with restrictive
 permissions. Writes are actor-isolated and atomic.
 
@@ -20,6 +26,18 @@ permissions. Writes are actor-isolated and atomic.
 - disabled policies are retained but ignored by evaluation;
 - corrupt or unsupported documents are rejected;
 - policies contain no secret fields.
+
+Approval store invariants:
+
+- schema version must be `v1`;
+- approval IDs are unique bounded `heapr_` identifiers;
+- pending count is bounded;
+- retained completed approvals are bounded;
+- pending entries expire through explicit reads, responses and sweeps;
+- corrupt or unsupported documents are rejected;
+- symlink roots are rejected;
+- snapshots contain no raw event, arbitrary Prompt body, token, absolute path,
+  clipboard, window content, file content or process arguments.
 
 ## Policy Fields
 
