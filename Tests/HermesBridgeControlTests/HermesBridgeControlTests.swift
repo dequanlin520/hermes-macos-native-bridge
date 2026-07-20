@@ -96,6 +96,27 @@ final class HermesBridgeControlTests: XCTestCase {
     XCTAssertEqual(manager.commands, [])
   }
 
+  func testPermissionsDoctorCommandRendersSafeReport() async throws {
+    let report = HermesBridgeDoctorReport(
+      checks: [],
+      permissions: HermesPermissionsDoctorReport(checks: [
+        HermesPermissionCheck(
+          kind: .accessibility,
+          state: .notDetermined,
+          detailCode: "preflight_only",
+          remediationCode: .openAccessibilitySettings
+        )
+      ])
+    )
+    let result = await runner(doctor: FakeDoctor(report: report)).run(arguments: [
+      "permissions-doctor", "--format", "json",
+    ])
+    XCTAssertEqual(result.exitCode, .success)
+    XCTAssertTrue(result.stdout.contains(#""kind" : "accessibility""#))
+    XCTAssertFalse(result.stdout.localizedCaseInsensitiveContains("prompt"))
+    XCTAssertFalse(result.stdout.localizedCaseInsensitiveContains("token"))
+  }
+
   func testCapabilitiesOutput() async throws {
     let result = await runner().run(arguments: ["capabilities"])
     XCTAssertEqual(result.exitCode, .success)
@@ -237,6 +258,27 @@ final class HermesBridgeControlTests: XCTestCase {
     XCTAssertTrue(result.stdout.contains("identity_mismatch_refused"))
   }
 
+  func testRecentAuditEventsAndExportCommands() async throws {
+    let event = try HermesAuditEvent.make(
+      kind: .doctorExecuted,
+      actor: .controlCLI,
+      outcome: .succeeded,
+      reasonCode: "complete"
+    )
+    let audit = FakeAuditViewer(events: [event])
+    let recent = await runner(audit: audit).run(arguments: ["recent-audit-events"])
+    XCTAssertEqual(recent.exitCode, .success)
+    XCTAssertTrue(recent.stdout.contains("doctorExecuted"))
+
+    let output = URL(fileURLWithPath: "/tmp", isDirectory: true)
+      .appendingPathComponent("hermes-control-audit-\(UUID().uuidString)", isDirectory: true)
+    let exported = await runner(audit: audit).run(arguments: [
+      "export-audit", "--output-directory", output.path,
+    ])
+    XCTAssertEqual(exported.exitCode, .success)
+    XCTAssertTrue(exported.stdout.contains("checksum="))
+  }
+
   func testNoKillallOrPkillUse() throws {
     let source = try String(
       contentsOf: URL(
@@ -294,7 +336,8 @@ final class HermesBridgeControlTests: XCTestCase {
     xpc: FakeXPC = FakeXPC(),
     requests: [HermesBridgeRequestSummary] = [],
     doctor: HermesBridgeDoctorChecking = FakeDoctor(report: HermesBridgeDoctorReport(checks: [])),
-    emergency: HermesBridgeEmergencyStopping = FakeEmergencyStopper()
+    emergency: HermesBridgeEmergencyStopping = FakeEmergencyStopper(),
+    audit: HermesBridgeAuditViewing = FakeAuditViewer()
   ) -> HermesBridgeControlRunner {
     let manager = manager ?? FakeManager(status: status)
     return HermesBridgeControlRunner(
@@ -303,7 +346,8 @@ final class HermesBridgeControlTests: XCTestCase {
         xpc: { _, _ in xpc },
         lister: { _ in FakeLister(requests: requests) },
         doctor: doctor,
-        emergencyStopper: emergency
+        emergencyStopper: emergency,
+        audit: audit
       )
     )
   }
@@ -442,5 +486,32 @@ private struct FakeEmergencyStopper: HermesBridgeEmergencyStopping {
     layout _: HermesBridgeInstallationLayout
   ) async -> EmergencyStopResult {
     result
+  }
+}
+
+private struct FakeAuditViewer: HermesBridgeAuditViewing {
+  let events: [HermesAuditEvent]
+
+  init(events: [HermesAuditEvent] = []) {
+    self.events = events
+  }
+
+  func recentEvents(layout _: HermesBridgeInstallationLayout, limit: Int) async throws
+    -> [HermesAuditEvent]
+  {
+    Array(events.prefix(limit))
+  }
+
+  func export(layout _: HermesBridgeInstallationLayout, outputDirectory _: URL) async throws
+    -> HermesAuditExportManifest
+  {
+    HermesAuditExportManifest(
+      schemaVersion: 1,
+      exportedAt: Date(timeIntervalSince1970: 0),
+      format: .jsonl,
+      eventCount: events.count,
+      sha256: String(repeating: "a", count: 64),
+      dataFileName: "audit-export.jsonl"
+    )
   }
 }

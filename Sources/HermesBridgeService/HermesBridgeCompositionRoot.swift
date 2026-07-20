@@ -22,6 +22,7 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
   public let authorizedRootRegistry: FileBackedHermesAuthorizedRootRegistry
   public let fileIntegration: HermesBridgeFileIntegrationCoordinator
   public let orchestrator: HermesRequestOrchestrator
+  public let auditStore: any HermesAuditStore
   public let requestHandler: HermesBridgeServiceRequestHandler
   public let dispatcher: HermesBridgeXPCRequestDispatcher
   public let xpcService: HermesBridgeXPCService
@@ -98,6 +99,11 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
       protocolFactory: protocolFactory,
       gatewayReadyTimeout: configuration.timeouts.gatewayReady
     )
+    self.auditStore =
+      (try? FileBackedHermesAuditStore(
+        configuration: HermesAuditStoreConfiguration(
+          root: resolvedPaths.logsRoot.appendingPathComponent("Audit", isDirectory: true)
+        ))) ?? NoopHermesAuditStore()
     self.requestHandler = HermesBridgeServiceRequestHandler(
       orchestrator: orchestrator,
       bindingRegistry: bindingRegistry,
@@ -105,6 +111,7 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
     )
     self.dispatcher = HermesBridgeXPCRequestDispatcher(
       handler: requestHandler,
+      auditStore: auditStore,
       maximumConcurrentRequests: configuration.maximumConcurrentXPCRequests
     )
     self.xpcService = HermesBridgeXPCService(dispatcher: dispatcher)

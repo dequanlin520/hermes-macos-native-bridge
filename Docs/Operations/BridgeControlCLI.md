@@ -12,11 +12,14 @@ process identifiers.
 ```sh
 HermesBridgeControl status
 HermesBridgeControl doctor
+HermesBridgeControl permissions-doctor
 HermesBridgeControl capabilities
 HermesBridgeControl start
 HermesBridgeControl stop
 HermesBridgeControl restart
 HermesBridgeControl requests
+HermesBridgeControl recent-audit-events
+HermesBridgeControl export-audit --output-directory artifacts/m6-001/export
 HermesBridgeControl request-status --request-id hrq_...
 HermesBridgeControl cancel --request-id hrq_...
 HermesBridgeControl approval-response --request-id hrq_... --decision approve
@@ -36,6 +39,9 @@ Optional global flags:
 `--installation-root` is test-only and must point at a trusted temporary or
 artifact root. Production operation uses the current user's fixed installation
 layout.
+
+`--output-directory` is accepted only for fixed typed audit export. It must
+point at a trusted temporary or artifact directory supplied by the caller.
 
 ## Fixed Service Boundary
 
@@ -66,12 +72,20 @@ Stable Codable output models:
 - `HermesBridgeCLIStatusOutput`;
 - `HermesBridgeDoctorReport`;
 - `HermesBridgeDoctorCheck`;
+- `HermesPermissionsDoctorReport`;
+- `HermesAuditEvent`;
+- `HermesAuditExportManifest`;
 - `HermesBridgeCLIErrorOutput`;
 - `HermesBridgeRequestSummary`.
 
 The CLI never prints backend authentication material, request text, full result
 content, captured process streams, credential-store data, private launch
 metadata, or arbitrary filesystem paths.
+
+Audit commands are intentionally narrow. `recent-audit-events` returns a
+bounded set of structured safe events. `export-audit` writes a redacted JSONL
+export plus manifest and checksum. There is no raw log-read command, generic
+file-read command, arbitrary predicate language or automatic upload.
 
 ## Exit Codes
 

@@ -86,10 +86,16 @@ public struct HermesBridgeDoctorReport: Codable, Equatable, Sendable {
   public let schemaVersion: Int
   public let overallStatus: HermesBridgeDoctorCheckStatus
   public let checks: [HermesBridgeDoctorCheck]
+  public let permissions: HermesPermissionsDoctorReport
 
-  public init(schemaVersion: Int = 1, checks: [HermesBridgeDoctorCheck]) {
+  public init(
+    schemaVersion: Int = 1,
+    checks: [HermesBridgeDoctorCheck],
+    permissions: HermesPermissionsDoctorReport = HermesPermissionsDoctorReport(checks: [])
+  ) {
     self.schemaVersion = schemaVersion
     self.checks = checks
+    self.permissions = permissions
     if checks.contains(where: { $0.status == .fail }) {
       self.overallStatus = .fail
     } else if checks.contains(where: { $0.status == .warning }) {
@@ -173,6 +179,9 @@ public struct HermesBridgeCLIRunResult: Sendable {
 public enum HermesBridgeCLICommand: Equatable, Sendable {
   case status
   case doctor
+  case permissionsDoctor
+  case recentAuditEvents
+  case exportAudit(URL)
   case capabilities
   case start
   case stop
@@ -199,6 +208,7 @@ public struct HermesBridgeCLIInvocation: Equatable, Sendable {
     var installationRoot: URL?
     var requestID: String?
     var decision: HermesBridgeApprovalDecision?
+    var outputDirectory: URL?
 
     var index = 1
     while index < arguments.count {
@@ -231,6 +241,16 @@ public struct HermesBridgeCLIInvocation: Equatable, Sendable {
           throw HermesBridgeCLIUsageError.invalidValue(argument)
         }
         installationRoot = url
+      case "--output-directory":
+        index += 1
+        guard index < arguments.count else {
+          throw HermesBridgeCLIUsageError.missingValue(argument)
+        }
+        let url = URL(fileURLWithPath: arguments[index]).standardizedFileURL
+        guard url.path.contains("/artifacts/") || url.path.contains("/tmp/") else {
+          throw HermesBridgeCLIUsageError.invalidValue(argument)
+        }
+        outputDirectory = url
       case "--request-id":
         index += 1
         guard index < arguments.count else {
@@ -257,6 +277,15 @@ public struct HermesBridgeCLIInvocation: Equatable, Sendable {
       self.command = .status
     case "doctor":
       self.command = .doctor
+    case "permissions-doctor":
+      self.command = .permissionsDoctor
+    case "recent-audit-events":
+      self.command = .recentAuditEvents
+    case "export-audit":
+      guard let outputDirectory else {
+        throw HermesBridgeCLIUsageError.missingOption("--output-directory")
+      }
+      self.command = .exportAudit(outputDirectory)
     case "capabilities":
       self.command = .capabilities
     case "start":
@@ -347,6 +376,13 @@ public protocol HermesBridgeEmergencyStopping: Sendable {
   ) async -> EmergencyStopResult
 }
 
+public protocol HermesBridgeAuditViewing: Sendable {
+  func recentEvents(layout: HermesBridgeInstallationLayout, limit: Int) async throws
+    -> [HermesAuditEvent]
+  func export(layout: HermesBridgeInstallationLayout, outputDirectory: URL) async throws
+    -> HermesAuditExportManifest
+}
+
 public struct EmergencyStopResult: Codable, Equatable, Sendable {
   public let normalShutdownRequested: Bool
   public let bootoutRequested: Bool
@@ -362,13 +398,15 @@ public struct HermesBridgeControlRuntime: Sendable {
   public let lister: @Sendable (HermesBridgeInstallationLayout) -> HermesBridgeRequestListing
   public let doctor: HermesBridgeDoctorChecking
   public let emergencyStopper: HermesBridgeEmergencyStopping
+  public let audit: HermesBridgeAuditViewing
 
   public static let production = HermesBridgeControlRuntime(
     manager: { ProductionServiceManager(layout: $0) },
     xpc: { layout, timeout in ProductionXPC(layout: layout, timeout: timeout) },
     lister: { ProductionRequestLister(layout: $0) },
     doctor: ProductionDoctorChecker(),
-    emergencyStopper: ProductionEmergencyStopper()
+    emergencyStopper: ProductionEmergencyStopper(),
+    audit: ProductionAuditViewer()
   )
 }
 
@@ -434,6 +472,21 @@ public struct HermesBridgeControlRunner: Sendable {
             + "\n",
           stderr: ""
         )
+      case .permissionsDoctor:
+        let report = await runtime.doctor.report(layout: layout, timeout: invocation.timeout)
+        return success(
+          HermesBridgeControlRenderer.renderPermissions(
+            report.permissions, format: invocation.format)
+        )
+      case .recentAuditEvents:
+        let events = try await runtime.audit.recentEvents(layout: layout, limit: 20)
+        return success(
+          HermesBridgeControlRenderer.renderAuditEvents(events, format: invocation.format))
+      case .exportAudit(let outputDirectory):
+        let manifest = try await runtime.audit.export(
+          layout: layout, outputDirectory: outputDirectory)
+        return success(
+          HermesBridgeControlRenderer.renderAuditExport(manifest, format: invocation.format))
       case .capabilities:
         let capabilities = try await xpc.capabilities()
         let values = capabilities.capabilities.map(\.rawValue).sorted()
@@ -491,11 +544,25 @@ public struct HermesBridgeControlRunner: Sendable {
         )
         return success(HermesBridgeControlRenderer.renderRequest(output, format: invocation.format))
       case .emergencyStop:
+        try? await auditStore(layout: layout).append(
+          HermesAuditEvent.make(
+            kind: .emergencyStopRequested,
+            actor: .controlCLI,
+            outcome: .started,
+            reasonCode: "requested"
+          ))
         let output = await runtime.emergencyStopper.emergencyStop(
           manager: manager,
           xpc: xpc,
           layout: layout
         )
+        try? await auditStore(layout: layout).append(
+          HermesAuditEvent.make(
+            kind: .emergencyStopCompleted,
+            actor: .controlCLI,
+            outcome: output.serviceCleanedUp ? .succeeded : .failed,
+            reasonCode: output.message
+          ))
         return success(
           HermesBridgeControlRenderer.renderEmergencyStop(output, format: invocation.format))
       }
@@ -571,6 +638,15 @@ public struct HermesBridgeControlRunner: Sendable {
         message: "invalid request identifier"
       )
     }
+  }
+
+  private func auditStore(layout: HermesBridgeInstallationLayout) async throws
+    -> FileBackedHermesAuditStore
+  {
+    try FileBackedHermesAuditStore(
+      configuration: HermesAuditStoreConfiguration(
+        root: layout.logsRoot.appendingPathComponent("Audit", isDirectory: true)
+      ))
   }
 }
 
@@ -678,7 +754,40 @@ public enum HermesBridgeControlRenderer {
       + report.checks.map {
         "\($0.status.rawValue) \($0.id): \($0.explanation)"
           + ($0.remediationCode.map { " [\($0)]" } ?? "")
+      }
+      + ["permissions: \(report.permissions.checks.count) checks"]).joined(separator: "\n")
+  }
+
+  public static func renderPermissions(
+    _ report: HermesPermissionsDoctorReport,
+    format: HermesBridgeCLIOutputFormat
+  ) -> String {
+    if format == .json { return json(report) }
+    return
+      (["permissionsDoctor: \(report.checks.count) checks"]
+      + report.checks.map {
+        "\($0.state.rawValue) \($0.kind.rawValue): \($0.detailCode)"
+          + ($0.remediationCode.map { " [\($0.rawValue)]" } ?? "")
       }).joined(separator: "\n")
+  }
+
+  public static func renderAuditEvents(
+    _ events: [HermesAuditEvent],
+    format: HermesBridgeCLIOutputFormat
+  ) -> String {
+    if format == .json { return json(["events": events]) }
+    if events.isEmpty { return "audit: none" }
+    return events.map {
+      "\($0.timestamp) \($0.kind.rawValue) \($0.outcome.rawValue) \($0.reasonCode)"
+    }.joined(separator: "\n")
+  }
+
+  public static func renderAuditExport(
+    _ manifest: HermesAuditExportManifest,
+    format: HermesBridgeCLIOutputFormat
+  ) -> String {
+    if format == .json { return json(manifest) }
+    return "auditExport: \(manifest.eventCount) events checksum=\(manifest.sha256)"
   }
 
   public static func renderCapabilities(
@@ -754,7 +863,12 @@ public final class ProductionServiceManager: HermesBridgeControlServiceManaging,
   private let manager: HermesBridgeServiceManager
 
   public init(layout: HermesBridgeInstallationLayout) {
-    self.manager = HermesBridgeServiceManager(layout: layout)
+    let auditStore: any HermesAuditStore =
+      (try? FileBackedHermesAuditStore(
+        configuration: HermesAuditStoreConfiguration(
+          root: layout.logsRoot.appendingPathComponent("Audit", isDirectory: true)
+        ))) as (any HermesAuditStore)? ?? NoopHermesAuditStore()
+    self.manager = HermesBridgeServiceManager(layout: layout, auditStore: auditStore)
   }
 
   public func status() async -> HermesBridgeServiceStatus {
@@ -854,6 +968,36 @@ public struct ProductionEmergencyStopper: HermesBridgeEmergencyStopping {
       serviceCleanedUp: cleaned,
       message: cleaned ? "cleaned_up" : "bootout_requested"
     )
+  }
+}
+
+public struct ProductionAuditViewer: HermesBridgeAuditViewing {
+  public init() {}
+
+  public func recentEvents(layout: HermesBridgeInstallationLayout, limit: Int) async throws
+    -> [HermesAuditEvent]
+  {
+    let store = try store(layout: layout)
+    return try await store.query(HermesAuditQuery(limit: limit))
+  }
+
+  public func export(layout: HermesBridgeInstallationLayout, outputDirectory: URL) async throws
+    -> HermesAuditExportManifest
+  {
+    let store = try store(layout: layout)
+    return try await HermesAuditExporter(store: store).export(
+      HermesAuditExportRequest(
+        query: try HermesAuditQuery(limit: 500),
+        outputDirectory: outputDirectory,
+        format: .jsonl
+      ))
+  }
+
+  private func store(layout: HermesBridgeInstallationLayout) throws -> FileBackedHermesAuditStore {
+    try FileBackedHermesAuditStore(
+      configuration: HermesAuditStoreConfiguration(
+        root: layout.logsRoot.appendingPathComponent("Audit", isDirectory: true)
+      ))
   }
 }
 
@@ -977,7 +1121,58 @@ public struct ProductionDoctorChecker: HermesBridgeDoctorChecking {
       check(
         !launchdVisible || xpc.handshake, "service.residualState",
         "no inconsistent residual service state", "RUN_EMERGENCY_STOP"))
-    return HermesBridgeDoctorReport(checks: checks)
+    let permissions = await permissionsReport(
+      layout: layout,
+      binary: binary,
+      launchdVisible: launchdVisible,
+      xpcVisible: xpc.handshake
+    )
+    try? await auditStore(layout: layout).append(
+      HermesAuditEvent.make(
+        kind: .doctorExecuted,
+        actor: .controlCLI,
+        outcome: checks.contains(where: { $0.status == .fail }) ? .failed : .succeeded,
+        reasonCode: "doctor_complete",
+        metadata: try HermesAuditMetadata(["permissionChecks": "\(permissions.checks.count)"])
+      ))
+    return HermesBridgeDoctorReport(checks: checks, permissions: permissions)
+  }
+
+  private func permissionsReport(
+    layout: HermesBridgeInstallationLayout,
+    binary: URL?,
+    launchdVisible: Bool,
+    xpcVisible: Bool
+  ) async -> HermesPermissionsDoctorReport {
+    let roots = try? await HermesBridgeXPCClient(
+      machServiceName: try HermesBridgeMachServiceName(layout.machService),
+      timeout: 1
+    ).listAuthorizedRoots()
+    let rootCount = roots?.roots.count
+    let staleCount = roots?.roots.filter(\.staleAuthorization).count
+    let appIntentMetadata =
+      Bundle.main.infoDictionary?["NSUserActivityTypes"] != nil
+      || Bundle.main.infoDictionary?["NSSupportsLiveActivities"] != nil
+    return HermesPermissionsDoctor().report(
+      evidence: HermesPermissionsDoctorEvidence(
+        executableURL: binary ?? Bundle.main.executableURL,
+        launchAgentInstalled: launchdVisible,
+        machServiceAvailable: xpcVisible,
+        authorizedRootCount: rootCount,
+        staleAuthorizedRootCount: staleCount,
+        securityScopedBookmarkAvailable: rootCount.map { $0 > 0 },
+        appIntentMetadataPresent: appIntentMetadata,
+        notificationsRelevant: true
+      ))
+  }
+
+  private func auditStore(layout: HermesBridgeInstallationLayout) async throws
+    -> FileBackedHermesAuditStore
+  {
+    try FileBackedHermesAuditStore(
+      configuration: HermesAuditStoreConfiguration(
+        root: layout.logsRoot.appendingPathComponent("Audit", isDirectory: true)
+      ))
   }
 
   private func xpcHealth(

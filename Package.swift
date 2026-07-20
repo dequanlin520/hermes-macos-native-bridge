@@ -98,7 +98,11 @@ let package = Package(
     ),
     .executableTarget(
       name: "HermesBridgeApp",
-      dependencies: ["HermesAppIntents", "HermesBridgeMenuBar"]
+      dependencies: ["HermesAppIntents", "HermesBridgeMenuBar", "HermesRuntimeFoundation"]
+    ),
+    .executableTarget(
+      name: "M6001AuditFixture",
+      dependencies: ["HermesRuntimeFoundation"]
     ),
     .testTarget(
       name: "HermesRuntimeFoundationTests",
@@ -135,6 +139,10 @@ let package = Package(
     ),
     .testTarget(
       name: "M5004SandboxedBookmarkLifecycleTests",
+      dependencies: []
+    ),
+    .testTarget(
+      name: "M6001ScriptTests",
       dependencies: []
     ),
   ]
