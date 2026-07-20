@@ -182,6 +182,10 @@ public enum HermesBridgeCLICommand: Equatable, Sendable {
   case permissionsDoctor
   case recentAuditEvents
   case verifyAudit
+  case auditSigningStatus
+  case createAuditSigningKey
+  case rotateAuditSigningKey
+  case exportAuditTrustAnchors(URL)
   case exportAudit(URL)
   case capabilities
   case start
@@ -284,6 +288,17 @@ public struct HermesBridgeCLIInvocation: Equatable, Sendable {
       self.command = .recentAuditEvents
     case "verify-audit":
       self.command = .verifyAudit
+    case "audit-signing-status":
+      self.command = .auditSigningStatus
+    case "create-audit-signing-key":
+      self.command = .createAuditSigningKey
+    case "rotate-audit-signing-key":
+      self.command = .rotateAuditSigningKey
+    case "export-audit-trust-anchors":
+      guard let outputDirectory else {
+        throw HermesBridgeCLIUsageError.missingOption("--output-directory")
+      }
+      self.command = .exportAuditTrustAnchors(outputDirectory)
     case "export-audit":
       guard let outputDirectory else {
         throw HermesBridgeCLIUsageError.missingOption("--output-directory")
@@ -486,12 +501,17 @@ public struct HermesBridgeControlRunner: Sendable {
         return success(
           HermesBridgeControlRenderer.renderAuditEvents(events, format: invocation.format))
       case .verifyAudit:
+        let auditRoot = layout.logsRoot.appendingPathComponent("Audit", isDirectory: true)
+        let anchors = (try? HermesAuditPublicTrustAnchorStore(root: auditRoot).load()) ?? []
         let report = try HermesAuditIntegrityVerifier(
-          root: layout.logsRoot.appendingPathComponent("Audit", isDirectory: true)
+          root: auditRoot,
+          trustAnchors: anchors
         ).verify()
         let code: HermesBridgeCLIExitCode =
-          [.corrupted, .unsupported, .signatureUnavailable, .signatureInvalid].contains(
-            report.state)
+          [
+            .corrupted, .unsupported, .signatureUnavailable, .signatureInvalid, .unknownSigner,
+            .keyUnavailable,
+          ].contains(report.state)
           ? .unhealthy : .success
         return HermesBridgeCLIRunResult(
           exitCode: code,
@@ -499,6 +519,21 @@ public struct HermesBridgeControlRunner: Sendable {
             report, format: invocation.format) + "\n",
           stderr: ""
         )
+      case .auditSigningStatus:
+        let status = signingStatus(layout: layout)
+        return success(
+          HermesBridgeControlRenderer.renderAuditSigningStatus(status, format: invocation.format))
+      case .createAuditSigningKey:
+        let status = try createAuditSigningKey(layout: layout)
+        return success(
+          HermesBridgeControlRenderer.renderAuditSigningStatus(status, format: invocation.format))
+      case .rotateAuditSigningKey:
+        let status = try await rotateAuditSigningKey(layout: layout)
+        return success(
+          HermesBridgeControlRenderer.renderAuditSigningStatus(status, format: invocation.format))
+      case .exportAuditTrustAnchors(let outputDirectory):
+        let count = try exportAuditTrustAnchors(layout: layout, outputDirectory: outputDirectory)
+        return success("auditTrustAnchors: exported=\(count)")
       case .exportAudit(let outputDirectory):
         let manifest = try await runtime.audit.export(
           layout: layout, outputDirectory: outputDirectory)
@@ -663,7 +698,85 @@ public struct HermesBridgeControlRunner: Sendable {
     try FileBackedHermesAuditStore(
       configuration: HermesAuditStoreConfiguration(
         root: layout.logsRoot.appendingPathComponent("Audit", isDirectory: true)
+      ),
+      signingProvider: signingProvider(layout: layout)
+    )
+  }
+
+  private func signingStatus(layout: HermesBridgeInstallationLayout) -> HermesAuditSigningStatus {
+    HermesAuditPublicTrustAnchorStore(root: auditRoot(layout: layout)).status()
+  }
+
+  private func createAuditSigningKey(layout: HermesBridgeInstallationLayout) throws
+    -> HermesAuditSigningStatus
+  {
+    let auditRoot = auditRoot(layout: layout)
+    let key = try HermesAuditSigningKeyManager().createKey()
+    let anchor = try key.publicTrustAnchor(state: .active)
+    try HermesAuditPublicTrustAnchorStore(root: auditRoot).appendCreatedAnchor(anchor)
+    return signingStatus(layout: layout)
+  }
+
+  private func rotateAuditSigningKey(layout: HermesBridgeInstallationLayout) async throws
+    -> HermesAuditSigningStatus
+  {
+    let oldStatus = signingStatus(layout: layout)
+    let store = try await auditStore(layout: layout)
+    try await store.rotateActiveSegment()
+    let key = try HermesAuditSigningKeyManager().rotateKey()
+    let anchor = try key.publicTrustAnchor(state: .active)
+    try HermesAuditPublicTrustAnchorStore(root: auditRoot(layout: layout)).appendCreatedAnchor(
+      anchor)
+    try await auditStore(layout: layout).append(
+      HermesAuditEvent.make(
+        kind: .auditSigningKeyRotated,
+        actor: .controlCLI,
+        outcome: .succeeded,
+        reasonCode: "audit_signing_key_rotated",
+        metadata: try HermesAuditMetadata([
+          "previousState": oldStatus.state.rawValue,
+          "newFingerprint": anchor.fingerprint.prefix,
+        ])
       ))
+    return signingStatus(layout: layout)
+  }
+
+  private func exportAuditTrustAnchors(
+    layout: HermesBridgeInstallationLayout,
+    outputDirectory: URL
+  ) throws -> Int {
+    let anchors = try HermesAuditPublicTrustAnchorStore(root: auditRoot(layout: layout)).load()
+    try FileManager.default.createDirectory(
+      at: outputDirectory,
+      withIntermediateDirectories: true,
+      attributes: [.posixPermissions: NSNumber(value: Int16(0o700))]
+    )
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    encoder.dateEncodingStrategy = .iso8601
+    try encoder.encode(anchors).write(
+      to: outputDirectory.appendingPathComponent("audit-trust-anchors.json"),
+      options: [.atomic]
+    )
+    return anchors.count
+  }
+
+  private func signingProvider(layout: HermesBridgeInstallationLayout)
+    -> any HermesAuditManifestSigningProvider
+  {
+    guard
+      let active = try? HermesAuditPublicTrustAnchorStore(root: auditRoot(layout: layout))
+        .activeAnchor(),
+      let signer = try? HermesAuditSigningKeyManager().lookup(
+        signerID: active.signerID,
+        keyGenerationID: active.keyGenerationID
+      )
+    else { return HermesUnsignedAuditManifestSigningProvider() }
+    return signer
+  }
+
+  private func auditRoot(layout: HermesBridgeInstallationLayout) -> URL {
+    layout.logsRoot.appendingPathComponent("Audit", isDirectory: true)
   }
 }
 
@@ -818,6 +931,20 @@ public enum HermesBridgeControlRenderer {
       "verifiedSegments: \(report.verifiedSegmentCount)",
       "verifiedEvents: \(report.verifiedEventCount)",
       "issues: \(report.issueCodes.map(\.rawValue).joined(separator: ","))",
+    ].joined(separator: "\n")
+  }
+
+  public static func renderAuditSigningStatus(
+    _ status: HermesAuditSigningStatus,
+    format: HermesBridgeCLIOutputFormat
+  ) -> String {
+    if format == .json { return json(status) }
+    return [
+      "auditSigning: \(status.signingAvailable ? "available" : "unavailable")",
+      "state: \(status.state.rawValue)",
+      "activeFingerprintPrefix: \(status.activeFingerprintPrefix ?? "none")",
+      "trustAnchors: \(status.trustAnchorCount)",
+      "remediation: \(status.remediationCode)",
     ].joined(separator: "\n")
   }
 
@@ -1025,10 +1152,23 @@ public struct ProductionAuditViewer: HermesBridgeAuditViewing {
   }
 
   private func store(layout: HermesBridgeInstallationLayout) throws -> FileBackedHermesAuditStore {
-    try FileBackedHermesAuditStore(
+    let auditRoot = layout.logsRoot.appendingPathComponent("Audit", isDirectory: true)
+    return try FileBackedHermesAuditStore(
       configuration: HermesAuditStoreConfiguration(
-        root: layout.logsRoot.appendingPathComponent("Audit", isDirectory: true)
-      ))
+        root: auditRoot
+      ),
+      signingProvider: Self.signingProvider(auditRoot: auditRoot)
+    )
+  }
+
+  private static func signingProvider(auditRoot: URL) -> any HermesAuditManifestSigningProvider {
+    guard let active = try? HermesAuditPublicTrustAnchorStore(root: auditRoot).activeAnchor(),
+      let signer = try? HermesAuditSigningKeyManager().lookup(
+        signerID: active.signerID,
+        keyGenerationID: active.keyGenerationID
+      )
+    else { return HermesUnsignedAuditManifestSigningProvider() }
+    return signer
   }
 }
 
@@ -1135,8 +1275,11 @@ public struct ProductionDoctorChecker: HermesBridgeDoctorChecking {
       check(
         staleTemporaryFiles(layout.runtimeRoot) == false, "temporary.staleFiles",
         "no stale temporary files", "CLEAN_STALE_TEMPORARY_FILES"))
+    let auditRoot = layout.logsRoot.appendingPathComponent("Audit", isDirectory: true)
+    let trustAnchors = (try? HermesAuditPublicTrustAnchorStore(root: auditRoot).load()) ?? []
     let auditIntegrity = try? HermesAuditIntegrityVerifier(
-      root: layout.logsRoot.appendingPathComponent("Audit", isDirectory: true)
+      root: auditRoot,
+      trustAnchors: trustAnchors
     ).verify()
     checks.append(auditIntegrityCheck(auditIntegrity))
     let signingStatus: HermesBridgeDoctorCheckStatus =
@@ -1162,7 +1305,8 @@ public struct ProductionDoctorChecker: HermesBridgeDoctorChecking {
       binary: binary,
       launchdVisible: launchdVisible,
       xpcVisible: xpc.handshake,
-      auditIntegrity: auditIntegrity.map(HermesAuditExportIntegrityEvidence.init(report:))
+      auditIntegrity: auditIntegrity.map(HermesAuditExportIntegrityEvidence.init(report:)),
+      auditSigningStatus: HermesAuditPublicTrustAnchorStore(root: auditRoot).status()
     )
     try? await auditStore(layout: layout).append(
       HermesAuditEvent.make(
@@ -1180,7 +1324,8 @@ public struct ProductionDoctorChecker: HermesBridgeDoctorChecking {
     binary: URL?,
     launchdVisible: Bool,
     xpcVisible: Bool,
-    auditIntegrity: HermesAuditExportIntegrityEvidence?
+    auditIntegrity: HermesAuditExportIntegrityEvidence?,
+    auditSigningStatus: HermesAuditSigningStatus?
   ) async -> HermesPermissionsDoctorReport {
     let roots = try? await HermesBridgeXPCClient(
       machServiceName: try HermesBridgeMachServiceName(layout.machService),
@@ -1201,7 +1346,8 @@ public struct ProductionDoctorChecker: HermesBridgeDoctorChecking {
         securityScopedBookmarkAvailable: rootCount.map { $0 > 0 },
         appIntentMetadataPresent: appIntentMetadata,
         notificationsRelevant: true,
-        auditIntegrity: auditIntegrity
+        auditIntegrity: auditIntegrity,
+        auditSigningStatus: auditSigningStatus
       ))
   }
 
@@ -1263,11 +1409,12 @@ public struct ProductionDoctorChecker: HermesBridgeDoctorChecking {
     }
     let status: HermesBridgeDoctorCheckStatus
     switch report.state {
-    case .verified, .verifiedUnsigned, .incompleteRecoverableTail:
+    case .verified, .verifiedUnsigned, .verifiedSigned, .retiredSignerValid,
+      .incompleteRecoverableTail:
       status = .pass
     case .signatureUnavailable:
       status = .warning
-    case .corrupted, .unsupported, .signatureInvalid:
+    case .corrupted, .unsupported, .signatureInvalid, .unknownSigner, .keyUnavailable:
       status = .fail
     }
     return HermesBridgeDoctorCheck(

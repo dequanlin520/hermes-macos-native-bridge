@@ -66,6 +66,12 @@ provide a raw log viewer, arbitrary filesystem browser or generic file-read
 operation. Audit export requires explicit user folder selection and writes a
 redacted archive with manifest and checksum.
 
+Audit integrity views may show signing availability, an active signer
+fingerprint prefix, signed and unsigned segment counts, integrity state, last
+verification timestamp and fixed remediation codes. They never display private
+Keychain references, complete signatures, private-key bytes, prompts, backend
+tokens, bookmark bytes, file contents or private absolute paths.
+
 ## Lifecycle
 
 At launch the view model refreshes service status, XPC protocol version,

@@ -2,8 +2,8 @@
 
 Hermes Bridge audit integrity uses a deterministic SHA-256 hash chain over the
 bounded file-backed audit store. It provides tamper-evidence for retained local
-records. It does not prove author identity unless a real manifest signing
-provider is explicitly configured.
+records. Signer authenticity is a separate layer described in
+`Docs/Security/AuditSigning.md`.
 
 ## Canonical Event Encoding
 
@@ -52,21 +52,25 @@ next segment. The manifest includes:
 - previous segment manifest digest;
 - segment file SHA-256;
 - creation and close timestamps;
-- optional signature metadata.
+- optional signature metadata for finalized manifests only.
 
 A manifest checksum sidecar records the SHA-256 of the manifest file. Previous
 segment linkage uses manifest digests, while event linkage uses terminal event
 digests.
 
-## Signing
+## Signing And Trust Models
 
-The production default is unsigned. Unsigned hash chaining can show that
-retained records have not changed relative to the local chain, but it must not
-be described as identity authentication.
+Unsigned hash chaining can show that retained records have not changed relative
+to the local chain, but it must not be described as identity authentication.
 
-`HermesAuditManifestSigningProvider` is the injection point for later signing.
-Tests use an ephemeral P-256 provider. Tests do not read Keychain, persist a
-user signing key or create a production private key automatically.
+Signed manifests add Hermes installation audit signer authenticity when a known
+public trust anchor is available. This is not Apple Developer ID code signing.
+Developer ID signing authenticates distributed binaries; audit manifest signing
+authenticates finalized audit segment manifests.
+
+`HermesKeychainAuditManifestSigner` uses a P-256 private key stored through
+Security.framework. The private key is not exported. Public trust anchors carry
+the public key, signer ID, fingerprint, active or retired state and checksum.
 
 ## Retention Anchors
 
@@ -87,7 +91,7 @@ history and are not silently repaired.
 
 Verification is read-only and emits only bounded safe summaries:
 
-- integrity state;
+- integrity state, including signed, unsigned and signer-failure states;
 - verified segment count;
 - verified event count;
 - safe issue codes;

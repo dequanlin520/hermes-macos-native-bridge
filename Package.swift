@@ -104,6 +104,10 @@ let package = Package(
       name: "M6001AuditFixture",
       dependencies: ["HermesRuntimeFoundation"]
     ),
+    .executableTarget(
+      name: "M6003AuditSigningFixture",
+      dependencies: ["HermesRuntimeFoundation"]
+    ),
     .testTarget(
       name: "HermesRuntimeFoundationTests",
       dependencies: ["HermesRuntimeFoundation"],

@@ -18,6 +18,12 @@ The report contains one check for each `HermesPermissionKind`:
 - `authorizedFileRoots`
 - `notifications`
 - `appIntentMetadata`
+- `auditSigningKey`
+- `auditKeychain`
+- `auditTrustAnchor`
+- `auditUnsignedLegacySegments`
+- `auditInvalidSignatures`
+- `auditUnknownSigner`
 - `signing`
 - `hardenedRuntime`
 - `notarization`
@@ -57,8 +63,9 @@ run generic shell, AppleScript or JXA remediation.
 Automation is reported from documented state evidence only. When there is no
 non-prompting public probe, it is reported as `notDetermined`.
 
-Audit integrity diagnostics are read-only. They do not repair or rewrite audit
-history, do not expose raw corrupt records and do not include private paths.
+Audit integrity and audit signing diagnostics are read-only. They do not repair
+or rewrite audit history, do not expose raw corrupt records, do not include
+private paths and do not export private-key material.
 
 ## Remediation
 
@@ -74,6 +81,11 @@ Remediation uses fixed codes:
 - `rebuildSignedApp`
 - `configureDeveloperID`
 - `notarizeRelease`
+- `createAuditSigningKey`
+- `unlockKeychain`
+- `exportAuditTrustAnchor`
+- `rotateAuditSigningKey`
+- `verifyAuditLog`
 
 System Settings remediation opens only fixed documented URL schemes after an
 explicit user click. The Bridge never changes a permission automatically.
@@ -88,5 +100,5 @@ without user-mediated system state.
 ## Next Hardening
 
 Future work should add release notarization ticket evidence, Developer ID
-release build metadata, richer notification diagnostics, production manifest
-signing configuration, and manual validation for user-facing permission flows.
+release build metadata, richer notification diagnostics and manual validation
+for user-facing permission flows.

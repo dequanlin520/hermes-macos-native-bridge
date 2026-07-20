@@ -19,6 +19,12 @@ final class HermesPermissionsDoctorTests: XCTestCase {
         "authorizedFileRoots",
         "notifications",
         "appIntentMetadata",
+        "auditSigningKey",
+        "auditKeychain",
+        "auditTrustAnchor",
+        "auditUnsignedLegacySegments",
+        "auditInvalidSignatures",
+        "auditUnknownSigner",
         "signing",
         "hardenedRuntime",
         "notarization",
@@ -70,7 +76,7 @@ final class HermesPermissionsDoctorTests: XCTestCase {
   }
 
   func testFixedRemediationCodesAndSystemSettingsURLs() {
-    XCTAssertEqual(HermesPermissionRemediationCode.allCases.count, 10)
+    XCTAssertEqual(HermesPermissionRemediationCode.allCases.count, 15)
     XCTAssertEqual(
       HermesSystemSettingsRemediationURL.url(for: .openAccessibilitySettings)?.absoluteString,
       "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
@@ -139,6 +145,32 @@ final class HermesPermissionsDoctorTests: XCTestCase {
 
     XCTAssertEqual(report.auditIntegrity?.state, .verifiedUnsigned)
     XCTAssertEqual(report.auditIntegrity?.verifiedEventCount, 2)
+    XCTAssertFalse(String(describing: report).contains("/Users/"))
+  }
+
+  func testAuditSigningDoctorStates() throws {
+    let report = doctor().report(
+      evidence: HermesPermissionsDoctorEvidence(
+        auditIntegrity: HermesAuditExportIntegrityEvidence(
+          report: HermesAuditVerificationReport(
+            state: .unknownSigner,
+            verifiedSegmentCount: 1,
+            verifiedEventCount: 2,
+            issueCodes: [.unknownSigner]
+          )),
+        auditSigningStatus: HermesAuditSigningStatus(
+          signingAvailable: false,
+          state: .locked,
+          activeSignerID: try HermesAuditSignerID(rawValue: "hasg_doctor"),
+          activeFingerprintPrefix: "abc123abc123",
+          trustAnchorCount: 1,
+          remediationCode: "AUDIT_SIGNING_KEYCHAIN_CHECK"
+        )
+      ))
+    XCTAssertEqual(report.check(.auditSigningKey).state, .misconfigured)
+    XCTAssertEqual(report.check(.auditKeychain).state, .restricted)
+    XCTAssertEqual(report.check(.auditTrustAnchor).state, .granted)
+    XCTAssertEqual(report.check(.auditUnknownSigner).state, .misconfigured)
     XCTAssertFalse(String(describing: report).contains("/Users/"))
   }
 
