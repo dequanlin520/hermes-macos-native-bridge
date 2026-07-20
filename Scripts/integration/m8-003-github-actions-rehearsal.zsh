@@ -348,7 +348,7 @@ scan_evidence() {
 
 check_residual_gh_process() {
   residual_gh_process="no"
-  if ps -axo pid=,command= | grep -E '[g]h run watch' >/dev/null 2>&1; then
+  if ps -axo comm=,args= | awk '$1 ~ /(^|\/)gh$/ && $0 ~ / run watch( |$)/ { found=1 } END { exit(found ? 0 : 1) }'; then
     residual_gh_process="yes"
   fi
 }

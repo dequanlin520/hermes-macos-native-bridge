@@ -35,10 +35,9 @@ jobs:
             uname -a
           } | tee artifacts/m8-002/toolchain.txt
       - name: Build unsigned or ad-hoc release candidate
-        env:
-          SOURCE_DATE_EPOCH: ${{ github.event.repository.pushed_at }}
         run: |
-          Scripts/release/build-release-candidate.zsh --version "${GITHUB_REF_NAME:-manual-rc}" --signing-mode adhoc
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" \
+            Scripts/release/build-release-candidate.zsh --version "${GITHUB_REF_NAME:-manual-rc}" --signing-mode adhoc
       - name: Run M8-001 acceptance harness
         run: Scripts/integration/m8-001-release-candidate-acceptance.zsh
       - name: Generate release manifest
