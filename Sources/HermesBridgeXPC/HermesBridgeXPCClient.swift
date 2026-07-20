@@ -105,6 +105,228 @@ public actor HermesBridgeXPCClient {
     return payload
   }
 
+  public func listAuthorizedRoots() async throws -> HermesBridgeAuthorizedRootListPayload {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .listAuthorizedRoots
+      ))
+    guard case .success(.listAuthorizedRoots(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
+  public func registerAuthorizedRoot(
+    displayName: String,
+    bookmarkData: Data
+  ) async throws -> HermesBridgeAuthorizedRootPayload {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .registerAuthorizedRoot,
+        registerAuthorizedRoot: HermesBridgeRegisterAuthorizedRootPayload(
+          displayName: displayName,
+          bookmarkData: bookmarkData
+        )
+      ))
+    guard case .success(.registerAuthorizedRoot(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
+  public func refreshAuthorizedRoot(
+    rootID: HermesAuthorizedRootID,
+    bookmarkData: Data,
+    expectedRevision: Int? = nil
+  ) async throws -> HermesBridgeAuthorizedRootPayload {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .refreshAuthorizedRoot,
+        refreshAuthorizedRoot: HermesBridgeRefreshAuthorizedRootPayload(
+          rootID: rootID.rawValue,
+          bookmarkData: bookmarkData,
+          expectedRevision: expectedRevision
+        )
+      ))
+    guard case .success(.refreshAuthorizedRoot(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
+  public func deactivateAuthorizedRoot(
+    rootID: HermesAuthorizedRootID,
+    expectedRevision: Int? = nil
+  ) async throws -> HermesBridgeAuthorizedRootPayload {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .deactivateAuthorizedRoot,
+        deactivateAuthorizedRoot: HermesBridgeRootIDPayload(
+          rootID: rootID.rawValue,
+          expectedRevision: expectedRevision
+        )
+      ))
+    guard case .success(.deactivateAuthorizedRoot(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
+  public func reactivateAuthorizedRoot(
+    rootID: HermesAuthorizedRootID,
+    bookmarkData: Data,
+    expectedRevision: Int? = nil
+  ) async throws -> HermesBridgeAuthorizedRootPayload {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .reactivateAuthorizedRoot,
+        reactivateAuthorizedRoot: HermesBridgeReactivateAuthorizedRootPayload(
+          rootID: rootID.rawValue,
+          bookmarkData: bookmarkData,
+          expectedRevision: expectedRevision
+        )
+      ))
+    guard case .success(.reactivateAuthorizedRoot(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
+  public func removeAuthorizedRoot(
+    rootID: HermesAuthorizedRootID,
+    expectedRevision: Int? = nil
+  ) async throws -> HermesBridgeAuthorizedRootPayload {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .removeAuthorizedRoot,
+        removeAuthorizedRoot: HermesBridgeRootIDPayload(
+          rootID: rootID.rawValue,
+          expectedRevision: expectedRevision
+        )
+      ))
+    guard case .success(.removeAuthorizedRoot(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
+  public func authorizedRootStatus(rootID: HermesAuthorizedRootID) async throws
+    -> HermesBridgeAuthorizedRootStatusPayload
+  {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .authorizedRootStatus,
+        authorizedRootStatus: HermesBridgeRootIDPayload(rootID: rootID.rawValue)
+      ))
+    guard case .success(.authorizedRootStatus(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
+  public func createFileEventSubscription(rootIDs: [HermesAuthorizedRootID]) async throws
+    -> HermesBridgeFileEventSubscriptionPayload
+  {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .createFileEventSubscription,
+        createFileEventSubscription: HermesBridgeCreateFileEventSubscriptionPayload(
+          rootIDs: rootIDs.map(\.rawValue)
+        )
+      ))
+    guard case .success(.createFileEventSubscription(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
+  public func pollFileEventSubscription(
+    subscriptionID: HermesBridgeFileEventSubscriptionID,
+    timeoutMilliseconds: Int = 0
+  ) async throws -> HermesBridgeFileEventBatchPayload {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .pollFileEventSubscription,
+        pollFileEventSubscription: HermesBridgePollFileEventSubscriptionPayload(
+          subscriptionID: subscriptionID.rawValue,
+          timeoutMilliseconds: timeoutMilliseconds
+        )
+      ))
+    guard case .success(.pollFileEventSubscription(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
+  public func acknowledgeFileEventBatch(
+    subscriptionID: HermesBridgeFileEventSubscriptionID,
+    acknowledgedEventID: UInt64
+  ) async throws -> HermesBridgeAcknowledgementPayload {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .acknowledgeFileEventBatch,
+        acknowledgeFileEventBatch: HermesBridgeAcknowledgeFileEventBatchPayload(
+          subscriptionID: subscriptionID.rawValue,
+          acknowledgedEventID: acknowledgedEventID
+        )
+      ))
+    guard case .success(.acknowledgeFileEventBatch(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
+  public func cancelFileEventSubscription(
+    subscriptionID: HermesBridgeFileEventSubscriptionID
+  ) async throws -> HermesBridgeFileEventSubscriptionPayload {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .cancelFileEventSubscription,
+        cancelFileEventSubscription: HermesBridgeCancelFileEventSubscriptionPayload(
+          subscriptionID: subscriptionID.rawValue
+        )
+      ))
+    guard case .success(.cancelFileEventSubscription(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
+  public func fileEventMonitorStatus() async throws -> HermesBridgeFileEventMonitorStatusPayload {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .fileEventMonitorStatus
+      ))
+    guard case .success(.fileEventMonitorStatus(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
   public func submit(bindingID: HermesRequestBindingID, prompt: String) async throws
     -> HermesRequestID
   {
@@ -256,6 +478,29 @@ public struct HermesBridgeAppIntentAdapter: Sendable {
 
   public func listEnabledBindings() async throws -> HermesBridgeBindingListPayload {
     try await client.listEnabledBindings()
+  }
+}
+
+public struct HermesBridgeFileIntegrationAppAdapter: Sendable {
+  private let client: HermesBridgeXPCClient
+
+  public init(client: HermesBridgeXPCClient) {
+    self.client = client
+  }
+
+  public func listAuthorizedRoots() async throws -> HermesBridgeAuthorizedRootListPayload {
+    try await client.listAuthorizedRoots()
+  }
+
+  public func registerAuthorizedRoot(
+    displayName: String,
+    bookmarkData: Data
+  ) async throws -> HermesBridgeAuthorizedRootPayload {
+    try await client.registerAuthorizedRoot(displayName: displayName, bookmarkData: bookmarkData)
+  }
+
+  public func fileEventMonitorStatus() async throws -> HermesBridgeFileEventMonitorStatusPayload {
+    try await client.fileEventMonitorStatus()
   }
 }
 

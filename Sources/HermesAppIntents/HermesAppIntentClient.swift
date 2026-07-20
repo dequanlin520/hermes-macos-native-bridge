@@ -182,9 +182,12 @@ public actor HermesAppIntentXPCClient: HermesAppIntentClient {
     switch error {
     case .unsupportedProtocolVersion:
       return .protocolIncompatible
-    case .malformedPayload, .unsupportedOperation, .invalidState:
+    case .malformedPayload, .unsupportedOperation, .unsupportedCapability, .invalidState,
+      .rootNotFound, .rootInactive, .invalidBookmark, .staleAuthorization,
+      .securityScopeUnavailable, .subscriptionNotFound, .subscriptionExpired,
+      .acknowledgementRejected, .eventBufferOverflow, .rescanRequired:
       return .operationRejected
-    case .oversizedPayload:
+    case .oversizedPayload, .bookmarkTooLarge:
       return .oversizedPrompt
     case .invalidBinding:
       return .invalidBinding

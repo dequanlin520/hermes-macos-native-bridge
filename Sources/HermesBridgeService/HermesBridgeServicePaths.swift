@@ -12,6 +12,7 @@ public enum HermesBridgeServicePathsError: Error, Equatable, Sendable {
 public struct HermesBridgeServicePaths: Equatable, Sendable {
   public let runtimeRoot: URL
   public let requestStateRoot: URL
+  public let authorizedRootsRoot: URL
   public let logsRoot: URL
   public let temporaryRoot: URL
 
@@ -19,6 +20,8 @@ public struct HermesBridgeServicePaths: Equatable, Sendable {
     let base = configuration.runtimeRoot.deletingLastPathComponent()
     self.runtimeRoot = try Self.secureDirectory(configuration.runtimeRoot)
     self.requestStateRoot = try Self.secureDirectory(configuration.requestStateRoot)
+    self.authorizedRootsRoot = try Self.secureDirectory(
+      base.appendingPathComponent("AuthorizedRoots", isDirectory: true))
     self.logsRoot = try Self.secureDirectory(base.appendingPathComponent("Logs", isDirectory: true))
     self.temporaryRoot = try Self.secureDirectory(
       base.appendingPathComponent("Temporary", isDirectory: true))
@@ -27,11 +30,16 @@ public struct HermesBridgeServicePaths: Equatable, Sendable {
   public init(
     runtimeRoot: URL,
     requestStateRoot: URL,
+    authorizedRootsRoot: URL? = nil,
     logsRoot: URL,
     temporaryRoot: URL
   ) throws {
     self.runtimeRoot = try Self.secureDirectory(runtimeRoot)
     self.requestStateRoot = try Self.secureDirectory(requestStateRoot)
+    self.authorizedRootsRoot = try Self.secureDirectory(
+      authorizedRootsRoot
+        ?? runtimeRoot.deletingLastPathComponent()
+        .appendingPathComponent("AuthorizedRoots", isDirectory: true))
     self.logsRoot = try Self.secureDirectory(logsRoot)
     self.temporaryRoot = try Self.secureDirectory(temporaryRoot)
   }
