@@ -2,6 +2,18 @@
 
 Native, bidirectional macOS integration for Hermes Agent.
 
+## Release Candidate Acceptance
+
+The M8 release-candidate harness composes the app, menu bar, XPC client,
+service, XPC service, request orchestrator, and an artifact-owned fake Hermes
+backend end to end:
+
+```zsh
+Scripts/integration/m8-001-release-candidate-acceptance.zsh
+```
+
+Evidence is written under `artifacts/m8-001`.
+
 ## Project status
 
 Pre-alpha. Technical validation has not started.

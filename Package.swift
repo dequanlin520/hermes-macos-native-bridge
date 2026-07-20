@@ -48,6 +48,10 @@ let package = Package(
       name: "HermesBridgeApp",
       targets: ["HermesBridgeApp"]
     ),
+    .executable(
+      name: "M8001ReleaseCandidateAcceptance",
+      targets: ["M8001ReleaseCandidateAcceptance"]
+    ),
   ],
   targets: [
     .target(
@@ -112,6 +116,17 @@ let package = Package(
       name: "M6004AuditSigningOperationsFixture",
       dependencies: ["HermesRuntimeFoundation"]
     ),
+    .target(
+      name: "HermesReleaseCandidateAcceptance",
+      dependencies: [
+        "HermesBridgeMenuBar", "HermesBridgeService", "HermesBridgeServiceManager",
+        "HermesBridgeXPC", "HermesRuntimeFoundation",
+      ]
+    ),
+    .executableTarget(
+      name: "M8001ReleaseCandidateAcceptance",
+      dependencies: ["HermesReleaseCandidateAcceptance"]
+    ),
     .testTarget(
       name: "HermesRuntimeFoundationTests",
       dependencies: ["HermesRuntimeFoundation"],
@@ -152,6 +167,10 @@ let package = Package(
     .testTarget(
       name: "M6001ScriptTests",
       dependencies: []
+    ),
+    .testTarget(
+      name: "HermesReleaseCandidateAcceptanceTests",
+      dependencies: ["HermesReleaseCandidateAcceptance"]
     ),
   ]
 )
