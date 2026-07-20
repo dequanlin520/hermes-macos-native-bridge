@@ -98,6 +98,26 @@ The script also provides `--manual-nsopenpanel-validation` for explicit manual
 panel validation. Successful ordinary bookmark registration does not by itself
 prove App Sandbox security-scoped entitlement behavior.
 
+M5-004 adds `Scripts/integration/m5-004-sandboxed-bookmark-lifecycle.zsh`, which
+builds an artifact-owned sandboxed `Hermes Bridge.app`, ad-hoc signs it with
+`Packaging/Entitlements/HermesBridgeApp.entitlements`, verifies embedded
+entitlements and App Intents metadata, then validates security-scoped bookmark
+creation, typed XPC persistence, app/service restart resolution and selected
+root-only FSEvents observation. The automated run reported `M5_004_RESULT=PASS`
+and `M5-004 VERDICT: CONDITIONAL GO` because real manual `NSOpenPanel`/TCC
+selection evidence is still separate.
+
+The app entitlement policy is limited to:
+
+```text
+com.apple.security.app-sandbox = true
+com.apple.security.files.user-selected.read-write = true
+```
+
+No broad filesystem, temporary exception, Apple Events, application group,
+network, Mach lookup, get-task-allow or library-validation-disabling
+entitlement is enabled for the menu bar app in M5-004.
+
 ## Shortcuts Discovery
 
 The integration script copies the app only to an artifact-owned location by

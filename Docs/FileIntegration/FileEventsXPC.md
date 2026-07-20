@@ -2,12 +2,16 @@
 
 ## Protocol Version
 
-M5-002 raises the compatible Bridge XPC protocol version to `1.2`.
+M5-004 raises the compatible Bridge XPC protocol version to `1.3`.
 
 The added capabilities are:
 
 - `authorizedRootManagement`;
 - `fileEventObservation`.
+
+The M5-004 protocol minor also adds typed service-side authorized-root
+resolution so the Bridge can report stale state, same-root resolution and
+whether `startAccessingSecurityScopedResource()` succeeded in the service.
 
 The major version remains `1`, so existing `1.x` clients continue to negotiate
 with the service. Compositions that do not install file integration return the

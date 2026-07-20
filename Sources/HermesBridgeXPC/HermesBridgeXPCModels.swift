@@ -4,7 +4,7 @@ import HermesRuntimeFoundation
 public struct HermesBridgeProtocolVersion: Codable, Equatable, Sendable,
   CustomStringConvertible
 {
-  public static let current = HermesBridgeProtocolVersion(major: 1, minor: 2)
+  public static let current = HermesBridgeProtocolVersion(major: 1, minor: 3)
   public static let supportedMajor = 1
 
   public let major: Int
@@ -54,6 +54,7 @@ public enum HermesBridgeOperation: String, Codable, CaseIterable, Equatable, Sen
   case reactivateAuthorizedRoot
   case removeAuthorizedRoot
   case authorizedRootStatus
+  case resolveAuthorizedRoot
   case createFileEventSubscription
   case pollFileEventSubscription
   case acknowledgeFileEventBatch
@@ -219,6 +220,47 @@ public struct HermesBridgeAuthorizedRootStatusPayload: Codable, Equatable, Senda
 
   public init(root: HermesBridgeAuthorizedRootSummary) {
     self.root = root
+  }
+}
+
+public enum HermesBridgeAuthorizedRootResolutionStatus: String, Codable, Equatable, Sendable {
+  case resolved
+  case resolvedStale
+  case securityScopeStarted
+  case securityScopeUnavailable
+  case rejected
+}
+
+public struct HermesBridgeAuthorizedRootResolutionPayload: Codable, Equatable, Sendable {
+  public let rootID: String
+  public let status: HermesBridgeAuthorizedRootResolutionStatus
+  public let staleAuthorization: Bool
+  public let securityScopeStarted: Bool
+  public let resolvedSameAuthorizedRoot: Bool
+
+  public init(
+    rootID: HermesAuthorizedRootID,
+    resolution: HermesBookmarkAuthorizationResolution,
+    expectedResolvedRootURL: URL
+  ) {
+    self.rootID = rootID.rawValue
+    switch resolution.status {
+    case .resolved:
+      self.status = .resolved
+    case .resolvedStale:
+      self.status = .resolvedStale
+    case .securityScopeStarted:
+      self.status = .securityScopeStarted
+    case .securityScopeUnavailable:
+      self.status = .securityScopeUnavailable
+    case .rejected:
+      self.status = .rejected
+    }
+    self.staleAuthorization = resolution.bookmarkDataIsStale
+    self.securityScopeStarted = resolution.securityScopedAccessStarted
+    self.resolvedSameAuthorizedRoot =
+      resolution.resolvedURL?.standardizedFileURL.resolvingSymlinksInPath().path
+      == expectedResolvedRootURL.standardizedFileURL.resolvingSymlinksInPath().path
   }
 }
 
@@ -527,6 +569,7 @@ public struct HermesBridgeRequestEnvelope: Codable, Equatable, Sendable {
   public let reactivateAuthorizedRoot: HermesBridgeReactivateAuthorizedRootPayload?
   public let removeAuthorizedRoot: HermesBridgeRootIDPayload?
   public let authorizedRootStatus: HermesBridgeRootIDPayload?
+  public let resolveAuthorizedRoot: HermesBridgeRootIDPayload?
   public let createFileEventSubscription: HermesBridgeCreateFileEventSubscriptionPayload?
   public let pollFileEventSubscription: HermesBridgePollFileEventSubscriptionPayload?
   public let acknowledgeFileEventBatch: HermesBridgeAcknowledgeFileEventBatchPayload?
@@ -546,6 +589,7 @@ public struct HermesBridgeRequestEnvelope: Codable, Equatable, Sendable {
     reactivateAuthorizedRoot: HermesBridgeReactivateAuthorizedRootPayload? = nil,
     removeAuthorizedRoot: HermesBridgeRootIDPayload? = nil,
     authorizedRootStatus: HermesBridgeRootIDPayload? = nil,
+    resolveAuthorizedRoot: HermesBridgeRootIDPayload? = nil,
     createFileEventSubscription: HermesBridgeCreateFileEventSubscriptionPayload? = nil,
     pollFileEventSubscription: HermesBridgePollFileEventSubscriptionPayload? = nil,
     acknowledgeFileEventBatch: HermesBridgeAcknowledgeFileEventBatchPayload? = nil,
@@ -564,6 +608,7 @@ public struct HermesBridgeRequestEnvelope: Codable, Equatable, Sendable {
     self.reactivateAuthorizedRoot = reactivateAuthorizedRoot
     self.removeAuthorizedRoot = removeAuthorizedRoot
     self.authorizedRootStatus = authorizedRootStatus
+    self.resolveAuthorizedRoot = resolveAuthorizedRoot
     self.createFileEventSubscription = createFileEventSubscription
     self.pollFileEventSubscription = pollFileEventSubscription
     self.acknowledgeFileEventBatch = acknowledgeFileEventBatch
@@ -623,6 +668,7 @@ public enum HermesBridgeSuccessPayload: Codable, Equatable, Sendable {
   case reactivateAuthorizedRoot(HermesBridgeAuthorizedRootPayload)
   case removeAuthorizedRoot(HermesBridgeAuthorizedRootPayload)
   case authorizedRootStatus(HermesBridgeAuthorizedRootStatusPayload)
+  case resolveAuthorizedRoot(HermesBridgeAuthorizedRootResolutionPayload)
   case createFileEventSubscription(HermesBridgeFileEventSubscriptionPayload)
   case pollFileEventSubscription(HermesBridgeFileEventBatchPayload)
   case acknowledgeFileEventBatch(HermesBridgeAcknowledgementPayload)

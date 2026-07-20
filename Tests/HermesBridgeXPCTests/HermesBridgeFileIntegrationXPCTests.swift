@@ -11,7 +11,7 @@ final class HermesBridgeFileIntegrationXPCTests: XCTestCase {
     let version = try await harness.client.protocolVersion()
     let capabilities = try await harness.client.capabilities()
 
-    XCTAssertEqual(version.version, HermesBridgeProtocolVersion(major: 1, minor: 2))
+    XCTAssertEqual(version.version, HermesBridgeProtocolVersion(major: 1, minor: 3))
     XCTAssertTrue(capabilities.capabilities.contains(.authorizedRootManagement))
     XCTAssertTrue(capabilities.capabilities.contains(.fileEventObservation))
     XCTAssertTrue(capabilities.capabilities.contains(.bindingDiscovery))
@@ -35,10 +35,14 @@ final class HermesBridgeFileIntegrationXPCTests: XCTestCase {
 
     let listed = try await harness.client.listAuthorizedRoots()
     let status = try await harness.client.authorizedRootStatus(rootID: registered.rootID)
+    let resolution = try await harness.client.resolveAuthorizedRoot(rootID: registered.rootID)
     let encoded = try XCTUnwrap(String(data: JSONEncoder().encode(listed), encoding: .utf8))
 
     XCTAssertEqual(listed.roots.map(\.rootID), [registered.rootID.rawValue])
     XCTAssertEqual(status.root.rootID, registered.rootID.rawValue)
+    XCTAssertEqual(resolution.rootID, registered.rootID.rawValue)
+    XCTAssertTrue(resolution.resolvedSameAuthorizedRoot)
+    XCTAssertFalse(resolution.staleAuthorization)
     XCTAssertTrue(status.root.active)
     XCTAssertFalse(encoded.contains(harness.root.path))
     XCTAssertFalse(encoded.contains("bookmarkData"))
