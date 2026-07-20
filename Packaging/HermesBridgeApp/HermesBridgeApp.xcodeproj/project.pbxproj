@@ -1,0 +1,116 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXFileReference section */
+		1A2B3C4D5E6F700000000001 /* HermesMacOSNativeBridge */ = {isa = PBXFileReference; lastKnownFileType = folder; path = ../..; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		1A2B3C4D5E6F700000000002 = {
+			isa = PBXGroup;
+			children = (
+				1A2B3C4D5E6F700000000001 /* HermesMacOSNativeBridge */,
+			);
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXLegacyTarget section */
+		1A2B3C4D5E6F700000000003 /* HermesBridgeApp */ = {
+			isa = PBXLegacyTarget;
+			buildArgumentsString = "swift build --product HermesBridgeApp";
+			buildConfigurationList = 1A2B3C4D5E6F700000000004 /* Build configuration list for PBXLegacyTarget "HermesBridgeApp" */;
+			buildPhases = (
+			);
+			buildToolPath = /usr/bin/xcrun;
+			buildWorkingDirectory = ../..;
+			dependencies = (
+			);
+			name = HermesBridgeApp;
+			passBuildSettingsInEnvironment = 1;
+			productName = HermesBridgeApp;
+		};
+/* End PBXLegacyTarget section */
+
+/* Begin PBXProject section */
+		1A2B3C4D5E6F700000000005 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastUpgradeCheck = 1600;
+			};
+			buildConfigurationList = 1A2B3C4D5E6F700000000006 /* Build configuration list for PBXProject "HermesBridgeApp" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+			);
+			mainGroup = 1A2B3C4D5E6F700000000002;
+			productRefGroup = 1A2B3C4D5E6F700000000002;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				1A2B3C4D5E6F700000000003 /* HermesBridgeApp */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin XCBuildConfiguration section */
+		1A2B3C4D5E6F700000000007 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				PRODUCT_NAME = HermesBridgeApp;
+			};
+			name = Debug;
+		};
+		1A2B3C4D5E6F700000000008 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				PRODUCT_NAME = HermesBridgeApp;
+			};
+			name = Release;
+		};
+		1A2B3C4D5E6F700000000009 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+			};
+			name = Debug;
+		};
+		1A2B3C4D5E6F70000000000A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		1A2B3C4D5E6F700000000004 /* Build configuration list for PBXLegacyTarget "HermesBridgeApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1A2B3C4D5E6F700000000007 /* Debug */,
+				1A2B3C4D5E6F700000000008 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		1A2B3C4D5E6F700000000006 /* Build configuration list for PBXProject "HermesBridgeApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1A2B3C4D5E6F700000000009 /* Debug */,
+				1A2B3C4D5E6F70000000000A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 1A2B3C4D5E6F700000000005 /* Project object */;
+}
+

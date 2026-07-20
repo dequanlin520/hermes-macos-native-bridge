@@ -14,6 +14,24 @@ Scripts/integration/m8-001-release-candidate-acceptance.zsh
 
 Evidence is written under `artifacts/m8-001`.
 
+## CI and release pipeline
+
+M8-002 adds reproducible CI and release packaging workflows under
+`.github/workflows/`.
+
+- CI builds and tests the Swift package, builds `HermesBridgeApp` with Xcode,
+  validates scripts, scans privacy/action-surface markers, and retains failure
+  logs.
+- Release-candidate builds run M8-001 once, generate a staged bundle, SPDX
+  SBOM, checksums, manifest, gate summary, artifact attestation, and an
+  unsigned/ad-hoc conditional artifact when Apple credentials are unavailable.
+- Production releases require Developer ID signing, hardened runtime,
+  notarization acceptance, staple verification, Gatekeeper assessment, and a
+  final `PASS` gate before publication.
+
+See `Docs/Release/CI.md`, `Docs/Release/ReleasePipeline.md`,
+`Docs/Release/GitHubSecrets.md`, and `Docs/Release/ReleaseRunbook.md`.
+
 ## Project status
 
 Pre-alpha. Technical validation has not started.

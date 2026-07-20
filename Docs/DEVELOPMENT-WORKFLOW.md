@@ -60,3 +60,24 @@ follow-up issue explicitly authorizes that scope.
 Never commit secrets, access tokens, credentials, private prompts, private file
 paths, or unredacted diagnostic packages. Public issues and pull requests must
 use redacted examples.
+
+## CI And Release Validation
+
+Pull requests run `.github/workflows/ci.yml` with read-only default
+permissions and no Apple signing secrets. Release-candidate and production
+workflows are tag or manual-dispatch lanes.
+
+Local release validation should use:
+
+```zsh
+swift build
+swift test
+xcodebuild -project Packaging/HermesBridgeApp/HermesBridgeApp.xcodeproj \
+  -scheme HermesBridgeApp \
+  -destination 'platform=macOS' build
+find Scripts -name '*.zsh' -type f -print0 | xargs -0 -n1 zsh -n
+Scripts/release/build-release-candidate.zsh --version local-rc --signing-mode adhoc
+```
+
+Run the M8-001 harness at most once for a release validation pass, then consume
+its existing evidence when regenerating the M8-002 release manifest.

@@ -172,5 +172,9 @@ let package = Package(
       name: "HermesReleaseCandidateAcceptanceTests",
       dependencies: ["HermesReleaseCandidateAcceptance"]
     ),
+    .testTarget(
+      name: "M8002ReleasePipelineTests",
+      dependencies: []
+    ),
   ]
 )
