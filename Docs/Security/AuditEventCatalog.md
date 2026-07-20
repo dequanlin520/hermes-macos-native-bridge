@@ -24,6 +24,10 @@ Audit event kinds are fixed by `HermesAuditEventKind`.
 | `fileSubscriptionCreated` | File-event subscription was created. |
 | `fileSubscriptionCancelled` | File-event subscription was cancelled. |
 | `fileRescanRequired` | File monitor/subscription requires a rescan. |
+| `systemEventSubscriptionCreated` | System-event subscription was created. |
+| `systemEventSubscriptionCancelled` | System-event subscription was cancelled. |
+| `systemEventOverflow` | System-event subscription overflow requires resync. |
+| `serviceHealthTransition` | Bridge service-health classification changed. |
 | `doctorExecuted` | Health or permissions Doctor ran. |
 | `emergencyStopRequested` | Emergency stop was explicitly requested. |
 | `emergencyStopCompleted` | Emergency stop completed with bounded outcome. |

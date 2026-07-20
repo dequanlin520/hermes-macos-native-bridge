@@ -58,6 +58,70 @@ public struct HermesBridgeMenuBarRequestSummary: Codable, Equatable, Sendable {
   }
 }
 
+public struct HermesBridgeMenuBarSystemEventSummary: Codable, Equatable, Identifiable, Sendable {
+  public let id: String
+  public let kind: String
+  public let source: String
+  public let timestamp: Date
+  public let applicationBundleIdentifier: String?
+  public let applicationLocalizedName: String?
+  public let networkStatus: String?
+  public let serviceHealth: String?
+  public let reasonCode: String
+
+  public init(summary: HermesBridgeSystemEventSummary) {
+    self.id = Self.safeID(summary.eventID)
+    self.kind = summary.kind.rawValue
+    self.source = summary.source.rawValue
+    self.timestamp = summary.timestamp
+    self.applicationBundleIdentifier = summary.applicationBundleIdentifier.map(Self.safeID)
+    self.applicationLocalizedName = summary.applicationLocalizedName.map {
+      Self.safeText($0, maximumCharacters: 80)
+    }
+    self.networkStatus = summary.networkStatus?.rawValue
+    self.serviceHealth = summary.serviceHealth?.rawValue
+    self.reasonCode = Self.safeID(summary.reasonCode)
+  }
+
+  public init(
+    id: String,
+    kind: String,
+    source: String,
+    timestamp: Date,
+    applicationBundleIdentifier: String? = nil,
+    applicationLocalizedName: String? = nil,
+    networkStatus: String? = nil,
+    serviceHealth: String? = nil,
+    reasonCode: String
+  ) {
+    self.id = Self.safeID(id)
+    self.kind = Self.safeID(kind)
+    self.source = Self.safeID(source)
+    self.timestamp = timestamp
+    self.applicationBundleIdentifier = applicationBundleIdentifier.map(Self.safeID)
+    self.applicationLocalizedName = applicationLocalizedName.map {
+      Self.safeText($0, maximumCharacters: 80)
+    }
+    self.networkStatus = networkStatus.map(Self.safeID)
+    self.serviceHealth = serviceHealth.map(Self.safeID)
+    self.reasonCode = Self.safeID(reasonCode)
+  }
+
+  private static func safeID(_ value: String) -> String {
+    let filtered = value.filter {
+      $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "." || $0 == "_" || $0 == "-")
+    }
+    return String(filtered.prefix(128))
+  }
+
+  private static func safeText(_ value: String, maximumCharacters: Int) -> String {
+    let filtered = value.unicodeScalars.filter { scalar in
+      scalar.value >= 0x20 && scalar.value != 0x7F
+    }
+    return String(String.UnicodeScalarView(filtered)).prefixString(maximumCharacters)
+  }
+}
+
 public struct HermesBridgeMenuBarState: Codable, Equatable, Sendable {
   public var serviceStatus: HermesBridgeMenuBarServiceStatus
   public var installed: Bool
@@ -71,6 +135,10 @@ public struct HermesBridgeMenuBarState: Codable, Equatable, Sendable {
   public var permissionChecks: [HermesMenuBarPermissionCheckViewState]
   public var auditIntegrity: HermesMenuBarAuditIntegrityViewState?
   public var recentAuditEvents: [HermesMenuBarAuditEventViewState]
+  public var networkOnline: Bool
+  public var systemEventMonitorActive: Bool
+  public var recentSystemEvents: [HermesBridgeMenuBarSystemEventSummary]
+  public var serviceDegraded: Bool
   public var lastActionMessage: String?
 
   public init(
@@ -86,6 +154,10 @@ public struct HermesBridgeMenuBarState: Codable, Equatable, Sendable {
     permissionChecks: [HermesMenuBarPermissionCheckViewState] = [],
     auditIntegrity: HermesMenuBarAuditIntegrityViewState? = nil,
     recentAuditEvents: [HermesMenuBarAuditEventViewState] = [],
+    networkOnline: Bool = false,
+    systemEventMonitorActive: Bool = false,
+    recentSystemEvents: [HermesBridgeMenuBarSystemEventSummary] = [],
+    serviceDegraded: Bool = false,
     lastActionMessage: String? = nil
   ) {
     self.serviceStatus = serviceStatus
@@ -101,6 +173,10 @@ public struct HermesBridgeMenuBarState: Codable, Equatable, Sendable {
     self.permissionChecks = Array(permissionChecks.prefix(HermesPermissionKind.allCases.count))
     self.auditIntegrity = auditIntegrity
     self.recentAuditEvents = Array(recentAuditEvents.prefix(20))
+    self.networkOnline = networkOnline
+    self.systemEventMonitorActive = systemEventMonitorActive
+    self.recentSystemEvents = Array(recentSystemEvents.prefix(8))
+    self.serviceDegraded = serviceDegraded
     self.lastActionMessage = lastActionMessage.map { String($0.prefix(120)) }
   }
 }
@@ -566,6 +642,19 @@ public protocol HermesBridgeMenuBarXPCClient: Sendable {
   func protocolVersion() async throws -> HermesBridgeProtocolVersionPayload
   func capabilities() async throws -> HermesBridgeCapabilitiesPayload
   func listEnabledBindings() async throws -> HermesBridgeBindingListPayload
+  func systemEventMonitorStatus() async throws -> HermesBridgeSystemEventMonitorStatusPayload
+  func createSystemEventSubscription(kinds: [HermesSystemEventKind]) async throws
+    -> HermesBridgeSystemEventSubscriptionPayload
+  func pollSystemEventSubscription(
+    subscriptionID: HermesSystemEventSubscriptionID,
+    timeoutMilliseconds: Int
+  ) async throws -> HermesBridgeSystemEventBatchPayload
+  func acknowledgeSystemEventBatch(
+    subscriptionID: HermesSystemEventSubscriptionID,
+    acknowledgedEventOrdinal: UInt64
+  ) async throws -> HermesBridgeAcknowledgementPayload
+  func cancelSystemEventSubscription(subscriptionID: HermesSystemEventSubscriptionID) async throws
+    -> HermesBridgeSystemEventSubscriptionPayload
   func close() async
 }
 
@@ -1102,16 +1191,52 @@ public actor HermesBridgeMenuBarViewModel {
         capabilities.capabilities.contains(.bindingDiscovery)
         ? (try? await environment.xpcClient.listEnabledBindings().bindings) ?? [] : []
       let requests = (try? await environment.requestLister.recentRequests()) ?? []
+      let systemStatus =
+        capabilities.capabilities.contains(.systemEventObservation)
+        ? try? await environment.xpcClient.systemEventMonitorStatus() : nil
+      let systemEvents =
+        capabilities.capabilities.contains(.systemEventObservation)
+        ? await recentSafeSystemEvents() : []
       next.protocolCompatible = compatible
       next.serviceStatus = compatible ? next.serviceStatus : .protocolIncompatible
       next.protocolVersion = version.version.description
       next.capabilities = capabilities.capabilities.map(\.rawValue).sorted()
       next.enabledBindingCount = bindings.count
       next.recentRequests = Array(requests.prefix(8))
+      if let systemStatus {
+        next.networkOnline = systemStatus.status.networkStatus == .available
+        next.systemEventMonitorActive = systemStatus.status.started
+        next.serviceDegraded = systemStatus.status.serviceHealth != .healthy
+      }
+      next.recentSystemEvents = systemEvents
       state = next
     } catch {
       next.serviceStatus = .unavailable
       state = next
+    }
+  }
+
+  private func recentSafeSystemEvents() async -> [HermesBridgeMenuBarSystemEventSummary] {
+    do {
+      let subscription = try await environment.xpcClient.createSystemEventSubscription(
+        kinds: HermesSystemEventKind.allCases)
+      let subscriptionID = try HermesSystemEventSubscriptionID(
+        rawValue: subscription.subscriptionID)
+      let batch = try await environment.xpcClient.pollSystemEventSubscription(
+        subscriptionID: subscriptionID,
+        timeoutMilliseconds: 1
+      )
+      if batch.newestEventOrdinal > 0 {
+        _ = try? await environment.xpcClient.acknowledgeSystemEventBatch(
+          subscriptionID: subscriptionID,
+          acknowledgedEventOrdinal: batch.newestEventOrdinal
+        )
+      }
+      _ = try? await environment.xpcClient.cancelSystemEventSubscription(
+        subscriptionID: subscriptionID)
+      return batch.events.map(HermesBridgeMenuBarSystemEventSummary.init)
+    } catch {
+      return []
     }
   }
 
@@ -1187,8 +1312,51 @@ public actor ProductionMenuBarXPCClient: HermesBridgeMenuBarXPCClient {
     try await client.listEnabledBindings()
   }
 
+  public func systemEventMonitorStatus() async throws -> HermesBridgeSystemEventMonitorStatusPayload
+  {
+    try await client.systemEventMonitorStatus()
+  }
+
+  public func createSystemEventSubscription(kinds: [HermesSystemEventKind]) async throws
+    -> HermesBridgeSystemEventSubscriptionPayload
+  {
+    try await client.createSystemEventSubscription(kinds: kinds)
+  }
+
+  public func pollSystemEventSubscription(
+    subscriptionID: HermesSystemEventSubscriptionID,
+    timeoutMilliseconds: Int
+  ) async throws -> HermesBridgeSystemEventBatchPayload {
+    try await client.pollSystemEventSubscription(
+      subscriptionID: subscriptionID,
+      timeoutMilliseconds: timeoutMilliseconds
+    )
+  }
+
+  public func acknowledgeSystemEventBatch(
+    subscriptionID: HermesSystemEventSubscriptionID,
+    acknowledgedEventOrdinal: UInt64
+  ) async throws -> HermesBridgeAcknowledgementPayload {
+    try await client.acknowledgeSystemEventBatch(
+      subscriptionID: subscriptionID,
+      acknowledgedEventOrdinal: acknowledgedEventOrdinal
+    )
+  }
+
+  public func cancelSystemEventSubscription(subscriptionID: HermesSystemEventSubscriptionID)
+    async throws -> HermesBridgeSystemEventSubscriptionPayload
+  {
+    try await client.cancelSystemEventSubscription(subscriptionID: subscriptionID)
+  }
+
   public func close() async {
     await client.close()
+  }
+}
+
+extension String {
+  fileprivate func prefixString(_ count: Int) -> String {
+    String(prefix(count))
   }
 }
 
