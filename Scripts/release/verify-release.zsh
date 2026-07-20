@@ -105,7 +105,10 @@ grep -q '"spdxVersion": "SPDX-2.3"' "$staging_root/ReleaseEvidence/sbom.spdx.jso
   cd "$staging_root"
   shasum -a 256 -c "ReleaseEvidence/checksums.sha256" >/dev/null
 ) || die "staging checksums validation failed"
-shasum -a 256 -c "$archive.sha256" >/dev/null || die "archive checksum validation failed"
+(
+  cd "$archive:h"
+  shasum -a 256 -c "$archive:t.sha256" >/dev/null
+) || die "archive checksum validation failed"
 
 summary="$staging_root/ReleaseEvidence/release-gate-summary.env"
 for key in CI_BUILD_PASSED CI_TESTS_PASSED XCODE_BUILD_PASSED M8_001_ACCEPTANCE_PASSED RC_PACKAGE_CREATED SBOM_GENERATED CHECKSUMS_GENERATED MANIFEST_GENERATED DEVELOPER_ID_SIGNED NOTARIZATION_ACCEPTED STAPLE_VERIFIED GATEKEEPER_VERIFIED SECRETS_EXPOSED PRIVATE_PATH_EXPOSED RESIDUAL_KEYCHAIN M8_002_RESULT; do
