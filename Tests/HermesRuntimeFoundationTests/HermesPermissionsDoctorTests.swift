@@ -126,6 +126,22 @@ final class HermesPermissionsDoctorTests: XCTestCase {
     XCTAssertEqual(report.check(.appIntentMetadata).state, .denied)
   }
 
+  func testAuditIntegrityEvidenceIsSafeSummaryOnly() {
+    let report = doctor().report(
+      evidence: HermesPermissionsDoctorEvidence(
+        auditIntegrity: HermesAuditExportIntegrityEvidence(
+          report: HermesAuditVerificationReport(
+            state: .verifiedUnsigned,
+            verifiedSegmentCount: 1,
+            verifiedEventCount: 2,
+            issueCodes: []
+          ))))
+
+    XCTAssertEqual(report.auditIntegrity?.state, .verifiedUnsigned)
+    XCTAssertEqual(report.auditIntegrity?.verifiedEventCount, 2)
+    XCTAssertFalse(String(describing: report).contains("/Users/"))
+  }
+
   private func doctor(
     accessibility: Bool = false,
     screen: HermesPermissionState = .notDetermined,

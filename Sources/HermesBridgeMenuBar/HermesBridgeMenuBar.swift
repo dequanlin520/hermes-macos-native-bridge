@@ -69,6 +69,7 @@ public struct HermesBridgeMenuBarState: Codable, Equatable, Sendable {
   public var enabledBindingCount: Int
   public var recentRequests: [HermesBridgeMenuBarRequestSummary]
   public var permissionChecks: [HermesMenuBarPermissionCheckViewState]
+  public var auditIntegrity: HermesMenuBarAuditIntegrityViewState?
   public var recentAuditEvents: [HermesMenuBarAuditEventViewState]
   public var lastActionMessage: String?
 
@@ -83,6 +84,7 @@ public struct HermesBridgeMenuBarState: Codable, Equatable, Sendable {
     enabledBindingCount: Int = 0,
     recentRequests: [HermesBridgeMenuBarRequestSummary] = [],
     permissionChecks: [HermesMenuBarPermissionCheckViewState] = [],
+    auditIntegrity: HermesMenuBarAuditIntegrityViewState? = nil,
     recentAuditEvents: [HermesMenuBarAuditEventViewState] = [],
     lastActionMessage: String? = nil
   ) {
@@ -97,6 +99,7 @@ public struct HermesBridgeMenuBarState: Codable, Equatable, Sendable {
       max(0, enabledBindingCount), HermesBridgeBindingSummary.maximumCount)
     self.recentRequests = Array(recentRequests.prefix(8))
     self.permissionChecks = Array(permissionChecks.prefix(HermesPermissionKind.allCases.count))
+    self.auditIntegrity = auditIntegrity
     self.recentAuditEvents = Array(recentAuditEvents.prefix(20))
     self.lastActionMessage = lastActionMessage.map { String($0.prefix(120)) }
   }
@@ -139,6 +142,22 @@ public struct HermesMenuBarAuditEventViewState: Codable, Equatable, Sendable,
     self.outcome = event.outcome.rawValue
     self.reasonCode = event.reasonCode
     self.correlationID = event.correlationID
+  }
+}
+
+public struct HermesMenuBarAuditIntegrityViewState: Codable, Equatable, Sendable {
+  public let state: String
+  public let verifiedSegmentCount: Int
+  public let verifiedEventCount: Int
+  public let issueCodes: [String]
+  public let verifiedAt: Date
+
+  public init(report: HermesAuditVerificationReport) {
+    self.state = report.state.rawValue
+    self.verifiedSegmentCount = report.verifiedSegmentCount
+    self.verifiedEventCount = report.verifiedEventCount
+    self.issueCodes = report.issueCodes.map(\.rawValue)
+    self.verifiedAt = report.verifiedAt
   }
 }
 
@@ -548,7 +567,20 @@ public protocol HermesBridgeMenuBarPermissionViewing: Sendable {
 
 public protocol HermesBridgeMenuBarAuditViewing: Sendable {
   func recentAuditEvents() async throws -> [HermesMenuBarAuditEventViewState]
+  func integrityStatus() async throws -> HermesMenuBarAuditIntegrityViewState
   func exportAudit(to outputDirectory: URL) async -> HermesBridgeMenuBarActionResult
+}
+
+extension HermesBridgeMenuBarAuditViewing {
+  public func integrityStatus() async throws -> HermesMenuBarAuditIntegrityViewState {
+    HermesMenuBarAuditIntegrityViewState(
+      report: HermesAuditVerificationReport(
+        state: .signatureUnavailable,
+        verifiedSegmentCount: 0,
+        verifiedEventCount: 0,
+        issueCodes: [.signatureUnavailable]
+      ))
+  }
 }
 
 public protocol HermesAuthorizedRootAppClient: Sendable {
@@ -1017,6 +1049,7 @@ public actor HermesBridgeMenuBarViewModel {
     do {
       let events = try await environment.audit.recentAuditEvents()
       state.recentAuditEvents = events
+      state.auditIntegrity = try? await environment.audit.integrityStatus()
       return events
     } catch {
       state.lastActionMessage = "audit unavailable"
@@ -1296,6 +1329,16 @@ public struct NoopMenuBarAuditViewer: HermesBridgeMenuBarAuditViewing {
     []
   }
 
+  public func integrityStatus() async throws -> HermesMenuBarAuditIntegrityViewState {
+    HermesMenuBarAuditIntegrityViewState(
+      report: HermesAuditVerificationReport(
+        state: .verifiedUnsigned,
+        verifiedSegmentCount: 0,
+        verifiedEventCount: 0,
+        issueCodes: []
+      ))
+  }
+
   public func exportAudit(to _: URL) async -> HermesBridgeMenuBarActionResult {
     HermesBridgeMenuBarActionResult(succeeded: false, safeMessage: "audit export unavailable")
   }
@@ -1312,6 +1355,13 @@ public struct ProductionMenuBarAuditViewer: HermesBridgeMenuBarAuditViewing {
     let store = try auditStore()
     let events = try await store.query(try HermesAuditQuery(limit: 20))
     return events.map(HermesMenuBarAuditEventViewState.init(event:))
+  }
+
+  public func integrityStatus() async throws -> HermesMenuBarAuditIntegrityViewState {
+    let report = try HermesAuditIntegrityVerifier(
+      root: layout.logsRoot.appendingPathComponent("Audit", isDirectory: true)
+    ).verify()
+    return HermesMenuBarAuditIntegrityViewState(report: report)
   }
 
   public func exportAudit(to outputDirectory: URL) async -> HermesBridgeMenuBarActionResult {

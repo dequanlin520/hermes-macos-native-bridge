@@ -82,8 +82,10 @@ final class HermesBridgeMenuBarTests: XCTestCase {
       environment: .fake(permissions: permissions, audit: audit))
     let checks = await viewModel.viewPermissions()
     let events = await viewModel.latestAuditEvents()
+    let state = await viewModel.state
     XCTAssertEqual(checks.first?.kind, "accessibility")
     XCTAssertEqual(events.first?.kind, "doctorExecuted")
+    XCTAssertEqual(state.auditIntegrity?.state, "signatureUnavailable")
     XCTAssertFalse(String(describing: checks).localizedCaseInsensitiveContains("token"))
     XCTAssertFalse(String(describing: events).localizedCaseInsensitiveContains("prompt"))
   }

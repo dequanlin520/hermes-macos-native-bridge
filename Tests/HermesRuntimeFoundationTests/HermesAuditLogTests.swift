@@ -174,6 +174,249 @@ final class HermesAuditLogTests: XCTestCase {
     let events = try await store.query(
       try HermesAuditQuery(kinds: [.auditExported], limit: 10))
     XCTAssertEqual(events.count, 1)
+    XCTAssertNotNil(manifest.integrity)
+  }
+
+  func testDigestValidationAndDeterministicCanonicalEncoding() throws {
+    let id = try HermesAuditEventID(rawValue: "haud_" + String(repeating: "A", count: 43))
+    let first = try HermesAuditEvent(
+      eventID: id,
+      timestamp: Date(timeIntervalSince1970: 1),
+      kind: .doctorExecuted,
+      actor: .controlCLI,
+      outcome: .succeeded,
+      reasonCode: "complete",
+      metadata: try HermesAuditMetadata(["b": "2", "a": "1"])
+    )
+    let second = try HermesAuditEvent(
+      eventID: id,
+      timestamp: Date(timeIntervalSince1970: 1),
+      kind: .doctorExecuted,
+      actor: .controlCLI,
+      outcome: .succeeded,
+      reasonCode: "complete",
+      metadata: try HermesAuditMetadata(["a": "1", "b": "2"])
+    )
+    let firstBytes = try HermesAuditCanonical.canonicalEventBytes(first)
+    let secondBytes = try HermesAuditCanonical.canonicalEventBytes(second)
+    XCTAssertEqual(firstBytes, secondBytes)
+    XCTAssertEqual(HermesAuditDigest(firstBytes), HermesAuditDigest(secondBytes))
+    XCTAssertNil(HermesAuditDigest(rawValue: "BAD"))
+  }
+
+  func testCleanGenesisAndUnsignedActiveChainVerification() async throws {
+    let root = try temporaryDirectory()
+    let store = try FileBackedHermesAuditStore(
+      configuration: HermesAuditStoreConfiguration(root: root))
+    try await appendFixtureEvents(to: store, count: 3)
+
+    let report = try HermesAuditIntegrityVerifier(root: root).verify()
+
+    XCTAssertEqual(report.state, .verifiedUnsigned, "\(report.issueCodes)")
+    XCTAssertEqual(report.verifiedEventCount, 3)
+    XCTAssertFalse(report.issueCodes.contains(.previousEventMismatch))
+  }
+
+  func testSegmentManifestChecksumAndRotationChainVerification() async throws {
+    let root = try temporaryDirectory()
+    let store = try FileBackedHermesAuditStore(
+      configuration: HermesAuditStoreConfiguration(root: root))
+    try await appendFixtureEvents(to: store, count: 2)
+    try await store.rotateActiveSegment()
+    try await appendFixtureEvents(to: store, count: 2, offset: 2)
+    try await store.rotateActiveSegment()
+
+    let manifests = try FileManager.default.contentsOfDirectory(atPath: root.path)
+      .filter { $0.hasSuffix(".manifest.json") }
+    let report = try HermesAuditIntegrityVerifier(root: root).verify()
+
+    XCTAssertEqual(manifests.count, 2)
+    XCTAssertEqual(report.state, .verifiedUnsigned, "\(report.issueCodes)")
+    XCTAssertEqual(report.verifiedEventCount, 4)
+  }
+
+  func testModificationDeletionInsertionReorderingAndSequenceGapDetection() async throws {
+    let root = try await closedFixtureStore(eventCount: 4)
+
+    let modified = try copyDirectory(root)
+    try rewriteFirstRecord(in: modified) { object in
+      var event = object["event"] as! [String: Any]
+      event["reasonCode"] = "modified"
+      object["event"] = event
+    }
+    XCTAssertEqual(try HermesAuditIntegrityVerifier(root: modified).verify().state, .corrupted)
+    XCTAssertTrue(
+      try HermesAuditIntegrityVerifier(root: modified).verify().issueCodes.contains(
+        .eventDigestMismatch))
+
+    let deleted = try copyDirectory(root)
+    try mutateFirstLog(in: deleted) { lines in Array(lines.dropFirst()) }
+    XCTAssertTrue(
+      try HermesAuditIntegrityVerifier(root: deleted).verify().issueCodes.contains(
+        .expectedEventCountMismatch))
+
+    let inserted = try copyDirectory(root)
+    try mutateFirstLog(in: inserted) { lines in [lines[0]] + lines }
+    XCTAssertTrue(
+      try HermesAuditIntegrityVerifier(root: inserted).verify().issueCodes.contains(.sequenceGap))
+
+    let reordered = try copyDirectory(root)
+    try mutateFirstLog(in: reordered) { lines in [lines[1], lines[0]] + lines.dropFirst(2) }
+    XCTAssertTrue(
+      try HermesAuditIntegrityVerifier(root: reordered).verify().issueCodes.contains(
+        .previousEventMismatch))
+
+    let gap = try copyDirectory(root)
+    try rewriteFirstRecord(in: gap) { object in
+      var chain = object["chain"] as! [String: Any]
+      chain["sequenceNumber"] = 9
+      object["chain"] = chain
+    }
+    XCTAssertTrue(
+      try HermesAuditIntegrityVerifier(root: gap).verify().issueCodes.contains(.sequenceGap))
+  }
+
+  func testPreviousHashMismatchMissingDuplicateUnsupportedAndClosedTruncation() async throws {
+    let root = try await closedFixtureStore(eventCount: 3)
+
+    let mismatch = try copyDirectory(root)
+    try rewriteFirstRecord(in: mismatch) { object in
+      var chain = object["chain"] as! [String: Any]
+      chain["previousDigest"] = String(repeating: "f", count: 64)
+      object["chain"] = chain
+    }
+    XCTAssertTrue(
+      try HermesAuditIntegrityVerifier(root: mismatch).verify().issueCodes.contains(
+        .previousEventMismatch))
+
+    let missing = try copyDirectory(root)
+    let jsonl = try firstLog(in: missing)
+    try FileManager.default.removeItem(at: jsonl)
+    XCTAssertTrue(
+      try HermesAuditIntegrityVerifier(root: missing).verify().issueCodes.contains(.missingSegment))
+
+    let duplicate = try copyDirectory(root)
+    let duplicateURL = duplicate.appendingPathComponent("audit.zzz_duplicate.jsonl")
+    try FileManager.default.copyItem(at: try firstLog(in: duplicate), to: duplicateURL)
+    XCTAssertTrue(
+      try HermesAuditIntegrityVerifier(root: duplicate).verify().issueCodes.contains(
+        .duplicateSegment))
+
+    let unsupported = try copyDirectory(root)
+    try rewriteFirstRecord(in: unsupported) { object in object["recordSchemaVersion"] = 99 }
+    XCTAssertEqual(try HermesAuditIntegrityVerifier(root: unsupported).verify().state, .unsupported)
+
+    let truncated = try copyDirectory(root)
+    let file = try firstLog(in: truncated)
+    let data = try Data(contentsOf: file)
+    try data.dropLast(8).write(to: file)
+    XCTAssertTrue(
+      try HermesAuditIntegrityVerifier(root: truncated).verify().issueCodes.contains(
+        .unexpectedTruncation))
+  }
+
+  func testRecoverableActivePartialTailAndCorruptActiveTailDistinction() async throws {
+    let root = try temporaryDirectory()
+    let store = try FileBackedHermesAuditStore(
+      configuration: HermesAuditStoreConfiguration(root: root))
+    try await appendFixtureEvents(to: store, count: 2)
+    let active = root.appendingPathComponent(FileBackedHermesAuditStore.activeLogName)
+    let handle = try FileHandle(forWritingTo: active)
+    try handle.seekToEnd()
+    try handle.write(contentsOf: Data(#"{"partial":"tail""#.utf8))
+    try handle.close()
+    XCTAssertEqual(
+      try HermesAuditIntegrityVerifier(root: root).verify().state, .incompleteRecoverableTail)
+
+    let corruptRoot = try temporaryDirectory()
+    let corruptStore = try FileBackedHermesAuditStore(
+      configuration: HermesAuditStoreConfiguration(root: corruptRoot))
+    try await appendFixtureEvents(to: corruptStore, count: 2)
+    let corruptActive = corruptRoot.appendingPathComponent(FileBackedHermesAuditStore.activeLogName)
+    let corruptHandle = try FileHandle(forWritingTo: corruptActive)
+    try corruptHandle.seekToEnd()
+    try corruptHandle.write(contentsOf: Data(#"{"recordSchemaVersion":99}"#.utf8))
+    try corruptHandle.close()
+    XCTAssertTrue(
+      try HermesAuditIntegrityVerifier(root: corruptRoot).verify().issueCodes.contains(
+        .corruptActiveTail))
+  }
+
+  func testSignatureValidationInvalidSignatureAndWrongPublicKey() async throws {
+    let root = try temporaryDirectory()
+    let signer = HermesEphemeralTestAuditManifestSigningProvider()
+    let store = try FileBackedHermesAuditStore(
+      configuration: HermesAuditStoreConfiguration(root: root),
+      signingProvider: signer
+    )
+    try await appendFixtureEvents(to: store, count: 2)
+    try await store.rotateActiveSegment()
+    XCTAssertEqual(
+      try HermesAuditIntegrityVerifier(root: root, signingProvider: signer).verify().state,
+      .verified
+    )
+
+    let invalid = try copyDirectory(root)
+    let manifest = try firstManifest(in: invalid)
+    var data = try String(contentsOf: manifest, encoding: .utf8)
+    data = data.replacingOccurrences(of: "\"signature\":\"", with: "\"signature\":\"AA")
+    try data.write(to: manifest, atomically: true, encoding: .utf8)
+    let invalidReport = try HermesAuditIntegrityVerifier(root: invalid, signingProvider: signer)
+      .verify()
+    XCTAssertEqual(invalidReport.state, .signatureInvalid, "\(invalidReport.issueCodes)")
+
+    let wrong = HermesEphemeralTestAuditManifestSigningProvider()
+    XCTAssertEqual(
+      try HermesAuditIntegrityVerifier(root: root, signingProvider: wrong).verify().state,
+      .signatureInvalid
+    )
+  }
+
+  func testConcurrentAppendRetentionExportPrivacyAndNonMutatingVerification() async throws {
+    let root = try temporaryDirectory()
+    let store = try FileBackedHermesAuditStore(
+      configuration: HermesAuditStoreConfiguration(
+        root: root,
+        maximumFileBytes: 64 * 1024,
+        maximumRetainedFiles: 2,
+        maximumRetainedEvents: 30
+      ))
+    try await withThrowingTaskGroup(of: Void.self) { group in
+      for index in 0..<20 {
+        group.addTask {
+          try await store.append(
+            HermesAuditEvent.make(
+              kind: .requestStarted,
+              actor: .testFixture,
+              outcome: .started,
+              reasonCode: "started_\(index)",
+              metadata: try HermesAuditMetadata(["safe": "value_\(index)"])
+            ))
+        }
+      }
+      try await group.waitForAll()
+    }
+    try await store.rotateActiveSegment()
+    let before = try directoryFingerprint(root)
+    let report = try HermesAuditIntegrityVerifier(root: root).verify()
+    let after = try directoryFingerprint(root)
+    XCTAssertEqual(before, after)
+    XCTAssertEqual(report.state, .verifiedUnsigned, "\(report.issueCodes)")
+
+    let output = try temporaryDirectory()
+    let manifest = try await HermesAuditExporter(store: store).export(
+      HermesAuditExportRequest(query: try HermesAuditQuery(limit: 100), outputDirectory: output))
+    let exported = try String(
+      contentsOf: output.appendingPathComponent(manifest.dataFileName),
+      encoding: .utf8
+    )
+    let manifestText = try String(contentsOf: output.appendingPathComponent("manifest.json"))
+    XCTAssertNotNil(manifest.integrity)
+    XCTAssertFalse((exported + manifestText).localizedCaseInsensitiveContains("prompt"))
+    XCTAssertFalse((exported + manifestText).localizedCaseInsensitiveContains("token"))
+    XCTAssertFalse((exported + manifestText).localizedCaseInsensitiveContains("bookmark"))
+    XCTAssertFalse((exported + manifestText).localizedCaseInsensitiveContains("file content"))
+    XCTAssertFalse((exported + manifestText).contains("/Users/"))
   }
 
   private func temporaryDirectory() throws -> URL {
@@ -181,5 +424,93 @@ final class HermesAuditLogTests: XCTestCase {
       .appendingPathComponent("hermes-audit-tests-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     return url
+  }
+
+  private func appendFixtureEvents(
+    to store: FileBackedHermesAuditStore,
+    count: Int,
+    offset: Int = 0
+  ) async throws {
+    for index in 0..<count {
+      try await store.append(
+        HermesAuditEvent.make(
+          kind: .doctorExecuted,
+          actor: .testFixture,
+          outcome: .succeeded,
+          reasonCode: "fixture_\(index + offset)",
+          correlationID: "corr_m6_002",
+          metadata: try HermesAuditMetadata(["ordinal": "\(index + offset)"]),
+          timestamp: Date(timeIntervalSince1970: TimeInterval(index + offset))
+        ))
+    }
+  }
+
+  private func closedFixtureStore(eventCount: Int) async throws -> URL {
+    let root = try temporaryDirectory()
+    let store = try FileBackedHermesAuditStore(
+      configuration: HermesAuditStoreConfiguration(root: root))
+    try await appendFixtureEvents(to: store, count: eventCount)
+    try await store.rotateActiveSegment()
+    return root
+  }
+
+  private func copyDirectory(_ source: URL) throws -> URL {
+    let destination = try temporaryDirectory()
+    try FileManager.default.removeItem(at: destination)
+    try FileManager.default.copyItem(at: source, to: destination)
+    return destination
+  }
+
+  private func firstLog(in root: URL) throws -> URL {
+    try FileManager.default.contentsOfDirectory(
+      at: root,
+      includingPropertiesForKeys: nil
+    ).filter {
+      $0.pathExtension == "jsonl"
+        && $0.lastPathComponent != FileBackedHermesAuditStore.activeLogName
+    }
+    .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    .first!
+  }
+
+  private func firstManifest(in root: URL) throws -> URL {
+    try FileManager.default.contentsOfDirectory(
+      at: root,
+      includingPropertiesForKeys: nil
+    ).filter { $0.lastPathComponent.hasSuffix(".manifest.json") }
+      .sorted { $0.lastPathComponent < $1.lastPathComponent }
+      .first!
+  }
+
+  private func mutateFirstLog(in root: URL, mutate: ([String]) -> [String]) throws {
+    let file = try firstLog(in: root)
+    let lines = try String(contentsOf: file, encoding: .utf8)
+      .split(separator: "\n").map(String.init)
+    try (mutate(lines).joined(separator: "\n") + "\n").write(
+      to: file,
+      atomically: true,
+      encoding: .utf8
+    )
+  }
+
+  private func rewriteFirstRecord(
+    in root: URL,
+    mutate: (inout [String: Any]) -> Void
+  ) throws {
+    try mutateFirstLog(in: root) { lines in
+      var object = try! JSONSerialization.jsonObject(with: Data(lines[0].utf8)) as! [String: Any]
+      mutate(&object)
+      let data = try! JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+      return [String(decoding: data, as: UTF8.self)] + lines.dropFirst()
+    }
+  }
+
+  private func directoryFingerprint(_ root: URL) throws -> [String: String] {
+    let files = try FileManager.default.contentsOfDirectory(
+      at: root, includingPropertiesForKeys: nil)
+    return Dictionary(
+      uniqueKeysWithValues: try files.map {
+        ($0.lastPathComponent, HermesAuditDigest(try Data(contentsOf: $0))!.rawValue)
+      })
   }
 }
