@@ -7,6 +7,7 @@ INSTALL_ROOT="$ARTIFACT_DIR/install-root"
 REPORT="$ARTIFACT_DIR/permissions-report.json"
 AUDIT_ROOT="$ARTIFACT_DIR/audit"
 EXPORT_ROOT="$ARTIFACT_DIR/export"
+OUTPUT_FILE="$ARTIFACT_DIR/result.txt"
 
 PERMISSIONS_DOCTOR_PASSED=no
 NO_PERMISSION_PROMPT_TRIGGERED=yes
@@ -23,14 +24,80 @@ TOKEN_EXPOSED=no
 BOOKMARK_BYTES_EXPOSED=no
 ABSOLUTE_PATH_EXPOSED=no
 RESIDUAL_PROCESS=no
+M6_001_RESULT=FAIL
 
 cleanup() {
   pkill -f "com.hermes.bridge.test.m6-001" >/dev/null 2>&1 || true
+  if pgrep -fl "com.hermes.bridge.test.m6-001" >/dev/null 2>&1; then
+    RESIDUAL_PROCESS=yes
+  else
+    RESIDUAL_PROCESS=no
+  fi
 }
-trap cleanup EXIT
+
+calculate_result() {
+  M6_001_RESULT=FAIL
+  if [ "$PERMISSIONS_DOCTOR_PASSED" = yes ] \
+    && [ "$NO_PERMISSION_PROMPT_TRIGGERED" = yes ] \
+    && [ "$ACCESSIBILITY_STATE_REPORTED" = yes ] \
+    && [ "$SCREEN_RECORDING_STATE_REPORTED" = yes ] \
+    && [ "$SANDBOX_STATE_REPORTED" = yes ] \
+    && [ "$FILE_AUTHORIZATION_STATE_REPORTED" = yes ] \
+    && [ "$AUDIT_APPEND_PASSED" = yes ] \
+    && [ "$AUDIT_ROTATION_PASSED" = yes ] \
+    && [ "$AUDIT_EXPORT_PASSED" = yes ] \
+    && [ "$AUDIT_CHECKSUM_VALID" = yes ] \
+    && [ "$PROMPT_EXPOSED" = no ] \
+    && [ "$TOKEN_EXPOSED" = no ] \
+    && [ "$BOOKMARK_BYTES_EXPOSED" = no ] \
+    && [ "$ABSOLUTE_PATH_EXPOSED" = no ] \
+    && [ "$RESIDUAL_PROCESS" = no ]; then
+    M6_001_RESULT=PASS
+  elif [ "$PERMISSIONS_DOCTOR_PASSED" = yes ] && [ "$AUDIT_APPEND_PASSED" = yes ]; then
+    M6_001_RESULT=PARTIAL
+  fi
+}
+
+write_results() {
+  local tmp_output="$OUTPUT_FILE.tmp"
+  calculate_result
+  {
+    print -r -- "PERMISSIONS_DOCTOR_PASSED=$PERMISSIONS_DOCTOR_PASSED"
+    print -r -- "NO_PERMISSION_PROMPT_TRIGGERED=$NO_PERMISSION_PROMPT_TRIGGERED"
+    print -r -- "ACCESSIBILITY_STATE_REPORTED=$ACCESSIBILITY_STATE_REPORTED"
+    print -r -- "SCREEN_RECORDING_STATE_REPORTED=$SCREEN_RECORDING_STATE_REPORTED"
+    print -r -- "SANDBOX_STATE_REPORTED=$SANDBOX_STATE_REPORTED"
+    print -r -- "FILE_AUTHORIZATION_STATE_REPORTED=$FILE_AUTHORIZATION_STATE_REPORTED"
+    print -r -- "AUDIT_APPEND_PASSED=$AUDIT_APPEND_PASSED"
+    print -r -- "AUDIT_ROTATION_PASSED=$AUDIT_ROTATION_PASSED"
+    print -r -- "AUDIT_EXPORT_PASSED=$AUDIT_EXPORT_PASSED"
+    print -r -- "AUDIT_CHECKSUM_VALID=$AUDIT_CHECKSUM_VALID"
+    print -r -- "PROMPT_EXPOSED=$PROMPT_EXPOSED"
+    print -r -- "TOKEN_EXPOSED=$TOKEN_EXPOSED"
+    print -r -- "BOOKMARK_BYTES_EXPOSED=$BOOKMARK_BYTES_EXPOSED"
+    print -r -- "ABSOLUTE_PATH_EXPOSED=$ABSOLUTE_PATH_EXPOSED"
+    print -r -- "RESIDUAL_PROCESS=$RESIDUAL_PROCESS"
+    print -r -- "M6_001_RESULT=$M6_001_RESULT"
+  } >| "$tmp_output"
+  mv "$tmp_output" "$OUTPUT_FILE"
+}
+
+finalize() {
+  local exit_status=$?
+  cleanup
+  write_results
+  print "===== MACHINE RESULT ====="
+  cat "$OUTPUT_FILE"
+  return "$exit_status"
+}
 
 rm -rf "$ARTIFACT_DIR"
 mkdir -p "$ARTIFACT_DIR" "$AUDIT_ROOT" "$EXPORT_ROOT"
+>| "$OUTPUT_FILE"
+
+trap finalize EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 cd "$ROOT_DIR" || exit 1
 
@@ -86,7 +153,8 @@ fi
 SCAN_TEXT="$ARTIFACT_DIR/scan.txt"
 {
   [ -f "$REPORT" ] && cat "$REPORT"
-  find "$AUDIT_ROOT" "$EXPORT_ROOT" -type f -maxdepth 3 -print0 | xargs -0 cat 2>/dev/null || true
+  find "$AUDIT_ROOT" "$EXPORT_ROOT" -maxdepth 3 -type f \( -name '*.json' -o -name '*.jsonl' -o -name '*.txt' \) -print0 \
+    | xargs -0 cat 2>/dev/null || true
 } >"$SCAN_TEXT"
 
 if grep -q 'Prompt' "$SCAN_TEXT"; then
@@ -106,44 +174,6 @@ if pgrep -fl "com.hermes.bridge.test.m6-001" >/dev/null 2>&1; then
   RESIDUAL_PROCESS=yes
 fi
 
-M6_001_RESULT=FAIL
-if [ "$PERMISSIONS_DOCTOR_PASSED" = yes ] \
-  && [ "$NO_PERMISSION_PROMPT_TRIGGERED" = yes ] \
-  && [ "$ACCESSIBILITY_STATE_REPORTED" = yes ] \
-  && [ "$SCREEN_RECORDING_STATE_REPORTED" = yes ] \
-  && [ "$SANDBOX_STATE_REPORTED" = yes ] \
-  && [ "$FILE_AUTHORIZATION_STATE_REPORTED" = yes ] \
-  && [ "$AUDIT_APPEND_PASSED" = yes ] \
-  && [ "$AUDIT_ROTATION_PASSED" = yes ] \
-  && [ "$AUDIT_EXPORT_PASSED" = yes ] \
-  && [ "$AUDIT_CHECKSUM_VALID" = yes ] \
-  && [ "$PROMPT_EXPOSED" = no ] \
-  && [ "$TOKEN_EXPOSED" = no ] \
-  && [ "$BOOKMARK_BYTES_EXPOSED" = no ] \
-  && [ "$ABSOLUTE_PATH_EXPOSED" = no ] \
-  && [ "$RESIDUAL_PROCESS" = no ]; then
-  M6_001_RESULT=PASS
-elif [ "$PERMISSIONS_DOCTOR_PASSED" = yes ] && [ "$AUDIT_APPEND_PASSED" = yes ]; then
-  M6_001_RESULT=PARTIAL
-fi
-
-cat <<EOF
-PERMISSIONS_DOCTOR_PASSED=$PERMISSIONS_DOCTOR_PASSED
-NO_PERMISSION_PROMPT_TRIGGERED=$NO_PERMISSION_PROMPT_TRIGGERED
-ACCESSIBILITY_STATE_REPORTED=$ACCESSIBILITY_STATE_REPORTED
-SCREEN_RECORDING_STATE_REPORTED=$SCREEN_RECORDING_STATE_REPORTED
-SANDBOX_STATE_REPORTED=$SANDBOX_STATE_REPORTED
-FILE_AUTHORIZATION_STATE_REPORTED=$FILE_AUTHORIZATION_STATE_REPORTED
-AUDIT_APPEND_PASSED=$AUDIT_APPEND_PASSED
-AUDIT_ROTATION_PASSED=$AUDIT_ROTATION_PASSED
-AUDIT_EXPORT_PASSED=$AUDIT_EXPORT_PASSED
-AUDIT_CHECKSUM_VALID=$AUDIT_CHECKSUM_VALID
-PROMPT_EXPOSED=$PROMPT_EXPOSED
-TOKEN_EXPOSED=$TOKEN_EXPOSED
-BOOKMARK_BYTES_EXPOSED=$BOOKMARK_BYTES_EXPOSED
-ABSOLUTE_PATH_EXPOSED=$ABSOLUTE_PATH_EXPOSED
-RESIDUAL_PROCESS=$RESIDUAL_PROCESS
-M6_001_RESULT=$M6_001_RESULT
-EOF
+calculate_result
 
 [ "$M6_001_RESULT" = PASS ]
