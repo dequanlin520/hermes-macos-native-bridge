@@ -10,6 +10,12 @@ die() {
   exit 1
 }
 
+check() {
+  local message="$1"
+  shift
+  "$@" >/dev/null || die "$message"
+}
+
 repo_root="$(cd "$(dirname "$0")/../.." && pwd -P)"
 staging_root=""
 archive=""
@@ -82,24 +88,27 @@ if grep -R -I -n -E 'BEGIN (RSA|EC|OPENSSH|PRIVATE) KEY|APPLE_APP_SPECIFIC_PASSW
   die "release contains a secret or private path marker"
 fi
 
-codesign --verify --deep --strict "$staging_root/Payload/Hermes Bridge.app" >/dev/null
-codesign --verify --strict "$staging_root/Payload/bin/HermesBridgeService" >/dev/null
-codesign --verify --strict "$staging_root/Payload/bin/HermesBridgeControl" >/dev/null
+check "app codesign verification failed" codesign --verify --deep --strict "$staging_root/Payload/Hermes Bridge.app"
+check "service codesign verification failed" codesign --verify --strict "$staging_root/Payload/bin/HermesBridgeService"
+check "control codesign verification failed" codesign --verify --strict "$staging_root/Payload/bin/HermesBridgeControl"
 app_codesign_details="$(codesign -dv --verbose=4 "$staging_root/Payload/Hermes Bridge.app" 2>&1)"
 service_codesign_details="$(codesign -dv --verbose=4 "$staging_root/Payload/bin/HermesBridgeService" 2>&1)"
 print -- "$app_codesign_details" | grep -q '^Runtime Version=' || die "app hardened runtime missing"
 print -- "$service_codesign_details" | grep -q '^Runtime Version=' || die "service hardened runtime missing"
 
-plutil -lint "$staging_root/Payload/Hermes Bridge.app/Contents/Info.plist" >/dev/null
-plutil -p "$staging_root/ReleaseEvidence/release-manifest.json" >/dev/null
-plutil -p "$staging_root/ReleaseEvidence/sbom.spdx.json" >/dev/null
+check "Info.plist validation failed" plutil -lint "$staging_root/Payload/Hermes Bridge.app/Contents/Info.plist"
+check "release manifest JSON validation failed" ruby -rjson -e 'JSON.parse(File.read(ARGV[0]))' "$staging_root/ReleaseEvidence/release-manifest.json"
+check "SPDX SBOM JSON validation failed" ruby -rjson -e 'JSON.parse(File.read(ARGV[0]))' "$staging_root/ReleaseEvidence/sbom.spdx.json"
 grep -q '"spdxVersion": "SPDX-2.3"' "$staging_root/ReleaseEvidence/sbom.spdx.json" || die "SBOM is not SPDX 2.3 JSON"
 
 (
   cd "$staging_root"
   shasum -a 256 -c "ReleaseEvidence/checksums.sha256" >/dev/null
-)
-shasum -a 256 -c "$archive.sha256" >/dev/null
+) || die "staging checksums validation failed"
+(
+  cd "$archive:h"
+  shasum -a 256 -c "$archive:t.sha256" >/dev/null
+) || die "archive checksum validation failed"
 
 summary="$staging_root/ReleaseEvidence/release-gate-summary.env"
 for key in CI_BUILD_PASSED CI_TESTS_PASSED XCODE_BUILD_PASSED M8_001_ACCEPTANCE_PASSED RC_PACKAGE_CREATED SBOM_GENERATED CHECKSUMS_GENERATED MANIFEST_GENERATED DEVELOPER_ID_SIGNED NOTARIZATION_ACCEPTED STAPLE_VERIFIED GATEKEEPER_VERIFIED SECRETS_EXPOSED PRIVATE_PATH_EXPOSED RESIDUAL_KEYCHAIN M8_002_RESULT; do

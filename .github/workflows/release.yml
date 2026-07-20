@@ -21,7 +21,7 @@ permissions:
 jobs:
   production-release:
     name: Signed notarized production release
-    runs-on: macos-14
+    runs-on: macos-15
     permissions:
       contents: write
       attestations: write
@@ -58,10 +58,10 @@ jobs:
           APPLE_DEVELOPER_ID_APPLICATION_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          SOURCE_DATE_EPOCH: ${{ github.event.repository.pushed_at }}
         run: |
           version="${GITHUB_REF_NAME:-${{ inputs.version }}}"
-          Scripts/release/build-release-candidate.zsh --version "$version" --signing-mode developer-id
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)" \
+            Scripts/release/build-release-candidate.zsh --version "$version" --signing-mode developer-id
       - name: Run M8-001 acceptance harness
         run: Scripts/integration/m8-001-release-candidate-acceptance.zsh
       - name: Submit notarization

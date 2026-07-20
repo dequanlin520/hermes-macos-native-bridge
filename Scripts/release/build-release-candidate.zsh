@@ -82,18 +82,39 @@ xcodebuild \
   build > "$log_root/xcodebuild.log"
 
 swift build --configuration release \
-  --product HermesBridgeService \
-  --product HermesBridgeControl > "$log_root/swift-build.log"
+  --product HermesBridgeService > "$log_root/swift-build.log"
+swift build --configuration release \
+  --product HermesBridgeControl >> "$log_root/swift-build.log"
 swift build --product HermesBridgeApp >> "$log_root/swift-build.log"
 
-bin_path="$repo_root/.build/out/Products/Release"
-debug_bin_path="$repo_root/.build/out/Products/Debug"
-for product in HermesBridgeService HermesBridgeControl; do
-  [[ -x "$bin_path/$product" && ! -L "$bin_path/$product" ]] || die "missing executable product: $product"
-done
-[[ -x "$debug_bin_path/HermesBridgeApp" && ! -L "$debug_bin_path/HermesBridgeApp" ]] || die "missing executable product: HermesBridgeApp"
+bin_path="$(swift build --configuration release --show-bin-path | tail -n 1)"
+debug_bin_path="$(swift build --show-bin-path | tail -n 1)"
 
-cp "$debug_bin_path/HermesBridgeApp" "$app_bundle/Contents/MacOS/HermesBridgeApp"
+find_built_executable() {
+  local preferred_name="$1"
+  local alternate_name="$2"
+  local preferred_root="$3"
+  local candidate
+
+  for candidate in "$preferred_root/$preferred_name" "$preferred_root/$alternate_name"; do
+    [[ -x "$candidate" && ! -L "$candidate" ]] && { print -- "$candidate"; return 0; }
+  done
+
+  while IFS= read -r candidate; do
+    [[ -x "$candidate" && ! -L "$candidate" ]] && { print -- "$candidate"; return 0; }
+  done < <(find "$repo_root/.build" -type f \( -name "$preferred_name" -o -name "$alternate_name" \) -print | LC_ALL=C sort)
+
+  return 1
+}
+
+service_binary="$(find_built_executable HermesBridgeService HermesBridgeServiceExecutable "$bin_path")" ||
+  die "missing executable product: HermesBridgeService"
+control_binary="$(find_built_executable HermesBridgeControl HermesBridgeControl "$bin_path")" ||
+  die "missing executable product: HermesBridgeControl"
+app_binary="$(find_built_executable HermesBridgeApp HermesBridgeApp "$debug_bin_path")" ||
+  die "missing executable product: HermesBridgeApp"
+
+cp "$app_binary" "$app_bundle/Contents/MacOS/HermesBridgeApp"
 cp "Packaging/HermesBridgeApp/Info.plist" "$app_bundle/Contents/Info.plist"
 chmod 755 "$app_bundle/Contents/MacOS/HermesBridgeApp"
 
@@ -103,8 +124,8 @@ if [[ -n "$metadata_dir" ]]; then
   cp -R "$metadata_dir" "$app_bundle/Contents/Resources/Metadata.appintents"
 fi
 
-cp "$bin_path/HermesBridgeService" "$bin_root/HermesBridgeService"
-cp "$bin_path/HermesBridgeControl" "$bin_root/HermesBridgeControl"
+cp "$service_binary" "$bin_root/HermesBridgeService"
+cp "$control_binary" "$bin_root/HermesBridgeControl"
 chmod 755 "$bin_root/HermesBridgeService" "$bin_root/HermesBridgeControl"
 
 cp Scripts/native/install-hermes-bridge-app.zsh "$scripts_root/install-hermes-bridge-app.zsh"
