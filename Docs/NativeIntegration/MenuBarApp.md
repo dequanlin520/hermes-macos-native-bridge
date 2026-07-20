@@ -36,7 +36,11 @@ The first menu surface displays:
 - protocol compatibility and version;
 - capability names;
 - enabled binding count;
-- recent safe request summaries.
+- recent safe request summaries;
+- network online/offline state;
+- system-event monitor active state;
+- recent safe system-event summaries;
+- service degradation state.
 
 It offers only:
 
@@ -65,6 +69,13 @@ kind, actor, outcome, reason code and safe correlation ID. The app does not
 provide a raw log viewer, arbitrary filesystem browser or generic file-read
 operation. Audit export requires explicit user folder selection and writes a
 redacted archive with manifest and checksum.
+
+System-event views render only recent safe structured summaries: event ID,
+timestamp, fixed kind, source, safe application bundle identifier/name, network
+classification, service-health classification and bounded reason code. The app
+does not provide a raw system log viewer and does not display executable paths,
+PIDs, window titles, document titles, URLs, clipboard, keystrokes, Prompts or
+backend tokens.
 
 Audit integrity views may show signing availability, an active signer
 fingerprint prefix, signed and unsigned segment counts, integrity state, last

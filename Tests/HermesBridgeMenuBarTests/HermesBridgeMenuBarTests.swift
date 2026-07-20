@@ -24,6 +24,13 @@ final class HermesBridgeMenuBarTests: XCTestCase {
     XCTAssertTrue(state.protocolCompatible)
     XCTAssertEqual(state.enabledBindingCount, 1)
     XCTAssertTrue(state.capabilities.contains("bindingDiscovery"))
+    XCTAssertTrue(state.networkOnline)
+    XCTAssertTrue(state.systemEventMonitorActive)
+    XCTAssertTrue(state.serviceDegraded)
+    XCTAssertEqual(
+      state.recentSystemEvents.first?.applicationBundleIdentifier, "com.example.Helper")
+    XCTAssertFalse(String(describing: state.recentSystemEvents).contains("/Users/"))
+    XCTAssertFalse(String(describing: state.recentSystemEvents).contains("window"))
   }
 
   func testUnavailableState() async {
@@ -472,6 +479,76 @@ private actor FakeXPC: HermesBridgeMenuBarXPCClient {
         enabled: true
       )
     ])
+  }
+
+  func systemEventMonitorStatus() async throws -> HermesBridgeSystemEventMonitorStatusPayload {
+    HermesBridgeSystemEventMonitorStatusPayload(
+      status: HermesSystemEventMonitorStatus(
+        started: true,
+        networkMonitorActive: true,
+        workspaceMonitorActive: true,
+        sessionMonitorActive: true,
+        activeSubscriptionCount: 1,
+        observedCursor: 1,
+        deliveredCursor: 1,
+        acknowledgedCursor: 1,
+        resyncRequired: false,
+        networkStatus: .available,
+        serviceHealth: .degraded
+      ))
+  }
+
+  func createSystemEventSubscription(kinds _: [HermesSystemEventKind]) async throws
+    -> HermesBridgeSystemEventSubscriptionPayload
+  {
+    HermesBridgeSystemEventSubscriptionPayload(
+      subscriptionID: try HermesSystemEventSubscriptionID(
+        rawValue: HermesSystemEventSubscriptionID.prefix + String(repeating: "A", count: 22)),
+      kinds: [.applicationLaunched],
+      expiresAt: Date()
+    )
+  }
+
+  func pollSystemEventSubscription(
+    subscriptionID: HermesSystemEventSubscriptionID,
+    timeoutMilliseconds _: Int
+  ) async throws -> HermesBridgeSystemEventBatchPayload {
+    let event = try HermesSystemEvent(
+      eventID: try HermesSystemEventID.generate(),
+      kind: .applicationLaunched,
+      source: .workspace,
+      application: HermesSafeApplicationIdentity(
+        bundleIdentifier: "com.example.Helper",
+        localizedName: "Helper"),
+      reasonCode: "applicationLaunched"
+    )
+    return try HermesBridgeSystemEventBatchPayload(
+      subscriptionID: subscriptionID,
+      events: [event],
+      newestEventOrdinal: 1,
+      replayed: false,
+      resyncRequired: false
+    )
+  }
+
+  func acknowledgeSystemEventBatch(
+    subscriptionID _: HermesSystemEventSubscriptionID,
+    acknowledgedEventOrdinal: UInt64
+  ) async throws -> HermesBridgeAcknowledgementPayload {
+    HermesBridgeAcknowledgementPayload(
+      subscriptionID: HermesSystemEventSubscriptionID.prefix + String(repeating: "A", count: 22),
+      acknowledgedEventID: acknowledgedEventOrdinal
+    )
+  }
+
+  func cancelSystemEventSubscription(subscriptionID: HermesSystemEventSubscriptionID) async throws
+    -> HermesBridgeSystemEventSubscriptionPayload
+  {
+    HermesBridgeSystemEventSubscriptionPayload(
+      subscriptionID: subscriptionID,
+      kinds: [],
+      expiresAt: Date()
+    )
   }
 
   func close() async {}

@@ -47,6 +47,19 @@ public protocol HermesBridgeRequestHandling: Sendable {
   func cancelFileEventSubscription(subscriptionID: HermesBridgeFileEventSubscriptionID) async throws
     -> HermesBridgeFileEventSubscriptionPayload
   func fileEventMonitorStatus() async throws -> HermesBridgeFileEventMonitorStatusPayload
+  func createSystemEventSubscription(kinds: [HermesSystemEventKind]) async throws
+    -> HermesBridgeSystemEventSubscriptionPayload
+  func pollSystemEventSubscription(
+    subscriptionID: HermesSystemEventSubscriptionID,
+    timeoutMilliseconds: Int
+  ) async throws -> HermesBridgeSystemEventBatchPayload
+  func acknowledgeSystemEventBatch(
+    subscriptionID: HermesSystemEventSubscriptionID,
+    acknowledgedEventOrdinal: UInt64
+  ) async throws -> HermesBridgeAcknowledgementPayload
+  func cancelSystemEventSubscription(subscriptionID: HermesSystemEventSubscriptionID) async throws
+    -> HermesBridgeSystemEventSubscriptionPayload
+  func systemEventMonitorStatus() async throws -> HermesBridgeSystemEventMonitorStatusPayload
   func submit(bindingID: HermesRequestBindingID, prompt: String) async throws -> HermesRequestID
   func status(requestID: HermesRequestID) async throws -> HermesRequestRecord
   func cancel(requestID: HermesRequestID) async throws -> HermesRequestRecord
@@ -145,6 +158,37 @@ extension HermesBridgeRequestHandling {
   public func fileEventMonitorStatus() async throws -> HermesBridgeFileEventMonitorStatusPayload {
     throw HermesBridgeXPCError.unsupportedCapability
   }
+
+  public func createSystemEventSubscription(kinds _: [HermesSystemEventKind]) async throws
+    -> HermesBridgeSystemEventSubscriptionPayload
+  {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func pollSystemEventSubscription(
+    subscriptionID _: HermesSystemEventSubscriptionID,
+    timeoutMilliseconds _: Int
+  ) async throws -> HermesBridgeSystemEventBatchPayload {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func acknowledgeSystemEventBatch(
+    subscriptionID _: HermesSystemEventSubscriptionID,
+    acknowledgedEventOrdinal _: UInt64
+  ) async throws -> HermesBridgeAcknowledgementPayload {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func cancelSystemEventSubscription(
+    subscriptionID _: HermesSystemEventSubscriptionID
+  ) async throws -> HermesBridgeSystemEventSubscriptionPayload {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func systemEventMonitorStatus() async throws -> HermesBridgeSystemEventMonitorStatusPayload
+  {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
 }
 
 public actor HermesBridgeXPCRequestDispatcher {
@@ -222,7 +266,9 @@ public actor HermesBridgeXPCRequestDispatcher {
     switch envelope.operation {
     case .submit:
       guard envelope.submit != nil, envelope.status == nil, envelope.cancel == nil,
-        envelope.approvalResponse == nil, envelope.filePayloadCount == 0
+        envelope.approvalResponse == nil,
+        envelope.filePayloadCount == 0
+          && envelope.systemEventPayloadCount == 0
       else {
         throw HermesBridgeXPCError.malformedPayload
       }
@@ -234,25 +280,33 @@ public actor HermesBridgeXPCRequestDispatcher {
       }
     case .status:
       guard envelope.status != nil, envelope.submit == nil, envelope.cancel == nil,
-        envelope.approvalResponse == nil, envelope.filePayloadCount == 0
+        envelope.approvalResponse == nil,
+        envelope.filePayloadCount == 0
+          && envelope.systemEventPayloadCount == 0
       else {
         throw HermesBridgeXPCError.malformedPayload
       }
     case .cancel:
       guard envelope.cancel != nil, envelope.submit == nil, envelope.status == nil,
-        envelope.approvalResponse == nil, envelope.filePayloadCount == 0
+        envelope.approvalResponse == nil,
+        envelope.filePayloadCount == 0
+          && envelope.systemEventPayloadCount == 0
       else {
         throw HermesBridgeXPCError.malformedPayload
       }
     case .approvalResponse:
       guard envelope.approvalResponse != nil, envelope.submit == nil, envelope.status == nil,
-        envelope.cancel == nil, envelope.filePayloadCount == 0
+        envelope.cancel == nil,
+        envelope.filePayloadCount == 0
+          && envelope.systemEventPayloadCount == 0
       else {
         throw HermesBridgeXPCError.malformedPayload
       }
     case .capabilities, .protocolVersion, .listEnabledBindings:
       guard envelope.submit == nil, envelope.status == nil, envelope.cancel == nil,
-        envelope.approvalResponse == nil, envelope.filePayloadCount == 0
+        envelope.approvalResponse == nil,
+        envelope.filePayloadCount == 0
+          && envelope.systemEventPayloadCount == 0
       else {
         throw HermesBridgeXPCError.malformedPayload
       }
@@ -322,6 +376,32 @@ public actor HermesBridgeXPCRequestDispatcher {
       guard envelope.cancelFileEventSubscription != nil else {
         throw HermesBridgeXPCError.malformedPayload
       }
+    case .createSystemEventSubscription:
+      try validateOnlySystemEventPayload(envelope, expected: 1)
+      guard let payload = envelope.createSystemEventSubscription,
+        !payload.kinds.isEmpty,
+        payload.kinds.count <= HermesBridgeSystemEventCoordinator.maximumEventKindsPerSubscription,
+        Set(payload.kinds).count == payload.kinds.count
+      else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+    case .pollSystemEventSubscription:
+      try validateOnlySystemEventPayload(envelope, expected: 1)
+      guard envelope.pollSystemEventSubscription != nil else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+    case .acknowledgeSystemEventBatch:
+      try validateOnlySystemEventPayload(envelope, expected: 1)
+      guard envelope.acknowledgeSystemEventBatch != nil else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+    case .cancelSystemEventSubscription:
+      try validateOnlySystemEventPayload(envelope, expected: 1)
+      guard envelope.cancelSystemEventSubscription != nil else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+    case .systemEventMonitorStatus:
+      try validateOnlySystemEventPayload(envelope, expected: 0)
     }
   }
 
@@ -330,7 +410,20 @@ public actor HermesBridgeXPCRequestDispatcher {
     expected: Int
   ) throws {
     guard envelope.submit == nil, envelope.status == nil, envelope.cancel == nil,
-      envelope.approvalResponse == nil, envelope.filePayloadCount == expected
+      envelope.approvalResponse == nil, envelope.filePayloadCount == expected,
+      envelope.systemEventPayloadCount == 0
+    else {
+      throw HermesBridgeXPCError.malformedPayload
+    }
+  }
+
+  private func validateOnlySystemEventPayload(
+    _ envelope: HermesBridgeRequestEnvelope,
+    expected: Int
+  ) throws {
+    guard envelope.submit == nil, envelope.status == nil, envelope.cancel == nil,
+      envelope.approvalResponse == nil, envelope.filePayloadCount == 0,
+      envelope.systemEventPayloadCount == expected
     else {
       throw HermesBridgeXPCError.malformedPayload
     }
@@ -472,6 +565,40 @@ public actor HermesBridgeXPCRequestDispatcher {
         try await mapFileIntegrationError {
           try await handler.fileEventMonitorStatus()
         })
+    case .createSystemEventSubscription:
+      guard let payload = envelope.createSystemEventSubscription else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+      return .createSystemEventSubscription(
+        try await handler.createSystemEventSubscription(kinds: payload.kinds))
+    case .pollSystemEventSubscription:
+      guard let payload = envelope.pollSystemEventSubscription else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+      return .pollSystemEventSubscription(
+        try await handler.pollSystemEventSubscription(
+          subscriptionID: try decodeSystemSubscriptionID(payload.subscriptionID),
+          timeoutMilliseconds: payload.timeoutMilliseconds
+        ))
+    case .acknowledgeSystemEventBatch:
+      guard let payload = envelope.acknowledgeSystemEventBatch else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+      return .acknowledgeSystemEventBatch(
+        try await handler.acknowledgeSystemEventBatch(
+          subscriptionID: try decodeSystemSubscriptionID(payload.subscriptionID),
+          acknowledgedEventOrdinal: payload.acknowledgedEventOrdinal
+        ))
+    case .cancelSystemEventSubscription:
+      guard let payload = envelope.cancelSystemEventSubscription else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+      return .cancelSystemEventSubscription(
+        try await handler.cancelSystemEventSubscription(
+          subscriptionID: try decodeSystemSubscriptionID(payload.subscriptionID)
+        ))
+    case .systemEventMonitorStatus:
+      return .systemEventMonitorStatus(try await handler.systemEventMonitorStatus())
     case .submit:
       guard let submit = envelope.submit else {
         throw HermesBridgeXPCError.malformedPayload
@@ -537,6 +664,16 @@ public actor HermesBridgeXPCRequestDispatcher {
   {
     do {
       return try HermesBridgeFileEventSubscriptionID(rawValue: rawValue)
+    } catch {
+      throw HermesBridgeXPCError.malformedPayload
+    }
+  }
+
+  private func decodeSystemSubscriptionID(_ rawValue: String) throws
+    -> HermesSystemEventSubscriptionID
+  {
+    do {
+      return try HermesSystemEventSubscriptionID(rawValue: rawValue)
     } catch {
       throw HermesBridgeXPCError.malformedPayload
     }
@@ -821,9 +958,47 @@ public actor HermesBridgeXPCRequestDispatcher {
           subscriptionID: payload.subscriptionID
         )
       }
+    case .createSystemEventSubscription(let payload):
+      try await appendAudit(
+        .systemEventSubscriptionCreated,
+        envelope: envelope,
+        outcome: .succeeded,
+        reasonCode: "subscription_created",
+        subscriptionID: payload.subscriptionID
+      )
+    case .cancelSystemEventSubscription(let payload):
+      try await appendAudit(
+        .systemEventSubscriptionCancelled,
+        envelope: envelope,
+        outcome: .cancelled,
+        reasonCode: "subscription_cancelled",
+        subscriptionID: payload.subscriptionID
+      )
+    case .pollSystemEventSubscription(let payload):
+      if payload.resyncRequired {
+        try await appendAudit(
+          .systemEventOverflow,
+          envelope: envelope,
+          outcome: .started,
+          reasonCode: payload.droppedEventReason ?? "resync_required",
+          subscriptionID: payload.subscriptionID
+        )
+      }
+      if payload.events.contains(where: { event in
+        [.bridgeServiceHealthy, .bridgeServiceDegraded, .bridgeServiceUnavailable].contains(
+          event.kind)
+      }) {
+        try await appendAudit(
+          .serviceHealthTransition,
+          envelope: envelope,
+          outcome: .started,
+          reasonCode: "service_health_transition",
+          subscriptionID: payload.subscriptionID
+        )
+      }
     case .protocolVersion, .capabilities, .listEnabledBindings, .listAuthorizedRoots,
       .authorizedRootStatus, .resolveAuthorizedRoot, .acknowledgeFileEventBatch,
-      .fileEventMonitorStatus:
+      .fileEventMonitorStatus, .acknowledgeSystemEventBatch, .systemEventMonitorStatus:
       return
     }
   }
@@ -850,9 +1025,14 @@ public actor HermesBridgeXPCRequestDispatcher {
       kind = .fileSubscriptionCreated
     case .cancelFileEventSubscription:
       kind = .fileSubscriptionCancelled
+    case .createSystemEventSubscription:
+      kind = .systemEventSubscriptionCreated
+    case .cancelSystemEventSubscription:
+      kind = .systemEventSubscriptionCancelled
     case .pollFileEventSubscription, .acknowledgeFileEventBatch, .fileEventMonitorStatus,
       .protocolVersion, .capabilities, .listEnabledBindings, .listAuthorizedRoots,
-      .authorizedRootStatus, .resolveAuthorizedRoot:
+      .authorizedRootStatus, .resolveAuthorizedRoot, .pollSystemEventSubscription,
+      .acknowledgeSystemEventBatch, .systemEventMonitorStatus:
       return
     }
     try await auditStore.append(
@@ -889,6 +1069,8 @@ public actor HermesBridgeXPCRequestDispatcher {
           ?? envelope.reactivateAuthorizedRoot?.rootID,
         subscriptionID: subscriptionID ?? envelope.pollFileEventSubscription?.subscriptionID
           ?? envelope.cancelFileEventSubscription?.subscriptionID
+          ?? envelope.pollSystemEventSubscription?.subscriptionID
+          ?? envelope.cancelSystemEventSubscription?.subscriptionID
       ))
   }
 }
@@ -907,6 +1089,15 @@ extension HermesBridgeRequestEnvelope {
     if pollFileEventSubscription != nil { count += 1 }
     if acknowledgeFileEventBatch != nil { count += 1 }
     if cancelFileEventSubscription != nil { count += 1 }
+    return count
+  }
+
+  fileprivate var systemEventPayloadCount: Int {
+    var count = 0
+    if createSystemEventSubscription != nil { count += 1 }
+    if pollSystemEventSubscription != nil { count += 1 }
+    if acknowledgeSystemEventBatch != nil { count += 1 }
+    if cancelSystemEventSubscription != nil { count += 1 }
     return count
   }
 }

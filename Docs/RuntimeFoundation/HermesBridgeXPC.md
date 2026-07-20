@@ -36,7 +36,7 @@ The current protocol version is:
 
 ```text
 major: 1
-minor: 2
+minor: 4
 ```
 
 The service rejects unsupported major versions before operation dispatch.
@@ -56,6 +56,7 @@ The confirmed capability set is:
 - `bindingDiscovery`
 - `authorizedRootManagement`
 - `fileEventObservation`
+- `systemEventObservation`
 
 The service does not advertise or accept generic execution, generic JSON-RPC,
 generic HTTP, filesystem path, process, browser, GUI, AppleScript, JXA, or shell
@@ -91,6 +92,11 @@ Supported operations are:
 - `acknowledgeFileEventBatch`: subscription ID and delivered event cursor.
 - `cancelFileEventSubscription`: subscription ID.
 - `fileEventMonitorStatus`: no payload.
+- `createSystemEventSubscription`: fixed allowlisted event kinds.
+- `pollSystemEventSubscription`: subscription ID and bounded timeout.
+- `acknowledgeSystemEventBatch`: subscription ID and delivered event ordinal.
+- `cancelSystemEventSubscription`: subscription ID.
+- `systemEventMonitorStatus`: no payload.
 
 The envelope contains no arbitrary dictionaries and no generic JSON blob field.
 Payloads are Swift `Codable` types with fixed fields. Unknown operation strings
@@ -117,6 +123,9 @@ Success payloads are limited to:
 - file-event subscription status.
 - bounded file-event batches.
 - file-event acknowledgement summaries.
+- system-event subscription status.
+- bounded system-event batches.
+- system-event acknowledgement summaries.
 
 Status summaries include request ID, binding ID, lifecycle state, cancellation
 flag, result availability, and redacted failure code/retryability. They do not
@@ -140,6 +149,14 @@ event ID, directory hint, bounded flags, and replay state. File-event batch
 payloads include subscription ID, root ID, bounded events, newest event ID,
 history/replay markers, rescan-required state, and a safe dropped-event reason.
 
+System-event summaries include only event ID, fixed event kind, timestamp,
+source, safe application bundle identifier/name when relevant, network status
+classification, network interface classification, expensive/constrained state,
+service-health classification, replay/coalescing state and a bounded reason
+code. They do not include executable paths, PIDs, window titles, document
+titles, URLs, clipboard contents, keystrokes, process arguments, environments,
+Prompts, backend tokens or user content.
+
 ## Size Limits
 
 The shared protocol limits are:
@@ -152,6 +169,8 @@ maximum Mach service name: 255 characters
 maximum XPC bookmark payload: 80 KiB
 maximum XPC file-event batch: 64 KiB
 maximum XPC file-event count: 128
+maximum XPC system-event batch: 64 KiB
+maximum XPC system-event count: 128
 ```
 
 The service rejects oversized envelopes before decoding. It rejects oversized
@@ -192,6 +211,10 @@ through XPC.
 File-integration errors are similarly redacted. Raw bookmark, filesystem, and
 FSEvents error descriptions are mapped to typed safe codes.
 
+System-event observation errors are redacted to the shared subscription,
+acknowledgement, overflow/resync and availability error set. Raw notification
+names and OS error descriptions are not exposed.
+
 ## Service Dispatch
 
 `HermesBridgeXPCService` implements the Objective-C `HermesBridgeXPCProtocol`.
@@ -229,6 +252,11 @@ performs protocol-version negotiation, queries capabilities, and exposes only:
 - `acknowledgeFileEventBatch(subscriptionID:acknowledgedEventID:)`
 - `cancelFileEventSubscription(subscriptionID:)`
 - `fileEventMonitorStatus()`
+- `createSystemEventSubscription(kinds:)`
+- `pollSystemEventSubscription(subscriptionID:timeoutMilliseconds:)`
+- `acknowledgeSystemEventBatch(subscriptionID:acknowledgedEventOrdinal:)`
+- `cancelSystemEventSubscription(subscriptionID:)`
+- `systemEventMonitorStatus()`
 - `close()`
 
 The public client API does not expose raw `Data`, arbitrary operation names, or
@@ -259,6 +287,24 @@ bounded pending queues; overflow drops retained batches and emits
 `rescanRequired` with a safe dropped-event reason rather than growing memory.
 Replay and history-done states are explicit. When retained history is
 unavailable, clients must rescan and the service does not imply lossless replay.
+
+## System-Event Subscription Semantics
+
+The Bridge composition root installs a `HermesBridgeSystemEventCoordinator`
+over public macOS monitors. The coordinator owns generated subscription IDs,
+validates fixed event-kind filters, starts/stops monitor lifecycle, normalizes
+system events into XPC summaries, and performs shutdown cleanup.
+
+Polling is bounded by timeout, event count and encoded response size. Slow
+consumers are handled by bounded pending queues; overflow drops retained
+batches and emits `resyncRequired` with a safe dropped-event reason. Duplicate
+acknowledgements at or behind the delivered cursor are idempotent; cursors
+beyond the delivered cursor are rejected.
+
+The system-event contract never exposes generic notification names, arbitrary
+filters, executable paths, PIDs, window titles, document titles, URLs,
+clipboard, keystrokes, process arguments, environments, Prompts or backend
+tokens.
 
 ## App Intent Handoff Model
 

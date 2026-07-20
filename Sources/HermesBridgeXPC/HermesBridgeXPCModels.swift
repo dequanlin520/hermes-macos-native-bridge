@@ -4,7 +4,7 @@ import HermesRuntimeFoundation
 public struct HermesBridgeProtocolVersion: Codable, Equatable, Sendable,
   CustomStringConvertible
 {
-  public static let current = HermesBridgeProtocolVersion(major: 1, minor: 3)
+  public static let current = HermesBridgeProtocolVersion(major: 1, minor: 4)
   public static let supportedMajor = 1
 
   public let major: Int
@@ -37,6 +37,7 @@ public enum HermesBridgeCapability: String, Codable, CaseIterable, Equatable, Se
   case bindingDiscovery
   case authorizedRootManagement
   case fileEventObservation
+  case systemEventObservation
 }
 
 public enum HermesBridgeOperation: String, Codable, CaseIterable, Equatable, Sendable {
@@ -60,6 +61,11 @@ public enum HermesBridgeOperation: String, Codable, CaseIterable, Equatable, Sen
   case acknowledgeFileEventBatch
   case cancelFileEventSubscription
   case fileEventMonitorStatus
+  case createSystemEventSubscription
+  case pollSystemEventSubscription
+  case acknowledgeSystemEventBatch
+  case cancelSystemEventSubscription
+  case systemEventMonitorStatus
 }
 
 public struct HermesBridgeCorrelationID: Codable, Equatable, Hashable, Sendable,
@@ -349,6 +355,11 @@ public struct HermesBridgeAcknowledgementPayload: Codable, Equatable, Sendable {
     self.subscriptionID = subscriptionID.rawValue
     self.acknowledgedEventID = acknowledgedEventID
   }
+
+  public init(subscriptionID: String, acknowledgedEventID: UInt64) {
+    self.subscriptionID = subscriptionID
+    self.acknowledgedEventID = acknowledgedEventID
+  }
 }
 
 public struct HermesBridgeCancelFileEventSubscriptionPayload: Codable, Equatable, Sendable {
@@ -435,6 +446,136 @@ public struct HermesBridgeFileEventMonitorStatusPayload: Codable, Equatable, Sen
     self.deliveredCursor = deliveredCursor
     self.acknowledgedCursor = acknowledgedCursor
     self.rescanRequired = rescanRequired
+  }
+}
+
+public struct HermesBridgeCreateSystemEventSubscriptionPayload: Codable, Equatable, Sendable {
+  public let kinds: [HermesSystemEventKind]
+
+  public init(kinds: [HermesSystemEventKind]) {
+    self.kinds = kinds
+  }
+}
+
+public struct HermesBridgeSystemEventSubscriptionPayload: Codable, Equatable, Sendable {
+  public let subscriptionID: String
+  public let kinds: [HermesSystemEventKind]
+  public let expiresAt: Date
+  public let resyncRequired: Bool
+
+  public init(
+    subscriptionID: HermesSystemEventSubscriptionID,
+    kinds: [HermesSystemEventKind],
+    expiresAt: Date,
+    resyncRequired: Bool = false
+  ) {
+    self.subscriptionID = subscriptionID.rawValue
+    self.kinds = Array(
+      kinds.prefix(HermesBridgeSystemEventCoordinator.maximumEventKindsPerSubscription))
+    self.expiresAt = expiresAt
+    self.resyncRequired = resyncRequired
+  }
+}
+
+public struct HermesBridgePollSystemEventSubscriptionPayload: Codable, Equatable, Sendable {
+  public let subscriptionID: String
+  public let timeoutMilliseconds: Int
+
+  public init(subscriptionID: String, timeoutMilliseconds: Int = 0) {
+    self.subscriptionID = subscriptionID
+    self.timeoutMilliseconds = timeoutMilliseconds
+  }
+}
+
+public struct HermesBridgeAcknowledgeSystemEventBatchPayload: Codable, Equatable, Sendable {
+  public let subscriptionID: String
+  public let acknowledgedEventOrdinal: UInt64
+
+  public init(subscriptionID: String, acknowledgedEventOrdinal: UInt64) {
+    self.subscriptionID = subscriptionID
+    self.acknowledgedEventOrdinal = acknowledgedEventOrdinal
+  }
+}
+
+public struct HermesBridgeCancelSystemEventSubscriptionPayload: Codable, Equatable, Sendable {
+  public let subscriptionID: String
+
+  public init(subscriptionID: String) {
+    self.subscriptionID = subscriptionID
+  }
+}
+
+public struct HermesBridgeSystemEventSummary: Codable, Equatable, Sendable {
+  public let eventID: String
+  public let kind: HermesSystemEventKind
+  public let source: HermesSystemEventSource
+  public let timestamp: Date
+  public let applicationBundleIdentifier: String?
+  public let applicationLocalizedName: String?
+  public let networkStatus: HermesNetworkStatusClassification?
+  public let networkInterface: HermesNetworkInterfaceSummary?
+  public let networkExpensive: Bool?
+  public let networkConstrained: Bool?
+  public let serviceHealth: HermesBridgeServiceHealthClassification?
+  public let replayed: Bool
+  public let coalesced: Bool
+  public let reasonCode: String
+
+  public init(event: HermesSystemEvent) {
+    self.eventID = event.eventID.rawValue
+    self.kind = event.kind
+    self.source = event.source
+    self.timestamp = event.timestamp
+    self.applicationBundleIdentifier = event.application?.bundleIdentifier
+    self.applicationLocalizedName = event.application?.localizedName
+    self.networkStatus = event.networkStatus
+    self.networkInterface = event.networkInterface
+    self.networkExpensive = event.networkExpensive
+    self.networkConstrained = event.networkConstrained
+    self.serviceHealth = event.serviceHealth
+    self.replayed = event.replayed
+    self.coalesced = event.coalesced
+    self.reasonCode = event.reasonCode
+  }
+}
+
+public struct HermesBridgeSystemEventBatchPayload: Codable, Equatable, Sendable {
+  public static let maximumEventCount = HermesSystemEventBatch.maximumEventCount
+  public static let maximumEncodedBytes = HermesSystemEventBatch.maximumEncodedBytes
+
+  public let subscriptionID: String
+  public let events: [HermesBridgeSystemEventSummary]
+  public let newestEventOrdinal: UInt64
+  public let replayed: Bool
+  public let resyncRequired: Bool
+  public let droppedEventReason: String?
+
+  public init(
+    subscriptionID: HermesSystemEventSubscriptionID,
+    events: [HermesSystemEvent],
+    newestEventOrdinal: UInt64,
+    replayed: Bool,
+    resyncRequired: Bool,
+    droppedEventReason: String? = nil
+  ) throws {
+    self.subscriptionID = subscriptionID.rawValue
+    self.events = Array(
+      events.map(HermesBridgeSystemEventSummary.init).prefix(Self.maximumEventCount))
+    self.newestEventOrdinal = newestEventOrdinal
+    self.replayed = replayed
+    self.resyncRequired = resyncRequired
+    self.droppedEventReason = try droppedEventReason.map(HermesSystemEvent.safeReasonCode)
+    guard (try? JSONEncoder().encode(self).count) ?? Int.max <= Self.maximumEncodedBytes else {
+      throw HermesBridgeXPCError.oversizedPayload
+    }
+  }
+}
+
+public struct HermesBridgeSystemEventMonitorStatusPayload: Codable, Equatable, Sendable {
+  public let status: HermesSystemEventMonitorStatus
+
+  public init(status: HermesSystemEventMonitorStatus) {
+    self.status = status
   }
 }
 
@@ -574,6 +715,10 @@ public struct HermesBridgeRequestEnvelope: Codable, Equatable, Sendable {
   public let pollFileEventSubscription: HermesBridgePollFileEventSubscriptionPayload?
   public let acknowledgeFileEventBatch: HermesBridgeAcknowledgeFileEventBatchPayload?
   public let cancelFileEventSubscription: HermesBridgeCancelFileEventSubscriptionPayload?
+  public let createSystemEventSubscription: HermesBridgeCreateSystemEventSubscriptionPayload?
+  public let pollSystemEventSubscription: HermesBridgePollSystemEventSubscriptionPayload?
+  public let acknowledgeSystemEventBatch: HermesBridgeAcknowledgeSystemEventBatchPayload?
+  public let cancelSystemEventSubscription: HermesBridgeCancelSystemEventSubscriptionPayload?
 
   public init(
     protocolVersion: HermesBridgeProtocolVersion = .current,
@@ -593,7 +738,11 @@ public struct HermesBridgeRequestEnvelope: Codable, Equatable, Sendable {
     createFileEventSubscription: HermesBridgeCreateFileEventSubscriptionPayload? = nil,
     pollFileEventSubscription: HermesBridgePollFileEventSubscriptionPayload? = nil,
     acknowledgeFileEventBatch: HermesBridgeAcknowledgeFileEventBatchPayload? = nil,
-    cancelFileEventSubscription: HermesBridgeCancelFileEventSubscriptionPayload? = nil
+    cancelFileEventSubscription: HermesBridgeCancelFileEventSubscriptionPayload? = nil,
+    createSystemEventSubscription: HermesBridgeCreateSystemEventSubscriptionPayload? = nil,
+    pollSystemEventSubscription: HermesBridgePollSystemEventSubscriptionPayload? = nil,
+    acknowledgeSystemEventBatch: HermesBridgeAcknowledgeSystemEventBatchPayload? = nil,
+    cancelSystemEventSubscription: HermesBridgeCancelSystemEventSubscriptionPayload? = nil
   ) {
     self.protocolVersion = protocolVersion
     self.correlationID = correlationID
@@ -613,6 +762,10 @@ public struct HermesBridgeRequestEnvelope: Codable, Equatable, Sendable {
     self.pollFileEventSubscription = pollFileEventSubscription
     self.acknowledgeFileEventBatch = acknowledgeFileEventBatch
     self.cancelFileEventSubscription = cancelFileEventSubscription
+    self.createSystemEventSubscription = createSystemEventSubscription
+    self.pollSystemEventSubscription = pollSystemEventSubscription
+    self.acknowledgeSystemEventBatch = acknowledgeSystemEventBatch
+    self.cancelSystemEventSubscription = cancelSystemEventSubscription
   }
 }
 
@@ -674,6 +827,11 @@ public enum HermesBridgeSuccessPayload: Codable, Equatable, Sendable {
   case acknowledgeFileEventBatch(HermesBridgeAcknowledgementPayload)
   case cancelFileEventSubscription(HermesBridgeFileEventSubscriptionPayload)
   case fileEventMonitorStatus(HermesBridgeFileEventMonitorStatusPayload)
+  case createSystemEventSubscription(HermesBridgeSystemEventSubscriptionPayload)
+  case pollSystemEventSubscription(HermesBridgeSystemEventBatchPayload)
+  case acknowledgeSystemEventBatch(HermesBridgeAcknowledgementPayload)
+  case cancelSystemEventSubscription(HermesBridgeSystemEventSubscriptionPayload)
+  case systemEventMonitorStatus(HermesBridgeSystemEventMonitorStatusPayload)
   case submit(HermesBridgeRequestIDPayload)
   case status(HermesBridgeRequestStatusPayload)
   case cancel(HermesBridgeRequestStatusPayload)

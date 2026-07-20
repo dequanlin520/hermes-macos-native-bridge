@@ -21,6 +21,7 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
   public let bindingRegistry: ConfigurationBackedHermesRequestBindingRegistry
   public let authorizedRootRegistry: FileBackedHermesAuthorizedRootRegistry
   public let fileIntegration: HermesBridgeFileIntegrationCoordinator
+  public let systemEventIntegration: HermesBridgeSystemEventCoordinator
   public let orchestrator: HermesRequestOrchestrator
   public let auditStore: any HermesAuditStore
   public let requestHandler: HermesBridgeServiceRequestHandler
@@ -72,9 +73,16 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
     self.fileIntegration = HermesBridgeFileIntegrationCoordinator(
       registry: authorizedRootRegistry
     )
+    self.systemEventIntegration = HermesBridgeSystemEventCoordinator()
     let monitor = HermesFSEventsMonitor(registry: authorizedRootRegistry) {
       [fileIntegration] batch in
       await fileIntegration.ingest(batch: batch)
+    }
+    let networkMonitor = HermesSystemNetworkMonitor { [systemEventIntegration] state in
+      await systemEventIntegration.ingestNetworkState(state)
+    }
+    let workspaceMonitor = HermesSystemWorkspaceMonitor { [systemEventIntegration] kind, app in
+      await systemEventIntegration.ingestWorkspace(kind: kind, application: app)
     }
 
     let processConfiguration: HermesProcessConfiguration
@@ -107,7 +115,8 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
     self.requestHandler = HermesBridgeServiceRequestHandler(
       orchestrator: orchestrator,
       bindingRegistry: bindingRegistry,
-      fileIntegration: fileIntegration
+      fileIntegration: fileIntegration,
+      systemEventIntegration: systemEventIntegration
     )
     self.dispatcher = HermesBridgeXPCRequestDispatcher(
       handler: requestHandler,
@@ -117,6 +126,8 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
     self.xpcService = HermesBridgeXPCService(dispatcher: dispatcher)
     Task {
       await fileIntegration.setMonitor(monitor)
+      await systemEventIntegration.setNetworkMonitor(networkMonitor)
+      await systemEventIntegration.setWorkspaceMonitor(workspaceMonitor)
     }
   }
 
@@ -134,6 +145,7 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
     logger.log(.stopping)
     xpcService.invalidate()
     await fileIntegration.shutdown()
+    await systemEventIntegration.shutdown()
     do {
       try await orchestrator.shutdown()
       logger.log(.stopped)
@@ -182,15 +194,18 @@ public struct HermesBridgeServiceRequestHandler: HermesBridgeRequestHandling {
   private let orchestrator: HermesRequestOrchestrator
   private let bindingRegistry: ConfigurationBackedHermesRequestBindingRegistry
   private let fileIntegration: HermesBridgeFileIntegrationCoordinator
+  private let systemEventIntegration: HermesBridgeSystemEventCoordinator
 
   public init(
     orchestrator: HermesRequestOrchestrator,
     bindingRegistry: ConfigurationBackedHermesRequestBindingRegistry,
-    fileIntegration: HermesBridgeFileIntegrationCoordinator
+    fileIntegration: HermesBridgeFileIntegrationCoordinator,
+    systemEventIntegration: HermesBridgeSystemEventCoordinator
   ) {
     self.orchestrator = orchestrator
     self.bindingRegistry = bindingRegistry
     self.fileIntegration = fileIntegration
+    self.systemEventIntegration = systemEventIntegration
   }
 
   public func listEnabledBindings() async throws -> [HermesBridgeBindingSummary] {
@@ -295,6 +310,43 @@ public struct HermesBridgeServiceRequestHandler: HermesBridgeRequestHandling {
 
   public func fileEventMonitorStatus() async throws -> HermesBridgeFileEventMonitorStatusPayload {
     try await fileIntegration.fileEventMonitorStatus()
+  }
+
+  public func createSystemEventSubscription(kinds: [HermesSystemEventKind]) async throws
+    -> HermesBridgeSystemEventSubscriptionPayload
+  {
+    try await systemEventIntegration.createSubscription(kinds: kinds)
+  }
+
+  public func pollSystemEventSubscription(
+    subscriptionID: HermesSystemEventSubscriptionID,
+    timeoutMilliseconds: Int
+  ) async throws -> HermesBridgeSystemEventBatchPayload {
+    try await systemEventIntegration.pollSubscription(
+      subscriptionID: subscriptionID,
+      timeoutMilliseconds: timeoutMilliseconds
+    )
+  }
+
+  public func acknowledgeSystemEventBatch(
+    subscriptionID: HermesSystemEventSubscriptionID,
+    acknowledgedEventOrdinal: UInt64
+  ) async throws -> HermesBridgeAcknowledgementPayload {
+    try await systemEventIntegration.acknowledgeBatch(
+      subscriptionID: subscriptionID,
+      acknowledgedEventOrdinal: acknowledgedEventOrdinal
+    )
+  }
+
+  public func cancelSystemEventSubscription(
+    subscriptionID: HermesSystemEventSubscriptionID
+  ) async throws -> HermesBridgeSystemEventSubscriptionPayload {
+    try await systemEventIntegration.cancelSubscription(subscriptionID: subscriptionID)
+  }
+
+  public func systemEventMonitorStatus() async throws -> HermesBridgeSystemEventMonitorStatusPayload
+  {
+    try await systemEventIntegration.monitorStatus()
   }
 
   public func submit(bindingID: HermesRequestBindingID, prompt: String) async throws

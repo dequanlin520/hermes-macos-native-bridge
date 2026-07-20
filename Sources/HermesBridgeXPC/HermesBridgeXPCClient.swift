@@ -343,6 +343,96 @@ public actor HermesBridgeXPCClient {
     return payload
   }
 
+  public func createSystemEventSubscription(kinds: [HermesSystemEventKind]) async throws
+    -> HermesBridgeSystemEventSubscriptionPayload
+  {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .createSystemEventSubscription,
+        createSystemEventSubscription: HermesBridgeCreateSystemEventSubscriptionPayload(
+          kinds: kinds
+        )
+      ))
+    guard case .success(.createSystemEventSubscription(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
+  public func pollSystemEventSubscription(
+    subscriptionID: HermesSystemEventSubscriptionID,
+    timeoutMilliseconds: Int = 0
+  ) async throws -> HermesBridgeSystemEventBatchPayload {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .pollSystemEventSubscription,
+        pollSystemEventSubscription: HermesBridgePollSystemEventSubscriptionPayload(
+          subscriptionID: subscriptionID.rawValue,
+          timeoutMilliseconds: timeoutMilliseconds
+        )
+      ))
+    guard case .success(.pollSystemEventSubscription(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
+  public func acknowledgeSystemEventBatch(
+    subscriptionID: HermesSystemEventSubscriptionID,
+    acknowledgedEventOrdinal: UInt64
+  ) async throws -> HermesBridgeAcknowledgementPayload {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .acknowledgeSystemEventBatch,
+        acknowledgeSystemEventBatch: HermesBridgeAcknowledgeSystemEventBatchPayload(
+          subscriptionID: subscriptionID.rawValue,
+          acknowledgedEventOrdinal: acknowledgedEventOrdinal
+        )
+      ))
+    guard case .success(.acknowledgeSystemEventBatch(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
+  public func cancelSystemEventSubscription(
+    subscriptionID: HermesSystemEventSubscriptionID
+  ) async throws -> HermesBridgeSystemEventSubscriptionPayload {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .cancelSystemEventSubscription,
+        cancelSystemEventSubscription: HermesBridgeCancelSystemEventSubscriptionPayload(
+          subscriptionID: subscriptionID.rawValue
+        )
+      ))
+    guard case .success(.cancelSystemEventSubscription(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
+  public func systemEventMonitorStatus() async throws -> HermesBridgeSystemEventMonitorStatusPayload
+  {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .systemEventMonitorStatus
+      ))
+    guard case .success(.systemEventMonitorStatus(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
   public func submit(bindingID: HermesRequestBindingID, prompt: String) async throws
     -> HermesRequestID
   {
@@ -517,6 +607,50 @@ public struct HermesBridgeFileIntegrationAppAdapter: Sendable {
 
   public func fileEventMonitorStatus() async throws -> HermesBridgeFileEventMonitorStatusPayload {
     try await client.fileEventMonitorStatus()
+  }
+}
+
+public struct HermesBridgeSystemEventAppAdapter: Sendable {
+  private let client: HermesBridgeXPCClient
+
+  public init(client: HermesBridgeXPCClient) {
+    self.client = client
+  }
+
+  public func monitorStatus() async throws -> HermesBridgeSystemEventMonitorStatusPayload {
+    try await client.systemEventMonitorStatus()
+  }
+
+  public func createSubscription(kinds: [HermesSystemEventKind]) async throws
+    -> HermesBridgeSystemEventSubscriptionPayload
+  {
+    try await client.createSystemEventSubscription(kinds: kinds)
+  }
+
+  public func poll(
+    subscriptionID: HermesSystemEventSubscriptionID,
+    timeoutMilliseconds: Int
+  ) async throws -> HermesBridgeSystemEventBatchPayload {
+    try await client.pollSystemEventSubscription(
+      subscriptionID: subscriptionID,
+      timeoutMilliseconds: timeoutMilliseconds
+    )
+  }
+
+  public func acknowledge(
+    subscriptionID: HermesSystemEventSubscriptionID,
+    acknowledgedEventOrdinal: UInt64
+  ) async throws -> HermesBridgeAcknowledgementPayload {
+    try await client.acknowledgeSystemEventBatch(
+      subscriptionID: subscriptionID,
+      acknowledgedEventOrdinal: acknowledgedEventOrdinal
+    )
+  }
+
+  public func cancel(subscriptionID: HermesSystemEventSubscriptionID) async throws
+    -> HermesBridgeSystemEventSubscriptionPayload
+  {
+    try await client.cancelSystemEventSubscription(subscriptionID: subscriptionID)
   }
 }
 

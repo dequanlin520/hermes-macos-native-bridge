@@ -6,12 +6,16 @@ import XCTest
 
 final class HermesAuditLogTests: XCTestCase {
   func testEventKindCatalogIsFixedAndComplete() {
-    XCTAssertEqual(HermesAuditEventKind.allCases.count, 27)
+    XCTAssertEqual(HermesAuditEventKind.allCases.count, 31)
     XCTAssertTrue(HermesAuditEventKind.allCases.contains(.doctorExecuted))
     XCTAssertTrue(HermesAuditEventKind.allCases.contains(.auditExported))
     XCTAssertTrue(HermesAuditEventKind.allCases.contains(.auditSigningKeyRotated))
     XCTAssertTrue(HermesAuditEventKind.allCases.contains(.auditSigningAccessConfigured))
     XCTAssertTrue(HermesAuditEventKind.allCases.contains(.auditSigningRecoveryPerformed))
+    XCTAssertTrue(HermesAuditEventKind.allCases.contains(.systemEventSubscriptionCreated))
+    XCTAssertTrue(HermesAuditEventKind.allCases.contains(.systemEventSubscriptionCancelled))
+    XCTAssertTrue(HermesAuditEventKind.allCases.contains(.systemEventOverflow))
+    XCTAssertTrue(HermesAuditEventKind.allCases.contains(.serviceHealthTransition))
   }
 
   func testAuditEventIDValidation() throws {
