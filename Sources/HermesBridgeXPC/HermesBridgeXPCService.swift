@@ -965,7 +965,7 @@ public actor HermesBridgeXPCRequestDispatcher {
     }
   }
 
-  private func mapOrchestratorError<T>(
+  private func mapOrchestratorError<T: Sendable>(
     _ body: () async throws -> T
   ) async throws -> T {
     do {
@@ -989,7 +989,7 @@ public actor HermesBridgeXPCRequestDispatcher {
     }
   }
 
-  private func mapFileIntegrationError<T>(_ body: () async throws -> T) async throws -> T {
+  private func mapFileIntegrationError<T: Sendable>(_ body: () async throws -> T) async throws -> T {
     do {
       return try await body()
     } catch let error as HermesBridgeXPCError {
@@ -1016,7 +1016,7 @@ public actor HermesBridgeXPCRequestDispatcher {
     }
   }
 
-  private func mapEventPolicyError<T>(_ body: () async throws -> T) async throws -> T {
+  private func mapEventPolicyError<T: Sendable>(_ body: () async throws -> T) async throws -> T {
     do {
       return try await body()
     } catch let error as HermesBridgeXPCError {
