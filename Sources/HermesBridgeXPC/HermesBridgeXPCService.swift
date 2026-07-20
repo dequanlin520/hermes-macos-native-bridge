@@ -60,6 +60,21 @@ public protocol HermesBridgeRequestHandling: Sendable {
   func cancelSystemEventSubscription(subscriptionID: HermesSystemEventSubscriptionID) async throws
     -> HermesBridgeSystemEventSubscriptionPayload
   func systemEventMonitorStatus() async throws -> HermesBridgeSystemEventMonitorStatusPayload
+  func listEventPolicies() async throws -> HermesBridgeEventPolicyListPayload
+  func createEventPolicy(_ policy: HermesEventPolicy) async throws -> HermesBridgeEventPolicyPayload
+  func updateEventPolicy(_ policy: HermesEventPolicy, expectedRevision: Int) async throws
+    -> HermesBridgeEventPolicyPayload
+  func enableEventPolicy(id: HermesEventPolicyID, expectedRevision: Int?) async throws
+    -> HermesBridgeEventPolicyPayload
+  func disableEventPolicy(id: HermesEventPolicyID, expectedRevision: Int?) async throws
+    -> HermesBridgeEventPolicyPayload
+  func removeEventPolicy(id: HermesEventPolicyID, expectedRevision: Int?) async throws
+    -> HermesBridgeEventPolicyIDPayload
+  func evaluateEventPolicyDryRun(event: HermesSystemEvent) async throws
+    -> HermesBridgeEventPolicyEvaluationResultPayload
+  func eventPolicyEngineStatus() async throws -> HermesBridgeEventPolicyEngineStatusPayload
+  func pauseEventPolicies() async throws -> HermesBridgeEventPolicyEngineStatusPayload
+  func resumeEventPolicies() async throws -> HermesBridgeEventPolicyEngineStatusPayload
   func submit(bindingID: HermesRequestBindingID, prompt: String) async throws -> HermesRequestID
   func status(requestID: HermesRequestID) async throws -> HermesRequestRecord
   func cancel(requestID: HermesRequestID) async throws -> HermesRequestRecord
@@ -189,6 +204,61 @@ extension HermesBridgeRequestHandling {
   {
     throw HermesBridgeXPCError.unsupportedCapability
   }
+
+  public func listEventPolicies() async throws -> HermesBridgeEventPolicyListPayload {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func createEventPolicy(_: HermesEventPolicy) async throws -> HermesBridgeEventPolicyPayload
+  {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func updateEventPolicy(
+    _: HermesEventPolicy,
+    expectedRevision _: Int
+  ) async throws -> HermesBridgeEventPolicyPayload {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func enableEventPolicy(
+    id _: HermesEventPolicyID,
+    expectedRevision _: Int?
+  ) async throws -> HermesBridgeEventPolicyPayload {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func disableEventPolicy(
+    id _: HermesEventPolicyID,
+    expectedRevision _: Int?
+  ) async throws -> HermesBridgeEventPolicyPayload {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func removeEventPolicy(
+    id: HermesEventPolicyID,
+    expectedRevision _: Int?
+  ) async throws -> HermesBridgeEventPolicyIDPayload {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func evaluateEventPolicyDryRun(
+    event _: HermesSystemEvent
+  ) async throws -> HermesBridgeEventPolicyEvaluationResultPayload {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func eventPolicyEngineStatus() async throws -> HermesBridgeEventPolicyEngineStatusPayload {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func pauseEventPolicies() async throws -> HermesBridgeEventPolicyEngineStatusPayload {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func resumeEventPolicies() async throws -> HermesBridgeEventPolicyEngineStatusPayload {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
 }
 
 public actor HermesBridgeXPCRequestDispatcher {
@@ -269,6 +339,7 @@ public actor HermesBridgeXPCRequestDispatcher {
         envelope.approvalResponse == nil,
         envelope.filePayloadCount == 0
           && envelope.systemEventPayloadCount == 0
+          && envelope.eventPolicyPayloadCount == 0
       else {
         throw HermesBridgeXPCError.malformedPayload
       }
@@ -283,6 +354,7 @@ public actor HermesBridgeXPCRequestDispatcher {
         envelope.approvalResponse == nil,
         envelope.filePayloadCount == 0
           && envelope.systemEventPayloadCount == 0
+          && envelope.eventPolicyPayloadCount == 0
       else {
         throw HermesBridgeXPCError.malformedPayload
       }
@@ -291,6 +363,7 @@ public actor HermesBridgeXPCRequestDispatcher {
         envelope.approvalResponse == nil,
         envelope.filePayloadCount == 0
           && envelope.systemEventPayloadCount == 0
+          && envelope.eventPolicyPayloadCount == 0
       else {
         throw HermesBridgeXPCError.malformedPayload
       }
@@ -299,6 +372,7 @@ public actor HermesBridgeXPCRequestDispatcher {
         envelope.cancel == nil,
         envelope.filePayloadCount == 0
           && envelope.systemEventPayloadCount == 0
+          && envelope.eventPolicyPayloadCount == 0
       else {
         throw HermesBridgeXPCError.malformedPayload
       }
@@ -307,6 +381,7 @@ public actor HermesBridgeXPCRequestDispatcher {
         envelope.approvalResponse == nil,
         envelope.filePayloadCount == 0
           && envelope.systemEventPayloadCount == 0
+          && envelope.eventPolicyPayloadCount == 0
       else {
         throw HermesBridgeXPCError.malformedPayload
       }
@@ -402,6 +477,28 @@ public actor HermesBridgeXPCRequestDispatcher {
       }
     case .systemEventMonitorStatus:
       try validateOnlySystemEventPayload(envelope, expected: 0)
+    case .listEventPolicies, .eventPolicyEngineStatus, .pauseEventPolicies, .resumeEventPolicies:
+      try validateOnlyEventPolicyPayload(envelope, expected: 0)
+    case .createEventPolicy:
+      try validateOnlyEventPolicyPayload(envelope, expected: 1)
+      guard envelope.eventPolicy != nil else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+    case .updateEventPolicy:
+      try validateOnlyEventPolicyPayload(envelope, expected: 1)
+      guard envelope.eventPolicy?.expectedRevision != nil else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+    case .enableEventPolicy, .disableEventPolicy, .removeEventPolicy:
+      try validateOnlyEventPolicyPayload(envelope, expected: 1)
+      guard envelope.eventPolicyID != nil else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+    case .evaluateEventPolicyDryRun:
+      try validateOnlyEventPolicyPayload(envelope, expected: 1)
+      guard envelope.eventPolicyEvaluation != nil else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
     }
   }
 
@@ -411,7 +508,8 @@ public actor HermesBridgeXPCRequestDispatcher {
   ) throws {
     guard envelope.submit == nil, envelope.status == nil, envelope.cancel == nil,
       envelope.approvalResponse == nil, envelope.filePayloadCount == expected,
-      envelope.systemEventPayloadCount == 0
+      envelope.systemEventPayloadCount == 0,
+      envelope.eventPolicyPayloadCount == 0
     else {
       throw HermesBridgeXPCError.malformedPayload
     }
@@ -423,7 +521,21 @@ public actor HermesBridgeXPCRequestDispatcher {
   ) throws {
     guard envelope.submit == nil, envelope.status == nil, envelope.cancel == nil,
       envelope.approvalResponse == nil, envelope.filePayloadCount == 0,
-      envelope.systemEventPayloadCount == expected
+      envelope.systemEventPayloadCount == expected,
+      envelope.eventPolicyPayloadCount == 0
+    else {
+      throw HermesBridgeXPCError.malformedPayload
+    }
+  }
+
+  private func validateOnlyEventPolicyPayload(
+    _ envelope: HermesBridgeRequestEnvelope,
+    expected: Int
+  ) throws {
+    guard envelope.submit == nil, envelope.status == nil, envelope.cancel == nil,
+      envelope.approvalResponse == nil, envelope.filePayloadCount == 0,
+      envelope.systemEventPayloadCount == 0,
+      envelope.eventPolicyPayloadCount == expected
     else {
       throw HermesBridgeXPCError.malformedPayload
     }
@@ -599,6 +711,85 @@ public actor HermesBridgeXPCRequestDispatcher {
         ))
     case .systemEventMonitorStatus:
       return .systemEventMonitorStatus(try await handler.systemEventMonitorStatus())
+    case .listEventPolicies:
+      return .listEventPolicies(
+        try await mapEventPolicyError {
+          try await handler.listEventPolicies()
+        })
+    case .createEventPolicy:
+      guard let payload = envelope.eventPolicy else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+      return .createEventPolicy(
+        try await mapEventPolicyError {
+          try await handler.createEventPolicy(payload.policy)
+        })
+    case .updateEventPolicy:
+      guard let payload = envelope.eventPolicy,
+        let expectedRevision = payload.expectedRevision
+      else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+      return .updateEventPolicy(
+        try await mapEventPolicyError {
+          try await handler.updateEventPolicy(payload.policy, expectedRevision: expectedRevision)
+        })
+    case .enableEventPolicy:
+      guard let payload = envelope.eventPolicyID else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+      return .enableEventPolicy(
+        try await mapEventPolicyError {
+          try await handler.enableEventPolicy(
+            id: payload.policyID,
+            expectedRevision: payload.expectedRevision
+          )
+        })
+    case .disableEventPolicy:
+      guard let payload = envelope.eventPolicyID else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+      return .disableEventPolicy(
+        try await mapEventPolicyError {
+          try await handler.disableEventPolicy(
+            id: payload.policyID,
+            expectedRevision: payload.expectedRevision
+          )
+        })
+    case .removeEventPolicy:
+      guard let payload = envelope.eventPolicyID else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+      return .removeEventPolicy(
+        try await mapEventPolicyError {
+          try await handler.removeEventPolicy(
+            id: payload.policyID,
+            expectedRevision: payload.expectedRevision
+          )
+        })
+    case .evaluateEventPolicyDryRun:
+      guard let payload = envelope.eventPolicyEvaluation else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+      return .evaluateEventPolicyDryRun(
+        try await mapEventPolicyError {
+          try await handler.evaluateEventPolicyDryRun(event: payload.event)
+        })
+    case .eventPolicyEngineStatus:
+      return .eventPolicyEngineStatus(
+        try await mapEventPolicyError {
+          try await handler.eventPolicyEngineStatus()
+        })
+    case .pauseEventPolicies:
+      return .pauseEventPolicies(
+        try await mapEventPolicyError {
+          try await handler.pauseEventPolicies()
+        })
+    case .resumeEventPolicies:
+      return .resumeEventPolicies(
+        try await mapEventPolicyError {
+          try await handler.resumeEventPolicies()
+        })
     case .submit:
       guard let submit = envelope.submit else {
         throw HermesBridgeXPCError.malformedPayload
@@ -725,6 +916,31 @@ public actor HermesBridgeXPCRequestDispatcher {
       }
     } catch is HermesFileEventError {
       throw HermesBridgeXPCError.oversizedPayload
+    } catch {
+      throw HermesBridgeXPCError.internalFailure
+    }
+  }
+
+  private func mapEventPolicyError<T>(_ body: () async throws -> T) async throws -> T {
+    do {
+      return try await body()
+    } catch let error as HermesBridgeXPCError {
+      throw error
+    } catch let error as HermesEventPolicyError {
+      switch error {
+      case .invalidPolicyID, .unsupportedSchemaVersion, .invalidRevision, .invalidPolicy,
+        .invalidCondition, .invalidAction, .invalidPromptTemplate, .unknownPromptPlaceholder,
+        .promptTooLarge:
+        throw HermesBridgeXPCError.malformedPayload
+      case .revisionConflict:
+        throw HermesBridgeXPCError.invalidState
+      case .duplicatePolicyID, .policyLimitExceeded:
+        throw HermesBridgeXPCError.invalidState
+      case .policyNotFound:
+        throw HermesBridgeXPCError.requestNotFound
+      case .invalidStoreRoot, .corruptStore, .persistenceFailed:
+        throw HermesBridgeXPCError.serviceUnavailable
+      }
     } catch {
       throw HermesBridgeXPCError.internalFailure
     }
@@ -998,7 +1214,10 @@ public actor HermesBridgeXPCRequestDispatcher {
       }
     case .protocolVersion, .capabilities, .listEnabledBindings, .listAuthorizedRoots,
       .authorizedRootStatus, .resolveAuthorizedRoot, .acknowledgeFileEventBatch,
-      .fileEventMonitorStatus, .acknowledgeSystemEventBatch, .systemEventMonitorStatus:
+      .fileEventMonitorStatus, .acknowledgeSystemEventBatch, .systemEventMonitorStatus,
+      .listEventPolicies, .createEventPolicy, .updateEventPolicy, .enableEventPolicy,
+      .disableEventPolicy, .removeEventPolicy, .evaluateEventPolicyDryRun,
+      .eventPolicyEngineStatus, .pauseEventPolicies, .resumeEventPolicies:
       return
     }
   }
@@ -1032,7 +1251,10 @@ public actor HermesBridgeXPCRequestDispatcher {
     case .pollFileEventSubscription, .acknowledgeFileEventBatch, .fileEventMonitorStatus,
       .protocolVersion, .capabilities, .listEnabledBindings, .listAuthorizedRoots,
       .authorizedRootStatus, .resolveAuthorizedRoot, .pollSystemEventSubscription,
-      .acknowledgeSystemEventBatch, .systemEventMonitorStatus:
+      .acknowledgeSystemEventBatch, .systemEventMonitorStatus, .listEventPolicies,
+      .createEventPolicy, .updateEventPolicy, .enableEventPolicy, .disableEventPolicy,
+      .removeEventPolicy, .evaluateEventPolicyDryRun, .eventPolicyEngineStatus,
+      .pauseEventPolicies, .resumeEventPolicies:
       return
     }
     try await auditStore.append(
@@ -1098,6 +1320,14 @@ extension HermesBridgeRequestEnvelope {
     if pollSystemEventSubscription != nil { count += 1 }
     if acknowledgeSystemEventBatch != nil { count += 1 }
     if cancelSystemEventSubscription != nil { count += 1 }
+    return count
+  }
+
+  fileprivate var eventPolicyPayloadCount: Int {
+    var count = 0
+    if eventPolicy != nil { count += 1 }
+    if eventPolicyID != nil { count += 1 }
+    if eventPolicyEvaluation != nil { count += 1 }
     return count
   }
 }

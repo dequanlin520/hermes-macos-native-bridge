@@ -28,6 +28,16 @@ Audit event kinds are fixed by `HermesAuditEventKind`.
 | `systemEventSubscriptionCancelled` | System-event subscription was cancelled. |
 | `systemEventOverflow` | System-event subscription overflow requires resync. |
 | `serviceHealthTransition` | Bridge service-health classification changed. |
+| `eventPolicyCreated` | Event policy was created through typed validation. |
+| `eventPolicyUpdated` | Event policy was updated through revisioned validation. |
+| `eventPolicyEnabled` | Event policy was enabled. |
+| `eventPolicyDisabled` | Event policy was disabled. |
+| `eventPolicyMatched` | Event policy evaluation completed with safe match metadata. |
+| `eventPolicyActionExecuted` | Event policy action executed through an allowlisted adapter. |
+| `eventPolicyActionBlocked` | Event policy action was blocked by policy safety gates. |
+| `eventPolicyActionFailed` | Event policy action failed with a redacted reason code. |
+| `eventPolicyPaused` | Event policy engine was paused. |
+| `eventPolicyResumed` | Event policy engine was manually resumed. |
 | `doctorExecuted` | Health or permissions Doctor ran. |
 | `emergencyStopRequested` | Emergency stop was explicitly requested. |
 | `emergencyStopCompleted` | Emergency stop completed with bounded outcome. |

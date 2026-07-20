@@ -66,6 +66,7 @@ public struct HermesBridgeBindingDefinition: Codable, Equatable, Sendable {
   public let approvalPolicy: HermesBridgeBindingApprovalPolicy
   public let localizedDisplayName: String
   public let safeLocalizedDescription: String
+  public let allowsEventTriggeredInvocation: Bool
 
   public init(
     schemaVersion: Int = currentSchemaVersion,
@@ -75,7 +76,8 @@ public struct HermesBridgeBindingDefinition: Codable, Equatable, Sendable {
     timeoutSeconds: TimeInterval?,
     approvalPolicy: HermesBridgeBindingApprovalPolicy,
     localizedDisplayName: String? = nil,
-    safeLocalizedDescription: String = ""
+    safeLocalizedDescription: String = "",
+    allowsEventTriggeredInvocation: Bool = false
   ) throws {
     guard schemaVersion == Self.currentSchemaVersion else {
       throw HermesBridgeServiceConfigurationError.unsupportedSchemaVersion(schemaVersion)
@@ -105,6 +107,41 @@ public struct HermesBridgeBindingDefinition: Codable, Equatable, Sendable {
       safeLocalizedDescription,
       maximumCharacters: HermesBridgeBindingSummary.maximumDescriptionCharacters
     )
+    self.allowsEventTriggeredInvocation = allowsEventTriggeredInvocation
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case schemaVersion
+    case id
+    case enabled
+    case maximumPromptBytes
+    case timeoutSeconds
+    case approvalPolicy
+    case localizedDisplayName
+    case safeLocalizedDescription
+    case allowsEventTriggeredInvocation
+  }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    try self.init(
+      schemaVersion: container.decode(Int.self, forKey: .schemaVersion),
+      id: container.decode(String.self, forKey: .id),
+      enabled: container.decode(Bool.self, forKey: .enabled),
+      maximumPromptBytes: container.decode(Int.self, forKey: .maximumPromptBytes),
+      timeoutSeconds: container.decodeIfPresent(TimeInterval.self, forKey: .timeoutSeconds),
+      approvalPolicy: container.decode(
+        HermesBridgeBindingApprovalPolicy.self, forKey: .approvalPolicy),
+      localizedDisplayName: container.decodeIfPresent(String.self, forKey: .localizedDisplayName),
+      safeLocalizedDescription: container.decodeIfPresent(
+        String.self,
+        forKey: .safeLocalizedDescription
+      ) ?? "",
+      allowsEventTriggeredInvocation: container.decodeIfPresent(
+        Bool.self,
+        forKey: .allowsEventTriggeredInvocation
+      ) ?? false
+    )
   }
 
   public var requestBinding: HermesRequestBinding {
@@ -126,7 +163,8 @@ public struct HermesBridgeBindingDefinition: Codable, Equatable, Sendable {
       safeLocalizedDescription: safeLocalizedDescription,
       maximumPromptBytes: maximumPromptBytes,
       approvalPolicy: approvalPolicy.rawValue,
-      enabled: enabled
+      enabled: enabled,
+      allowsEventTriggeredInvocation: allowsEventTriggeredInvocation
     )
   }
 
@@ -311,6 +349,23 @@ extension ConfigurationBackedHermesRequestBindingRegistry: HermesBridgeRequestHa
     decision _: HermesApprovalResponseDecision
   ) async throws -> HermesRequestRecord {
     throw HermesBridgeXPCError.unsupportedOperation
+  }
+}
+
+extension ConfigurationBackedHermesRequestBindingRegistry: HermesEventPolicyBindingDiscovering {
+  public func listEnabledEventPolicyBindings() async throws -> [HermesEventPolicyBindingSummary] {
+    try await listEnabledBindings().compactMap { summary in
+      guard let bindingID = try? HermesRequestBindingID(rawValue: summary.bindingID) else {
+        return nil
+      }
+      return HermesEventPolicyBindingSummary(
+        bindingID: bindingID,
+        enabled: summary.enabled,
+        maximumPromptBytes: summary.maximumPromptBytes,
+        approvalPolicy: summary.approvalPolicy,
+        allowsEventTriggeredInvocation: summary.allowsEventTriggeredInvocation
+      )
+    }
   }
 }
 

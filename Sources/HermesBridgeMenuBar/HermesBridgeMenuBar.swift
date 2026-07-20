@@ -122,6 +122,35 @@ public struct HermesBridgeMenuBarSystemEventSummary: Codable, Equatable, Identif
   }
 }
 
+public struct HermesBridgeMenuBarPolicyDecisionSummary: Codable, Equatable, Identifiable,
+  Sendable
+{
+  public let id: String
+  public let policyID: String
+  public let eventKind: String
+  public let actionKind: String?
+  public let decision: String
+  public let reasonCode: String
+  public let evaluatedAt: Date
+
+  public init(evaluation: HermesEventPolicyEvaluation) {
+    self.id = Self.safeID("\(evaluation.policyID.rawValue)_\(evaluation.eventID.rawValue)")
+    self.policyID = Self.safeID(evaluation.policyID.rawValue)
+    self.eventKind = Self.safeID(evaluation.eventKind.rawValue)
+    self.actionKind = evaluation.actionKind?.rawValue
+    self.decision = Self.safeID(evaluation.decision.rawValue)
+    self.reasonCode = Self.safeID(evaluation.reasonCode)
+    self.evaluatedAt = evaluation.evaluatedAt
+  }
+
+  private static func safeID(_ value: String) -> String {
+    let filtered = value.filter {
+      $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "." || $0 == "_" || $0 == "-")
+    }
+    return String(filtered.prefix(160))
+  }
+}
+
 public struct HermesBridgeMenuBarState: Codable, Equatable, Sendable {
   public var serviceStatus: HermesBridgeMenuBarServiceStatus
   public var installed: Bool
@@ -138,6 +167,9 @@ public struct HermesBridgeMenuBarState: Codable, Equatable, Sendable {
   public var networkOnline: Bool
   public var systemEventMonitorActive: Bool
   public var recentSystemEvents: [HermesBridgeMenuBarSystemEventSummary]
+  public var enabledPolicyCount: Int
+  public var eventPoliciesPaused: Bool
+  public var recentPolicyDecisions: [HermesBridgeMenuBarPolicyDecisionSummary]
   public var serviceDegraded: Bool
   public var lastActionMessage: String?
 
@@ -157,6 +189,9 @@ public struct HermesBridgeMenuBarState: Codable, Equatable, Sendable {
     networkOnline: Bool = false,
     systemEventMonitorActive: Bool = false,
     recentSystemEvents: [HermesBridgeMenuBarSystemEventSummary] = [],
+    enabledPolicyCount: Int = 0,
+    eventPoliciesPaused: Bool = false,
+    recentPolicyDecisions: [HermesBridgeMenuBarPolicyDecisionSummary] = [],
     serviceDegraded: Bool = false,
     lastActionMessage: String? = nil
   ) {
@@ -176,6 +211,9 @@ public struct HermesBridgeMenuBarState: Codable, Equatable, Sendable {
     self.networkOnline = networkOnline
     self.systemEventMonitorActive = systemEventMonitorActive
     self.recentSystemEvents = Array(recentSystemEvents.prefix(8))
+    self.enabledPolicyCount = max(0, enabledPolicyCount)
+    self.eventPoliciesPaused = eventPoliciesPaused
+    self.recentPolicyDecisions = Array(recentPolicyDecisions.prefix(8))
     self.serviceDegraded = serviceDegraded
     self.lastActionMessage = lastActionMessage.map { String($0.prefix(120)) }
   }
@@ -655,7 +693,53 @@ public protocol HermesBridgeMenuBarXPCClient: Sendable {
   ) async throws -> HermesBridgeAcknowledgementPayload
   func cancelSystemEventSubscription(subscriptionID: HermesSystemEventSubscriptionID) async throws
     -> HermesBridgeSystemEventSubscriptionPayload
+  func listEventPolicies() async throws -> HermesBridgeEventPolicyListPayload
+  func eventPolicyEngineStatus() async throws -> HermesBridgeEventPolicyEngineStatusPayload
+  func pauseEventPolicies() async throws -> HermesBridgeEventPolicyEngineStatusPayload
+  func resumeEventPolicies() async throws -> HermesBridgeEventPolicyEngineStatusPayload
+  func enableEventPolicy(id: HermesEventPolicyID, expectedRevision: Int?) async throws
+    -> HermesBridgeEventPolicyPayload
+  func disableEventPolicy(id: HermesEventPolicyID, expectedRevision: Int?) async throws
+    -> HermesBridgeEventPolicyPayload
+  func evaluateEventPolicyDryRun(event: HermesSystemEvent) async throws
+    -> HermesBridgeEventPolicyEvaluationResultPayload
   func close() async
+}
+
+extension HermesBridgeMenuBarXPCClient {
+  public func listEventPolicies() async throws -> HermesBridgeEventPolicyListPayload {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func eventPolicyEngineStatus() async throws -> HermesBridgeEventPolicyEngineStatusPayload {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func pauseEventPolicies() async throws -> HermesBridgeEventPolicyEngineStatusPayload {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func resumeEventPolicies() async throws -> HermesBridgeEventPolicyEngineStatusPayload {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func enableEventPolicy(id _: HermesEventPolicyID, expectedRevision _: Int?) async throws
+    -> HermesBridgeEventPolicyPayload
+  {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func disableEventPolicy(id _: HermesEventPolicyID, expectedRevision _: Int?) async throws
+    -> HermesBridgeEventPolicyPayload
+  {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func evaluateEventPolicyDryRun(event _: HermesSystemEvent) async throws
+    -> HermesBridgeEventPolicyEvaluationResultPayload
+  {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
 }
 
 public protocol HermesBridgeMenuBarRequestListing: Sendable {
@@ -1170,6 +1254,76 @@ public actor HermesBridgeMenuBarViewModel {
     return result
   }
 
+  public func pausePolicies() async -> HermesBridgeMenuBarActionResult {
+    do {
+      let payload = try await environment.xpcClient.pauseEventPolicies()
+      let status = payload.status
+      state.eventPoliciesPaused = status.paused
+      state.recentPolicyDecisions = status.recentDecisions.map(
+        HermesBridgeMenuBarPolicyDecisionSummary.init)
+      return HermesBridgeMenuBarActionResult(succeeded: true, safeMessage: "policies paused")
+    } catch {
+      return HermesBridgeMenuBarActionResult(succeeded: false, safeMessage: "policy pause failed")
+    }
+  }
+
+  public func resumePolicies() async -> HermesBridgeMenuBarActionResult {
+    do {
+      let payload = try await environment.xpcClient.resumeEventPolicies()
+      let status = payload.status
+      state.eventPoliciesPaused = status.paused
+      state.recentPolicyDecisions = status.recentDecisions.map(
+        HermesBridgeMenuBarPolicyDecisionSummary.init)
+      return HermesBridgeMenuBarActionResult(succeeded: true, safeMessage: "policies resumed")
+    } catch {
+      return HermesBridgeMenuBarActionResult(succeeded: false, safeMessage: "policy resume failed")
+    }
+  }
+
+  public func enablePolicy(id: HermesEventPolicyID, expectedRevision: Int?) async
+    -> HermesBridgeMenuBarActionResult
+  {
+    do {
+      _ = try await environment.xpcClient.enableEventPolicy(
+        id: id,
+        expectedRevision: expectedRevision
+      )
+      await refresh()
+      return HermesBridgeMenuBarActionResult(succeeded: true, safeMessage: "policy enabled")
+    } catch {
+      return HermesBridgeMenuBarActionResult(succeeded: false, safeMessage: "policy enable failed")
+    }
+  }
+
+  public func disablePolicy(id: HermesEventPolicyID, expectedRevision: Int?) async
+    -> HermesBridgeMenuBarActionResult
+  {
+    do {
+      _ = try await environment.xpcClient.disableEventPolicy(
+        id: id,
+        expectedRevision: expectedRevision
+      )
+      await refresh()
+      return HermesBridgeMenuBarActionResult(succeeded: true, safeMessage: "policy disabled")
+    } catch {
+      return HermesBridgeMenuBarActionResult(succeeded: false, safeMessage: "policy disable failed")
+    }
+  }
+
+  public func dryRunPolicy(event: HermesSystemEvent) async
+    -> [HermesBridgeMenuBarPolicyDecisionSummary]
+  {
+    do {
+      let payload = try await environment.xpcClient.evaluateEventPolicyDryRun(event: event)
+      let summaries = payload.evaluations.map(HermesBridgeMenuBarPolicyDecisionSummary.init)
+      state.recentPolicyDecisions = Array(summaries.prefix(8))
+      return summaries
+    } catch {
+      state.lastActionMessage = "policy dry run failed"
+      return []
+    }
+  }
+
   private func performRefresh() async {
     if Task.isCancelled { return }
     let serviceStatus = await environment.serviceManager.status()
@@ -1197,6 +1351,9 @@ public actor HermesBridgeMenuBarViewModel {
       let systemEvents =
         capabilities.capabilities.contains(.systemEventObservation)
         ? await recentSafeSystemEvents() : []
+      let policyStatus =
+        capabilities.capabilities.contains(.systemEventPolicyManagement)
+        ? try? await environment.xpcClient.eventPolicyEngineStatus() : nil
       next.protocolCompatible = compatible
       next.serviceStatus = compatible ? next.serviceStatus : .protocolIncompatible
       next.protocolVersion = version.version.description
@@ -1209,6 +1366,12 @@ public actor HermesBridgeMenuBarViewModel {
         next.serviceDegraded = systemStatus.status.serviceHealth != .healthy
       }
       next.recentSystemEvents = systemEvents
+      if let policyStatus {
+        next.enabledPolicyCount = policyStatus.status.enabledPolicyCount
+        next.eventPoliciesPaused = policyStatus.status.paused
+        next.recentPolicyDecisions = policyStatus.status.recentDecisions.map(
+          HermesBridgeMenuBarPolicyDecisionSummary.init)
+      }
       state = next
     } catch {
       next.serviceStatus = .unavailable
@@ -1347,6 +1510,40 @@ public actor ProductionMenuBarXPCClient: HermesBridgeMenuBarXPCClient {
     async throws -> HermesBridgeSystemEventSubscriptionPayload
   {
     try await client.cancelSystemEventSubscription(subscriptionID: subscriptionID)
+  }
+
+  public func listEventPolicies() async throws -> HermesBridgeEventPolicyListPayload {
+    try await client.listEventPolicies()
+  }
+
+  public func eventPolicyEngineStatus() async throws -> HermesBridgeEventPolicyEngineStatusPayload {
+    try await client.eventPolicyEngineStatus()
+  }
+
+  public func pauseEventPolicies() async throws -> HermesBridgeEventPolicyEngineStatusPayload {
+    try await client.pauseEventPolicies()
+  }
+
+  public func resumeEventPolicies() async throws -> HermesBridgeEventPolicyEngineStatusPayload {
+    try await client.resumeEventPolicies()
+  }
+
+  public func enableEventPolicy(id: HermesEventPolicyID, expectedRevision: Int?) async throws
+    -> HermesBridgeEventPolicyPayload
+  {
+    try await client.enableEventPolicy(id: id, expectedRevision: expectedRevision)
+  }
+
+  public func disableEventPolicy(id: HermesEventPolicyID, expectedRevision: Int?) async throws
+    -> HermesBridgeEventPolicyPayload
+  {
+    try await client.disableEventPolicy(id: id, expectedRevision: expectedRevision)
+  }
+
+  public func evaluateEventPolicyDryRun(event: HermesSystemEvent) async throws
+    -> HermesBridgeEventPolicyEvaluationResultPayload
+  {
+    try await client.evaluateEventPolicyDryRun(event: event)
   }
 
   public func close() async {

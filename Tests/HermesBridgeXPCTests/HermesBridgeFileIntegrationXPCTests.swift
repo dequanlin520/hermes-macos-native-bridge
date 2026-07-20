@@ -11,7 +11,7 @@ final class HermesBridgeFileIntegrationXPCTests: XCTestCase {
     let version = try await harness.client.protocolVersion()
     let capabilities = try await harness.client.capabilities()
 
-    XCTAssertEqual(version.version, HermesBridgeProtocolVersion(major: 1, minor: 4))
+    XCTAssertEqual(version.version, HermesBridgeProtocolVersion(major: 1, minor: 5))
     XCTAssertTrue(capabilities.capabilities.contains(.authorizedRootManagement))
     XCTAssertTrue(capabilities.capabilities.contains(.fileEventObservation))
     XCTAssertTrue(capabilities.capabilities.contains(.systemEventObservation))

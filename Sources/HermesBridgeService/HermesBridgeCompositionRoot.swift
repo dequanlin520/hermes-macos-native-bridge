@@ -9,6 +9,7 @@ public enum HermesBridgeCompositionRootError: Error, Equatable, Sendable {
   case stateStoreFailed(String)
   case bindingRegistryFailed(String)
   case authorizedRootRegistryFailed(String)
+  case eventPolicyStoreFailed(String)
 }
 
 public final class HermesBridgeCompositionRoot: @unchecked Sendable {
@@ -22,6 +23,8 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
   public let authorizedRootRegistry: FileBackedHermesAuthorizedRootRegistry
   public let fileIntegration: HermesBridgeFileIntegrationCoordinator
   public let systemEventIntegration: HermesBridgeSystemEventCoordinator
+  public let eventPolicyStore: FileBackedHermesEventPolicyStore
+  public let eventPolicyEngine: HermesEventPolicyEngine
   public let orchestrator: HermesRequestOrchestrator
   public let auditStore: any HermesAuditStore
   public let requestHandler: HermesBridgeServiceRequestHandler
@@ -74,6 +77,12 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
       registry: authorizedRootRegistry
     )
     self.systemEventIntegration = HermesBridgeSystemEventCoordinator()
+    do {
+      self.eventPolicyStore = try FileBackedHermesEventPolicyStore(
+        root: resolvedPaths.eventPoliciesRoot)
+    } catch {
+      throw HermesBridgeCompositionRootError.eventPolicyStoreFailed(Self.safeCode(for: error))
+    }
     let monitor = HermesFSEventsMonitor(registry: authorizedRootRegistry) {
       [fileIntegration] batch in
       await fileIntegration.ingest(batch: batch)
@@ -112,11 +121,19 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
         configuration: HermesAuditStoreConfiguration(
           root: resolvedPaths.logsRoot.appendingPathComponent("Audit", isDirectory: true)
         ))) ?? NoopHermesAuditStore()
+    self.eventPolicyEngine = HermesEventPolicyEngine(
+      store: eventPolicyStore,
+      bindingDiscovery: bindingRegistry,
+      submitter: HermesBridgeEventPolicyRequestSubmitter(orchestrator: orchestrator),
+      serviceManager: HermesBridgeEventPolicyServiceAdapter(),
+      auditStore: auditStore
+    )
     self.requestHandler = HermesBridgeServiceRequestHandler(
       orchestrator: orchestrator,
       bindingRegistry: bindingRegistry,
       fileIntegration: fileIntegration,
-      systemEventIntegration: systemEventIntegration
+      systemEventIntegration: systemEventIntegration,
+      eventPolicyEngine: eventPolicyEngine
     )
     self.dispatcher = HermesBridgeXPCRequestDispatcher(
       handler: requestHandler,
@@ -128,6 +145,9 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
       await fileIntegration.setMonitor(monitor)
       await systemEventIntegration.setNetworkMonitor(networkMonitor)
       await systemEventIntegration.setWorkspaceMonitor(workspaceMonitor)
+      await systemEventIntegration.setEventHandler { [eventPolicyEngine] event in
+        _ = await eventPolicyEngine.evaluate(event)
+      }
     }
   }
 
@@ -195,17 +215,20 @@ public struct HermesBridgeServiceRequestHandler: HermesBridgeRequestHandling {
   private let bindingRegistry: ConfigurationBackedHermesRequestBindingRegistry
   private let fileIntegration: HermesBridgeFileIntegrationCoordinator
   private let systemEventIntegration: HermesBridgeSystemEventCoordinator
+  private let eventPolicyEngine: HermesEventPolicyEngine
 
   public init(
     orchestrator: HermesRequestOrchestrator,
     bindingRegistry: ConfigurationBackedHermesRequestBindingRegistry,
     fileIntegration: HermesBridgeFileIntegrationCoordinator,
-    systemEventIntegration: HermesBridgeSystemEventCoordinator
+    systemEventIntegration: HermesBridgeSystemEventCoordinator,
+    eventPolicyEngine: HermesEventPolicyEngine
   ) {
     self.orchestrator = orchestrator
     self.bindingRegistry = bindingRegistry
     self.fileIntegration = fileIntegration
     self.systemEventIntegration = systemEventIntegration
+    self.eventPolicyEngine = eventPolicyEngine
   }
 
   public func listEnabledBindings() async throws -> [HermesBridgeBindingSummary] {
@@ -349,6 +372,77 @@ public struct HermesBridgeServiceRequestHandler: HermesBridgeRequestHandling {
     try await systemEventIntegration.monitorStatus()
   }
 
+  public func listEventPolicies() async throws -> HermesBridgeEventPolicyListPayload {
+    HermesBridgeEventPolicyListPayload(policies: try await eventPolicyEngine.listPolicies())
+  }
+
+  public func createEventPolicy(_ policy: HermesEventPolicy) async throws
+    -> HermesBridgeEventPolicyPayload
+  {
+    HermesBridgeEventPolicyPayload(policy: try await eventPolicyEngine.createPolicy(policy))
+  }
+
+  public func updateEventPolicy(_ policy: HermesEventPolicy, expectedRevision: Int) async throws
+    -> HermesBridgeEventPolicyPayload
+  {
+    HermesBridgeEventPolicyPayload(
+      policy: try await eventPolicyEngine.updatePolicy(
+        policy,
+        expectedRevision: expectedRevision
+      ),
+      expectedRevision: nil
+    )
+  }
+
+  public func enableEventPolicy(
+    id: HermesEventPolicyID,
+    expectedRevision: Int?
+  ) async throws -> HermesBridgeEventPolicyPayload {
+    HermesBridgeEventPolicyPayload(
+      policy: try await eventPolicyEngine.enablePolicy(
+        id: id,
+        expectedRevision: expectedRevision
+      ))
+  }
+
+  public func disableEventPolicy(
+    id: HermesEventPolicyID,
+    expectedRevision: Int?
+  ) async throws -> HermesBridgeEventPolicyPayload {
+    HermesBridgeEventPolicyPayload(
+      policy: try await eventPolicyEngine.disablePolicy(
+        id: id,
+        expectedRevision: expectedRevision
+      ))
+  }
+
+  public func removeEventPolicy(
+    id: HermesEventPolicyID,
+    expectedRevision: Int?
+  ) async throws -> HermesBridgeEventPolicyIDPayload {
+    try await eventPolicyEngine.removePolicy(id: id, expectedRevision: expectedRevision)
+    return HermesBridgeEventPolicyIDPayload(policyID: id, expectedRevision: nil)
+  }
+
+  public func evaluateEventPolicyDryRun(event: HermesSystemEvent) async throws
+    -> HermesBridgeEventPolicyEvaluationResultPayload
+  {
+    HermesBridgeEventPolicyEvaluationResultPayload(
+      evaluations: await eventPolicyEngine.evaluate(event, dryRun: true))
+  }
+
+  public func eventPolicyEngineStatus() async throws -> HermesBridgeEventPolicyEngineStatusPayload {
+    HermesBridgeEventPolicyEngineStatusPayload(status: try await eventPolicyEngine.status())
+  }
+
+  public func pauseEventPolicies() async throws -> HermesBridgeEventPolicyEngineStatusPayload {
+    HermesBridgeEventPolicyEngineStatusPayload(status: try await eventPolicyEngine.pause())
+  }
+
+  public func resumeEventPolicies() async throws -> HermesBridgeEventPolicyEngineStatusPayload {
+    HermesBridgeEventPolicyEngineStatusPayload(status: try await eventPolicyEngine.resume())
+  }
+
   public func submit(bindingID: HermesRequestBindingID, prompt: String) async throws
     -> HermesRequestID
   {
@@ -369,4 +463,26 @@ public struct HermesBridgeServiceRequestHandler: HermesBridgeRequestHandling {
   ) async throws -> HermesRequestRecord {
     try await orchestrator.respondToApproval(requestID: requestID, decision: decision)
   }
+}
+
+public struct HermesBridgeEventPolicyRequestSubmitter: HermesEventPolicyRequestSubmitting {
+  private let orchestrator: HermesRequestOrchestrator
+
+  public init(orchestrator: HermesRequestOrchestrator) {
+    self.orchestrator = orchestrator
+  }
+
+  public func submit(bindingID: HermesRequestBindingID, prompt: String) async throws
+    -> HermesRequestID
+  {
+    try await orchestrator.submit(bindingID: bindingID, prompt: prompt)
+  }
+}
+
+public struct HermesBridgeEventPolicyServiceAdapter: HermesEventPolicyServiceManaging {
+  public init() {}
+
+  public func refreshBridgeHealth() async throws {}
+
+  public func restartBridgeService() async throws {}
 }
