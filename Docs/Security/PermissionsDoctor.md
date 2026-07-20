@@ -22,6 +22,10 @@ The report contains one check for each `HermesPermissionKind`:
 - `hardenedRuntime`
 - `notarization`
 
+The report may also carry a bounded audit-integrity summary with state,
+verified segment count, verified event count, safe issue codes and verification
+timestamp. This summary is diagnostic evidence, not a permission grant.
+
 Each check returns a `HermesPermissionState`:
 
 - `granted`
@@ -53,6 +57,9 @@ run generic shell, AppleScript or JXA remediation.
 Automation is reported from documented state evidence only. When there is no
 non-prompting public probe, it is reported as `notDetermined`.
 
+Audit integrity diagnostics are read-only. They do not repair or rewrite audit
+history, do not expose raw corrupt records and do not include private paths.
+
 ## Remediation
 
 Remediation uses fixed codes:
@@ -81,5 +88,5 @@ without user-mediated system state.
 ## Next Hardening
 
 Future work should add release notarization ticket evidence, Developer ID
-release build metadata, richer notification diagnostics, and manual validation
-for user-facing permission flows.
+release build metadata, richer notification diagnostics, production manifest
+signing configuration, and manual validation for user-facing permission flows.

@@ -357,17 +357,29 @@ public struct NoopHermesAuditStore: HermesAuditStore {
 
 public actor FileBackedHermesAuditStore: HermesAuditStore {
   public static let activeLogName = "audit.current.jsonl"
+  public static let chainStateName = "audit.chain-state.json"
 
   private let configuration: HermesAuditStoreConfiguration
   private let fileManager: FileManager
+  private let signingProvider: any HermesAuditManifestSigningProvider
   private let encoder: JSONEncoder
   private let decoder: JSONDecoder
 
-  public init(configuration: HermesAuditStoreConfiguration, fileManager: FileManager = .default)
+  public nonisolated var rootForIntegrityVerification: URL {
+    configuration.root
+  }
+
+  public init(
+    configuration: HermesAuditStoreConfiguration,
+    fileManager: FileManager = .default,
+    signingProvider: any HermesAuditManifestSigningProvider =
+      HermesUnsignedAuditManifestSigningProvider()
+  )
     throws
   {
     self.configuration = configuration
     self.fileManager = fileManager
+    self.signingProvider = signingProvider
     self.encoder = JSONEncoder()
     self.encoder.outputFormatting = [.sortedKeys]
     self.encoder.dateEncodingStrategy = .iso8601
@@ -378,8 +390,40 @@ public actor FileBackedHermesAuditStore: HermesAuditStore {
 
   public func append(_ event: HermesAuditEvent) async throws {
     try validate(event)
-    try rotateIfNeeded(extraBytes: encodedLine(event).count)
-    let line = try encodedLine(event)
+    var state = try loadOrCreateChainState()
+    let digest = try HermesAuditCanonical.eventDigest(
+      event: event,
+      segmentID: state.segmentID,
+      sequenceNumber: state.nextSequence,
+      previousDigest: state.previousEventDigest
+    )
+    let record = try HermesAuditRecord(
+      event: event,
+      chain: HermesAuditChainLink(
+        segmentID: state.segmentID,
+        sequenceNumber: state.nextSequence,
+        previousDigest: state.previousEventDigest,
+        eventDigest: digest
+      ))
+    var line = try encodedLine(record)
+    if try rotateIfNeeded(extraBytes: line.count) {
+      state = try loadOrCreateChainState()
+      let digest = try HermesAuditCanonical.eventDigest(
+        event: event,
+        segmentID: state.segmentID,
+        sequenceNumber: state.nextSequence,
+        previousDigest: state.previousEventDigest
+      )
+      line = try encodedLine(
+        HermesAuditRecord(
+          event: event,
+          chain: HermesAuditChainLink(
+            segmentID: state.segmentID,
+            sequenceNumber: state.nextSequence,
+            previousDigest: state.previousEventDigest,
+            eventDigest: digest
+          )))
+    }
     let active = activeLogURL
     if !fileManager.fileExists(atPath: active.path) {
       fileManager.createFile(atPath: active.path, contents: nil)
@@ -390,7 +434,20 @@ public actor FileBackedHermesAuditStore: HermesAuditStore {
     try handle.write(contentsOf: line)
     try handle.close()
     try setPermissions(active, 0o600)
+    let written = try decoder.decode(HermesAuditRecord.self, from: Data(line.dropLast()))
+    try saveChainState(
+      HermesAuditStoreChainState(
+        segmentID: written.chain.segmentID,
+        createdAt: state.createdAt,
+        nextSequence: written.chain.sequenceNumber + 1,
+        previousEventDigest: written.chain.eventDigest,
+        previousSegmentManifestDigest: state.previousSegmentManifestDigest
+      ))
     try enforceRetention()
+  }
+
+  public func rotateActiveSegment() async throws {
+    _ = try rotateIfNeeded(extraBytes: configuration.maximumFileBytes)
   }
 
   public func query(_ query: HermesAuditQuery) async throws -> [HermesAuditEvent] {
@@ -448,31 +505,81 @@ public actor FileBackedHermesAuditStore: HermesAuditStore {
     )
   }
 
-  private func encodedLine(_ event: HermesAuditEvent) throws -> Data {
-    var data = try encoder.encode(event)
+  private func encodedLine(_ record: HermesAuditRecord) throws -> Data {
+    var data = try encoder.encode(record)
     data.append(0x0A)
     return data
   }
 
-  private func rotateIfNeeded(extraBytes: Int) throws {
+  private func rotateIfNeeded(extraBytes: Int) throws -> Bool {
     let active = activeLogURL
     guard let size = try? fileManager.attributesOfItem(atPath: active.path)[.size] as? NSNumber
-    else { return }
+    else { return false }
     guard size.intValue + extraBytes > configuration.maximumFileBytes else {
-      return
+      return false
     }
-    let rotated = configuration.root.appendingPathComponent(
-      "audit.\(Self.timestampForFilename(Date())).jsonl")
     if fileManager.fileExists(atPath: active.path) {
+      let state = try loadOrCreateChainState()
+      let records = try readRecords(from: active)
+      guard let first = records.first, let last = records.last else { return false }
+      let rotated = configuration.root.appendingPathComponent(
+        "audit.\(state.segmentID.rawValue).jsonl")
       try fileManager.moveItem(at: active, to: rotated)
       try setPermissions(rotated, 0o600)
+      let checksum = HermesAuditDigest(try Data(contentsOf: rotated))!
+      let unsigned = try HermesAuditSegmentManifest(
+        segmentID: state.segmentID,
+        firstSequence: first.chain.sequenceNumber,
+        lastSequence: last.chain.sequenceNumber,
+        eventCount: records.count,
+        firstDigest: first.chain.eventDigest,
+        terminalDigest: last.chain.eventDigest,
+        previousSegmentManifestDigest: state.previousSegmentManifestDigest,
+        segmentFileSHA256: checksum,
+        createdAt: state.createdAt,
+        closedAt: Date()
+      )
+      let unsignedDigest = try HermesAuditCanonical.manifestDigest(unsigned)
+      let manifest = try HermesAuditSegmentManifest(
+        segmentID: unsigned.segmentID,
+        firstSequence: unsigned.firstSequence,
+        lastSequence: unsigned.lastSequence,
+        eventCount: unsigned.eventCount,
+        firstDigest: unsigned.firstDigest,
+        terminalDigest: unsigned.terminalDigest,
+        previousSegmentManifestDigest: unsigned.previousSegmentManifestDigest,
+        segmentFileSHA256: unsigned.segmentFileSHA256,
+        createdAt: unsigned.createdAt,
+        closedAt: unsigned.closedAt,
+        signature: try signingProvider.sign(manifestDigest: unsignedDigest)
+      )
+      let manifestData = try HermesAuditCanonical.manifestEncoder.encode(manifest)
+      let manifestURL = manifestURL(for: state.segmentID)
+      try manifestData.write(to: manifestURL, options: [.atomic])
+      try setPermissions(manifestURL, 0o600)
+      let manifestDigest = HermesAuditDigest(manifestData)!
+      let checksumURL = manifestChecksumURL(for: state.segmentID)
+      try Data((manifestDigest.rawValue + "\n").utf8).write(to: checksumURL, options: [.atomic])
+      try setPermissions(checksumURL, 0o600)
+      try saveChainState(
+        HermesAuditStoreChainState(
+          segmentID: HermesAuditSegmentID.generate(),
+          createdAt: Date(),
+          nextSequence: last.chain.sequenceNumber + 1,
+          previousEventDigest: last.chain.eventDigest,
+          previousSegmentManifestDigest: manifestDigest
+        ))
+      return true
     }
+    return false
   }
 
   private func enforceRetention() throws {
     var rotated = try logFilesOldestFirst().filter { $0.lastPathComponent != Self.activeLogName }
     while rotated.count > configuration.maximumRetainedFiles - 1 {
       let victim = rotated.removeFirst()
+      try? fileManager.removeItem(at: manifestURL(forLogFile: victim))
+      try? fileManager.removeItem(at: manifestChecksumURL(forLogFile: victim))
       try fileManager.removeItem(at: victim)
     }
     let events = try queryAllEvents()
@@ -493,9 +600,35 @@ public actor FileBackedHermesAuditStore: HermesAuditStore {
   private func rewrite(events: [HermesAuditEvent]) throws {
     for file in try logFilesOldestFirst() {
       try? fileManager.removeItem(at: file)
+      try? fileManager.removeItem(at: manifestURL(forLogFile: file))
+      try? fileManager.removeItem(at: manifestChecksumURL(forLogFile: file))
     }
+    try? fileManager.removeItem(at: configuration.root.appendingPathComponent(Self.chainStateName))
+    try saveChainState(
+      HermesAuditStoreChainState(
+        segmentID: HermesAuditSegmentID.generate(),
+        createdAt: Date(),
+        nextSequence: 1,
+        previousEventDigest: .genesis,
+        previousSegmentManifestDigest: nil
+      ))
     for event in events {
-      let line = try encodedLine(event)
+      var state = try loadOrCreateChainState()
+      let digest = try HermesAuditCanonical.eventDigest(
+        event: event,
+        segmentID: state.segmentID,
+        sequenceNumber: state.nextSequence,
+        previousDigest: state.previousEventDigest
+      )
+      let record = try HermesAuditRecord(
+        event: event,
+        chain: HermesAuditChainLink(
+          segmentID: state.segmentID,
+          sequenceNumber: state.nextSequence,
+          previousDigest: state.previousEventDigest,
+          eventDigest: digest
+        ))
+      let line = try encodedLine(record)
       if !fileManager.fileExists(atPath: activeLogURL.path) {
         fileManager.createFile(atPath: activeLogURL.path, contents: nil)
       }
@@ -503,30 +636,55 @@ public actor FileBackedHermesAuditStore: HermesAuditStore {
       try handle.seekToEnd()
       try handle.write(contentsOf: line)
       try handle.close()
+      state = HermesAuditStoreChainState(
+        segmentID: state.segmentID,
+        createdAt: state.createdAt,
+        nextSequence: state.nextSequence + 1,
+        previousEventDigest: digest,
+        previousSegmentManifestDigest: state.previousSegmentManifestDigest
+      )
+      try saveChainState(state)
     }
     try setPermissions(activeLogURL, 0o600)
   }
 
   private func readEvents(from file: URL) throws -> [HermesAuditEvent] {
+    try readRecords(from: file).map(\.event)
+  }
+
+  private func readRecords(from file: URL) throws -> [HermesAuditRecord] {
     guard let data = try? Data(contentsOf: file), !data.isEmpty else {
       return []
     }
-    var events: [HermesAuditEvent] = []
+    var records: [HermesAuditRecord] = []
     for line in String(decoding: data, as: UTF8.self).split(
       separator: "\n", omittingEmptySubsequences: true)
     {
       guard line.trimmingCharacters(in: .whitespaces).hasSuffix("}") else {
         continue
       }
-      guard let recordData = String(line).data(using: .utf8),
-        let event = try? decoder.decode(HermesAuditEvent.self, from: recordData),
-        event.schemaVersion == HermesAuditEvent.currentSchemaVersion
-      else {
+      guard let recordData = String(line).data(using: .utf8) else {
         continue
       }
-      events.append(event)
+      if let record = try? decoder.decode(HermesAuditRecord.self, from: recordData),
+        record.event.schemaVersion == HermesAuditEvent.currentSchemaVersion
+      {
+        records.append(record)
+      } else if let event = try? decoder.decode(HermesAuditEvent.self, from: recordData),
+        event.schemaVersion == HermesAuditEvent.currentSchemaVersion,
+        let segmentID = try? HermesAuditSegmentID(rawValue: "hseg_legacy"),
+        let digest = HermesAuditDigest(recordData)
+      {
+        let chain = try HermesAuditChainLink(
+          segmentID: segmentID,
+          sequenceNumber: records.count + 1,
+          previousDigest: records.last?.chain.eventDigest ?? .genesis,
+          eventDigest: digest
+        )
+        records.append(try HermesAuditRecord(event: event, chain: chain))
+      }
     }
-    return events
+    return records
   }
 
   private func logFilesOldestFirst() throws -> [URL] {
@@ -550,6 +708,49 @@ public actor FileBackedHermesAuditStore: HermesAuditStore {
     try fileManager.setAttributes(
       [.posixPermissions: NSNumber(value: mode)], ofItemAtPath: url.path)
     chmod(url.path, mode_t(mode))
+  }
+
+  private func loadOrCreateChainState() throws -> HermesAuditStoreChainState {
+    let url = configuration.root.appendingPathComponent(Self.chainStateName)
+    if let data = try? Data(contentsOf: url),
+      let state = try? decoder.decode(HermesAuditStoreChainState.self, from: data)
+    {
+      return state
+    }
+    let state = HermesAuditStoreChainState(
+      segmentID: try HermesAuditSegmentID.generate(),
+      createdAt: Date(),
+      nextSequence: 1,
+      previousEventDigest: .genesis,
+      previousSegmentManifestDigest: nil
+    )
+    try saveChainState(state)
+    return state
+  }
+
+  private func saveChainState(_ state: HermesAuditStoreChainState) throws {
+    let data = try encoder.encode(state)
+    let url = configuration.root.appendingPathComponent(Self.chainStateName)
+    try data.write(to: url, options: [.atomic])
+    try setPermissions(url, 0o600)
+  }
+
+  private func manifestURL(for segmentID: HermesAuditSegmentID) -> URL {
+    configuration.root.appendingPathComponent("audit.\(segmentID.rawValue).manifest.json")
+  }
+
+  private func manifestChecksumURL(for segmentID: HermesAuditSegmentID) -> URL {
+    configuration.root.appendingPathComponent("audit.\(segmentID.rawValue).manifest.sha256")
+  }
+
+  private func manifestURL(forLogFile file: URL) -> URL {
+    configuration.root.appendingPathComponent(
+      file.lastPathComponent.replacingOccurrences(of: ".jsonl", with: ".manifest.json"))
+  }
+
+  private func manifestChecksumURL(forLogFile file: URL) -> URL {
+    configuration.root.appendingPathComponent(
+      file.lastPathComponent.replacingOccurrences(of: ".jsonl", with: ".manifest.sha256"))
   }
 
   private static func timestampForFilename(_ date: Date) -> String {
@@ -589,6 +790,7 @@ public struct HermesAuditExportManifest: Codable, Equatable, Sendable {
   public let eventCount: Int
   public let sha256: String
   public let dataFileName: String
+  public let integrity: HermesAuditExportIntegrityEvidence?
 
   public init(
     schemaVersion: Int,
@@ -596,7 +798,8 @@ public struct HermesAuditExportManifest: Codable, Equatable, Sendable {
     format: HermesAuditExportFormat,
     eventCount: Int,
     sha256: String,
-    dataFileName: String
+    dataFileName: String,
+    integrity: HermesAuditExportIntegrityEvidence? = nil
   ) {
     self.schemaVersion = schemaVersion
     self.exportedAt = exportedAt
@@ -604,6 +807,7 @@ public struct HermesAuditExportManifest: Codable, Equatable, Sendable {
     self.eventCount = max(0, eventCount)
     self.sha256 = String(sha256.prefix(64))
     self.dataFileName = String(dataFileName.prefix(80))
+    self.integrity = integrity
   }
 }
 
@@ -648,13 +852,15 @@ public struct HermesAuditExporter {
     try data.write(to: dataURL, options: [.atomic])
     chmod(dataURL.path, 0o600)
     let checksum = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    let verification = try? HermesAuditIntegrityVerifier(root: storeRootIfFileBacked()).verify()
     let manifest = HermesAuditExportManifest(
       schemaVersion: 1,
       exportedAt: Date(),
       format: request.format,
       eventCount: events.count,
       sha256: checksum,
-      dataFileName: dataFileName
+      dataFileName: dataFileName,
+      integrity: verification.map(HermesAuditExportIntegrityEvidence.init(report:))
     )
     let manifestData = try encoder.encode(manifest)
     try manifestData.write(
@@ -673,6 +879,18 @@ public struct HermesAuditExporter {
         ])
       ))
     return manifest
+  }
+
+  private func storeRootIfFileBacked() -> URL {
+    if let fileStore = store as? FileBackedHermesAuditStore {
+      return fileStore.rootForIntegrityVerification
+    }
+    return requestIndependentEmptyRoot()
+  }
+
+  private func requestIndependentEmptyRoot() -> URL {
+    FileManager.default.temporaryDirectory
+      .appendingPathComponent("hermes-audit-export-no-store", isDirectory: true)
   }
 }
 

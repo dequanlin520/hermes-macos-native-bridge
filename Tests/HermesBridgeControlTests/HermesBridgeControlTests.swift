@@ -279,6 +279,36 @@ final class HermesBridgeControlTests: XCTestCase {
     XCTAssertTrue(exported.stdout.contains("checksum="))
   }
 
+  func testVerifyAuditCommandRendersSafeSummary() async throws {
+    let root = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+      .appendingPathComponent(
+        "artifacts/m6-002/control-verify-\(UUID().uuidString)", isDirectory: true)
+    let auditRoot = HermesBridgeInstallationLayout(
+      homeRoot: root.appendingPathComponent("fake-home", isDirectory: true),
+      label: "com.hermes.bridge.test.m3-003",
+      machService: "com.hermes.bridge.test.m3-003.xpc"
+    ).logsRoot.appendingPathComponent("Audit", isDirectory: true)
+    let store = try FileBackedHermesAuditStore(
+      configuration: HermesAuditStoreConfiguration(root: auditRoot))
+    try await store.append(
+      HermesAuditEvent.make(
+        kind: .doctorExecuted,
+        actor: .testFixture,
+        outcome: .succeeded,
+        reasonCode: "complete"
+      ))
+
+    let result = await runner().run(arguments: [
+      "verify-audit", "--installation-root", root.path,
+    ])
+
+    XCTAssertEqual(result.exitCode, .success)
+    XCTAssertTrue(result.stdout.contains("auditIntegrity: verifiedUnsigned"))
+    XCTAssertFalse(result.stdout.contains("/Users/"))
+    XCTAssertFalse(result.stdout.localizedCaseInsensitiveContains("prompt"))
+    XCTAssertFalse(result.stdout.localizedCaseInsensitiveContains("token"))
+  }
+
   func testNoKillallOrPkillUse() throws {
     let source = try String(
       contentsOf: URL(

@@ -75,11 +75,13 @@ public struct HermesPermissionsDoctorReport: Codable, Equatable, Sendable {
   public let schemaVersion: Int
   public let generatedAt: Date
   public let checks: [HermesPermissionCheck]
+  public let auditIntegrity: HermesAuditExportIntegrityEvidence?
 
   public init(
     schemaVersion: Int = currentSchemaVersion,
     generatedAt: Date = Date(),
-    checks: [HermesPermissionCheck]
+    checks: [HermesPermissionCheck],
+    auditIntegrity: HermesAuditExportIntegrityEvidence? = nil
   ) {
     self.schemaVersion = schemaVersion
     self.generatedAt = generatedAt
@@ -88,6 +90,7 @@ public struct HermesPermissionsDoctorReport: Codable, Equatable, Sendable {
       byKind[$0]
         ?? HermesPermissionCheck(kind: $0, state: .unknown, detailCode: "not_checked")
     }
+    self.auditIntegrity = auditIntegrity
   }
 }
 
@@ -127,6 +130,7 @@ public struct HermesPermissionsDoctorEvidence: Equatable, Sendable {
   public let securityScopedBookmarkAvailable: Bool?
   public let appIntentMetadataPresent: Bool?
   public let notificationsRelevant: Bool
+  public let auditIntegrity: HermesAuditExportIntegrityEvidence?
 
   public init(
     executableURL: URL? = nil,
@@ -136,7 +140,8 @@ public struct HermesPermissionsDoctorEvidence: Equatable, Sendable {
     staleAuthorizedRootCount: Int? = nil,
     securityScopedBookmarkAvailable: Bool? = nil,
     appIntentMetadataPresent: Bool? = nil,
-    notificationsRelevant: Bool = true
+    notificationsRelevant: Bool = true,
+    auditIntegrity: HermesAuditExportIntegrityEvidence? = nil
   ) {
     self.executableURL = executableURL?.standardizedFileURL
     self.launchAgentInstalled = launchAgentInstalled
@@ -146,6 +151,7 @@ public struct HermesPermissionsDoctorEvidence: Equatable, Sendable {
     self.securityScopedBookmarkAvailable = securityScopedBookmarkAvailable
     self.appIntentMetadataPresent = appIntentMetadataPresent
     self.notificationsRelevant = notificationsRelevant
+    self.auditIntegrity = auditIntegrity
   }
 }
 
@@ -356,7 +362,7 @@ public struct HermesPermissionsDoctor: Sendable {
         remediationCode: signing.notarization == .granted ? nil : .notarizeRelease
       ),
     ]
-    return HermesPermissionsDoctorReport(checks: checks)
+    return HermesPermissionsDoctorReport(checks: checks, auditIntegrity: evidence.auditIntegrity)
   }
 
   private func state(for value: Bool?) -> HermesPermissionState {

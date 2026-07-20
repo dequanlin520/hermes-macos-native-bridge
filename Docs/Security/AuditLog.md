@@ -20,7 +20,8 @@ Each event is JSON encoded with:
 - bounded redacted metadata.
 
 The current file format is append-only JSONL in the Bridge-owned
-`Logs/Audit` root.
+`Logs/Audit` root. Each persisted record carries tamper-evident chain metadata
+described in `Docs/Security/AuditIntegrity.md`.
 
 ## Privacy Boundary
 
@@ -56,6 +57,9 @@ are rejected.
 - maximum retained files;
 - maximum retained event count;
 - atomic-style rotation by renaming the active log.
+- deterministic per-record hash chaining;
+- immutable closed-segment manifests and checksums;
+- read-only bounded integrity verification.
 
 There is no arbitrary predicate language and no generic file-read API.
 
@@ -68,12 +72,14 @@ Audit export is explicit and typed:
 - output directory selected by the UI or supplied by a trusted caller;
 - JSON or JSONL output;
 - manifest with SHA-256 checksum;
+- redacted integrity evidence when available;
 - export event audited;
 - no automatic upload.
 
 ## Limitations
 
-The audit system is local and append-only at the application level. It is not a
-tamper-proof ledger. Future hardening should add signing of rotated segments,
-operator-visible retention policy configuration, and release installer
-ownership checks.
+The audit system is local and append-only at the application level. Unsigned
+hash chaining provides integrity evidence for retained records, not signer
+identity. Signed segment manifests can add authenticity evidence only when an
+explicit signing provider is configured. The production default remains
+unsigned.

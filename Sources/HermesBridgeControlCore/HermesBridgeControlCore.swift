@@ -181,6 +181,7 @@ public enum HermesBridgeCLICommand: Equatable, Sendable {
   case doctor
   case permissionsDoctor
   case recentAuditEvents
+  case verifyAudit
   case exportAudit(URL)
   case capabilities
   case start
@@ -281,6 +282,8 @@ public struct HermesBridgeCLIInvocation: Equatable, Sendable {
       self.command = .permissionsDoctor
     case "recent-audit-events":
       self.command = .recentAuditEvents
+    case "verify-audit":
+      self.command = .verifyAudit
     case "export-audit":
       guard let outputDirectory else {
         throw HermesBridgeCLIUsageError.missingOption("--output-directory")
@@ -482,6 +485,20 @@ public struct HermesBridgeControlRunner: Sendable {
         let events = try await runtime.audit.recentEvents(layout: layout, limit: 20)
         return success(
           HermesBridgeControlRenderer.renderAuditEvents(events, format: invocation.format))
+      case .verifyAudit:
+        let report = try HermesAuditIntegrityVerifier(
+          root: layout.logsRoot.appendingPathComponent("Audit", isDirectory: true)
+        ).verify()
+        let code: HermesBridgeCLIExitCode =
+          [.corrupted, .unsupported, .signatureUnavailable, .signatureInvalid].contains(
+            report.state)
+          ? .unhealthy : .success
+        return HermesBridgeCLIRunResult(
+          exitCode: code,
+          stdout: HermesBridgeControlRenderer.renderAuditVerification(
+            report, format: invocation.format) + "\n",
+          stderr: ""
+        )
       case .exportAudit(let outputDirectory):
         let manifest = try await runtime.audit.export(
           layout: layout, outputDirectory: outputDirectory)
@@ -787,7 +804,21 @@ public enum HermesBridgeControlRenderer {
     format: HermesBridgeCLIOutputFormat
   ) -> String {
     if format == .json { return json(manifest) }
-    return "auditExport: \(manifest.eventCount) events checksum=\(manifest.sha256)"
+    let integrity = manifest.integrity.map { " integrity=\($0.state.rawValue)" } ?? ""
+    return "auditExport: \(manifest.eventCount) events checksum=\(manifest.sha256)\(integrity)"
+  }
+
+  public static func renderAuditVerification(
+    _ report: HermesAuditVerificationReport,
+    format: HermesBridgeCLIOutputFormat
+  ) -> String {
+    if format == .json { return json(report) }
+    return [
+      "auditIntegrity: \(report.state.rawValue)",
+      "verifiedSegments: \(report.verifiedSegmentCount)",
+      "verifiedEvents: \(report.verifiedEventCount)",
+      "issues: \(report.issueCodes.map(\.rawValue).joined(separator: ","))",
+    ].joined(separator: "\n")
   }
 
   public static func renderCapabilities(
@@ -1020,6 +1051,7 @@ public struct ProductionDoctorChecker: HermesBridgeDoctorChecking {
     "requestState.rootReadable",
     "runtimeLog.rootPermissions",
     "temporary.staleFiles",
+    "audit.integrity",
     "signing.mode",
     "notarization.readiness",
     "service.residualState",
@@ -1103,6 +1135,10 @@ public struct ProductionDoctorChecker: HermesBridgeDoctorChecking {
       check(
         staleTemporaryFiles(layout.runtimeRoot) == false, "temporary.staleFiles",
         "no stale temporary files", "CLEAN_STALE_TEMPORARY_FILES"))
+    let auditIntegrity = try? HermesAuditIntegrityVerifier(
+      root: layout.logsRoot.appendingPathComponent("Audit", isDirectory: true)
+    ).verify()
+    checks.append(auditIntegrityCheck(auditIntegrity))
     let signingStatus: HermesBridgeDoctorCheckStatus =
       signing?.developerID == true ? .pass : .warning
     checks.append(
@@ -1125,7 +1161,8 @@ public struct ProductionDoctorChecker: HermesBridgeDoctorChecking {
       layout: layout,
       binary: binary,
       launchdVisible: launchdVisible,
-      xpcVisible: xpc.handshake
+      xpcVisible: xpc.handshake,
+      auditIntegrity: auditIntegrity.map(HermesAuditExportIntegrityEvidence.init(report:))
     )
     try? await auditStore(layout: layout).append(
       HermesAuditEvent.make(
@@ -1142,7 +1179,8 @@ public struct ProductionDoctorChecker: HermesBridgeDoctorChecking {
     layout: HermesBridgeInstallationLayout,
     binary: URL?,
     launchdVisible: Bool,
-    xpcVisible: Bool
+    xpcVisible: Bool,
+    auditIntegrity: HermesAuditExportIntegrityEvidence?
   ) async -> HermesPermissionsDoctorReport {
     let roots = try? await HermesBridgeXPCClient(
       machServiceName: try HermesBridgeMachServiceName(layout.machService),
@@ -1162,7 +1200,8 @@ public struct ProductionDoctorChecker: HermesBridgeDoctorChecking {
         staleAuthorizedRootCount: staleCount,
         securityScopedBookmarkAvailable: rootCount.map { $0 > 0 },
         appIntentMetadataPresent: appIntentMetadata,
-        notificationsRelevant: true
+        notificationsRelevant: true,
+        auditIntegrity: auditIntegrity
       ))
   }
 
@@ -1210,6 +1249,33 @@ public struct ProductionDoctorChecker: HermesBridgeDoctorChecking {
       explanation: passed ? explanation : "check failed",
       remediationCode: passed ? nil : remediation
     )
+  }
+
+  private func auditIntegrityCheck(_ report: HermesAuditVerificationReport?)
+    -> HermesBridgeDoctorCheck
+  {
+    guard let report else {
+      return HermesBridgeDoctorCheck(
+        id: "audit.integrity",
+        status: .warning,
+        explanation: "audit integrity unavailable",
+        remediationCode: "VERIFY_AUDIT_LOG")
+    }
+    let status: HermesBridgeDoctorCheckStatus
+    switch report.state {
+    case .verified, .verifiedUnsigned, .incompleteRecoverableTail:
+      status = .pass
+    case .signatureUnavailable:
+      status = .warning
+    case .corrupted, .unsupported, .signatureInvalid:
+      status = .fail
+    }
+    return HermesBridgeDoctorCheck(
+      id: "audit.integrity",
+      status: status,
+      explanation:
+        "audit integrity \(report.state.rawValue) segments=\(report.verifiedSegmentCount) events=\(report.verifiedEventCount)",
+      remediationCode: status == .pass ? nil : "VERIFY_AUDIT_LOG")
   }
 
   private func isExecutable(_ url: URL) -> Bool {
