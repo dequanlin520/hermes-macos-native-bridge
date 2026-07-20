@@ -21,7 +21,7 @@ permissions:
 jobs:
   production-release:
     name: Signed notarized production release
-    runs-on: macos-14
+    runs-on: macos-15
     permissions:
       contents: write
       attestations: write

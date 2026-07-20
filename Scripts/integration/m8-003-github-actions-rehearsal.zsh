@@ -359,29 +359,29 @@ write_report() {
     print
     print "## Workflow Runs"
     print
-    print "- CI run: ${ci_run_id:-not-triggered}"
-    print "- CI URL: ${ci_run_url:-not-captured}"
-    print "- RC run: ${rc_run_id:-not-triggered}"
-    print "- RC URL: ${rc_run_url:-not-captured}"
+    print -- "- CI run: ${ci_run_id:-not-triggered}"
+    print -- "- CI URL: ${ci_run_url:-not-captured}"
+    print -- "- RC run: ${rc_run_id:-not-triggered}"
+    print -- "- RC URL: ${rc_run_url:-not-captured}"
     print
     print "## Artifact Validation"
     print
-    print "- RC artifact downloaded: $rc_artifact_downloaded"
-    print "- unsigned RC archive present: $rc_archive_present"
-    print "- archive checksum valid: $rc_archive_checksum_valid"
-    print "- manifest valid: $rc_manifest_valid"
-    print "- SPDX SBOM valid: $rc_sbom_valid"
-    print "- release gate summary valid: $rc_gate_summary_valid"
-    print "- unsigned RC gate acceptable: $unsigned_rc_conditional"
-    print "- Developer ID falsely passed: $developer_id_falsely_passed"
-    print "- notarization falsely passed: $notarization_falsely_passed"
+    print -- "- RC artifact downloaded: $rc_artifact_downloaded"
+    print -- "- unsigned RC archive present: $rc_archive_present"
+    print -- "- archive checksum valid: $rc_archive_checksum_valid"
+    print -- "- manifest valid: $rc_manifest_valid"
+    print -- "- SPDX SBOM valid: $rc_sbom_valid"
+    print -- "- release gate summary valid: $rc_gate_summary_valid"
+    print -- "- unsigned RC gate acceptable: $unsigned_rc_conditional"
+    print -- "- Developer ID falsely passed: $developer_id_falsely_passed"
+    print -- "- notarization falsely passed: $notarization_falsely_passed"
     print
     print "## Publication And Cleanup"
     print
-    print "- GitHub Release published: $github_release_published"
-    print "- token exposed: $token_exposed"
-    print "- private path exposed: $private_path_exposed"
-    print "- residual gh run watch process: $residual_gh_process"
+    print -- "- GitHub Release published: $github_release_published"
+    print -- "- token exposed: $token_exposed"
+    print -- "- private path exposed: $private_path_exposed"
+    print -- "- residual gh run watch process: $residual_gh_process"
   } > "$validation_report"
 }
 
