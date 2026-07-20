@@ -487,6 +487,7 @@ public struct HermesEventPolicyEvaluation: Codable, Equatable, Sendable {
   public let decision: HermesEventPolicyDecision
   public let reasonCode: String
   public let evaluatedAt: Date
+  public let approvalID: HermesEventPolicyApprovalID?
 
   public init(
     policyID: HermesEventPolicyID,
@@ -496,7 +497,8 @@ public struct HermesEventPolicyEvaluation: Codable, Equatable, Sendable {
     actionKind: HermesEventPolicyActionKind?,
     decision: HermesEventPolicyDecision,
     reasonCode: String,
-    evaluatedAt: Date = Date()
+    evaluatedAt: Date = Date(),
+    approvalID: HermesEventPolicyApprovalID? = nil
   ) throws {
     self.policyID = policyID
     self.policyRevision = policyRevision
@@ -506,6 +508,7 @@ public struct HermesEventPolicyEvaluation: Codable, Equatable, Sendable {
     self.decision = decision
     self.reasonCode = try HermesSystemEvent.safeReasonCode(reasonCode)
     self.evaluatedAt = evaluatedAt
+    self.approvalID = approvalID
   }
 }
 
@@ -826,6 +829,7 @@ public actor HermesEventPolicyEngine {
   private let serviceManager: any HermesEventPolicyServiceManaging
   private let notificationSender: any HermesEventPolicyNotificationSending
   private let auditStore: any HermesAuditStore
+  private let approvalCoordinator: HermesEventPolicyApprovalCoordinator?
   private let now: @Sendable () -> Date
   private let calendar: Calendar
 
@@ -847,6 +851,7 @@ public actor HermesEventPolicyEngine {
     notificationSender: any HermesEventPolicyNotificationSending =
       NoopHermesEventPolicyNotificationSender(),
     auditStore: any HermesAuditStore = NoopHermesAuditStore(),
+    approvalCoordinator: HermesEventPolicyApprovalCoordinator? = nil,
     now: @escaping @Sendable () -> Date = Date.init,
     calendar: Calendar = Calendar(identifier: .gregorian)
   ) {
@@ -856,6 +861,7 @@ public actor HermesEventPolicyEngine {
     self.serviceManager = serviceManager
     self.notificationSender = notificationSender
     self.auditStore = auditStore
+    self.approvalCoordinator = approvalCoordinator
     self.now = now
     self.calendar = calendar
   }
@@ -914,6 +920,9 @@ public actor HermesEventPolicyEngine {
 
   public func emergencyStop() {
     emergencyStopped = true
+    Task {
+      _ = try? await approvalCoordinator?.sweepExpired()
+    }
   }
 
   public func status() async throws -> HermesEventPolicyEngineStatus {
@@ -926,6 +935,62 @@ public actor HermesEventPolicyEngine {
       consecutiveFailures: consecutiveFailures,
       recentDecisions: recentDecisions.reversed()
     )
+  }
+
+  public func listApprovals() async throws -> [HermesEventPolicyApprovalRequest] {
+    guard let approvalCoordinator else {
+      return []
+    }
+    return try await approvalCoordinator.listApprovals()
+  }
+
+  public func approvalStatus(id: HermesEventPolicyApprovalID) async throws
+    -> HermesEventPolicyApprovalRequest
+  {
+    guard let approvalCoordinator else {
+      throw HermesEventPolicyApprovalError.approvalNotFound
+    }
+    return try await approvalCoordinator.status(id: id)
+  }
+
+  public func approveApproval(id: HermesEventPolicyApprovalID) async throws
+    -> HermesEventPolicyApprovalRequest
+  {
+    guard let approvalCoordinator else {
+      throw HermesEventPolicyApprovalError.approvalNotFound
+    }
+    return try await approvalCoordinator.approve(
+      id: id,
+      runtimeState: HermesEventPolicyApprovalRuntimeState(
+        paused: paused,
+        emergencyStopped: emergencyStopped
+      )
+    )
+  }
+
+  public func denyApproval(id: HermesEventPolicyApprovalID) async throws
+    -> HermesEventPolicyApprovalRequest
+  {
+    guard let approvalCoordinator else {
+      throw HermesEventPolicyApprovalError.approvalNotFound
+    }
+    return try await approvalCoordinator.deny(id: id)
+  }
+
+  public func cancelApproval(id: HermesEventPolicyApprovalID) async throws
+    -> HermesEventPolicyApprovalRequest
+  {
+    guard let approvalCoordinator else {
+      throw HermesEventPolicyApprovalError.approvalNotFound
+    }
+    return try await approvalCoordinator.cancel(id: id)
+  }
+
+  public func approvalQueueStatus() async throws -> HermesEventPolicyApprovalQueueStatus {
+    guard let approvalCoordinator else {
+      return HermesEventPolicyApprovalQueueStatus(requests: [])
+    }
+    return try await approvalCoordinator.queueStatus()
   }
 
   public func evaluate(_ event: HermesSystemEvent, dryRun: Bool = false) async
@@ -1025,12 +1090,26 @@ public actor HermesEventPolicyEngine {
       return evaluation.map { [recordAndAudit($0, policy: policy)] } ?? []
     }
     if policy.approvalRequirement != .noApproval {
+      let approvalID: HermesEventPolicyApprovalID?
+      if let approvalCoordinator, let action = policy.actions.first {
+        let correlationID = "evtpol_\(event.eventID.rawValue)"
+        let request = try? await approvalCoordinator.createApproval(
+          policy: policy,
+          event: event,
+          action: action,
+          correlationID: correlationID
+        )
+        approvalID = request?.snapshot.approvalID
+      } else {
+        approvalID = nil
+      }
       let evaluation = makeEvaluation(
         policy: policy,
         event: event,
         actionKind: policy.actions.first?.kind,
         decision: .blockedApprovalRequired,
-        reasonCode: policy.approvalRequirement.rawValue
+        reasonCode: policy.approvalRequirement.rawValue,
+        approvalID: approvalID
       )
       return evaluation.map { [recordAndAudit($0, policy: policy)] } ?? []
     }
@@ -1182,7 +1261,8 @@ public actor HermesEventPolicyEngine {
     event: HermesSystemEvent,
     actionKind: HermesEventPolicyActionKind?,
     decision: HermesEventPolicyDecision,
-    reasonCode: String
+    reasonCode: String,
+    approvalID: HermesEventPolicyApprovalID? = nil
   ) -> HermesEventPolicyEvaluation? {
     try? HermesEventPolicyEvaluation(
       policyID: policy.id,
@@ -1192,7 +1272,8 @@ public actor HermesEventPolicyEngine {
       actionKind: actionKind,
       decision: decision,
       reasonCode: reasonCode,
-      evaluatedAt: now()
+      evaluatedAt: now(),
+      approvalID: approvalID
     )
   }
 
@@ -1245,6 +1326,7 @@ public actor HermesEventPolicyEngine {
       metadata["event_kind"] = decision.eventKind.rawValue
       metadata["decision"] = decision.decision.rawValue
       metadata["action"] = decision.actionKind?.rawValue ?? "none"
+      metadata["approval_id"] = decision.approvalID?.rawValue ?? "none"
     }
     try await auditStore.append(
       HermesAuditEvent.make(

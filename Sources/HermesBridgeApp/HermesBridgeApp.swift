@@ -24,6 +24,7 @@ struct HermesBridgeApp: App {
         Text("Capabilities: \(model.state.capabilities.joined(separator: ", "))")
           .lineLimit(2)
         Text("Enabled bindings: \(model.state.enabledBindingCount)")
+        Text("Pending approvals: \(model.state.pendingApprovalCount)")
         Divider()
         if model.state.recentRequests.isEmpty {
           Text("Recent requests: none")
@@ -68,6 +69,10 @@ struct HermesBridgeApp: App {
         Button("Authorized Folders") {
           openWindow(id: "authorized-folders")
         }
+        Button("Approval Inbox") {
+          model.approvals()
+          openWindow(id: "approval-inbox")
+        }
         Button("Open Shortcuts") {
           NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Shortcuts.app"))
         }
@@ -97,6 +102,11 @@ struct HermesBridgeApp: App {
 
     WindowGroup("Audit Events", id: "audit-events") {
       HermesAuditEventsWindow(model: model)
+    }
+    .defaultSize(width: 640, height: 520)
+
+    WindowGroup("Approval Inbox", id: "approval-inbox") {
+      HermesApprovalInboxWindow(model: model)
     }
     .defaultSize(width: 640, height: 520)
   }
@@ -167,6 +177,29 @@ final class HermesBridgeAppModel: ObservableObject {
     }
   }
 
+  func approvals() {
+    Task {
+      _ = await viewModel.refreshApprovalInbox()
+      state = await viewModel.state
+    }
+  }
+
+  func approve(_ approvalID: String) {
+    Task {
+      guard let id = try? HermesEventPolicyApprovalID(rawValue: approvalID) else { return }
+      _ = await viewModel.approvePolicyApproval(id: id)
+      state = await viewModel.state
+    }
+  }
+
+  func deny(_ approvalID: String) {
+    Task {
+      guard let id = try? HermesEventPolicyApprovalID(rawValue: approvalID) else { return }
+      _ = await viewModel.denyPolicyApproval(id: id)
+      state = await viewModel.state
+    }
+  }
+
   func exportAudit() {
     Task { @MainActor in
       let panel = NSOpenPanel()
@@ -188,6 +221,62 @@ final class HermesBridgeAppModel: ObservableObject {
   func cancel() {
     Task {
       await viewModel.cancelRefresh()
+    }
+  }
+}
+
+struct HermesApprovalInboxWindow: View {
+  @ObservedObject var model: HermesBridgeAppModel
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      HStack {
+        Text("Pending approvals: \(model.state.pendingApprovalCount)")
+          .font(.headline)
+        Spacer()
+        Button("Refresh") {
+          model.approvals()
+        }
+      }
+      if model.state.approvalInboxUnavailable {
+        Text("Approval inbox unavailable")
+          .foregroundStyle(.secondary)
+      }
+      List {
+        Section("Pending") {
+          ForEach(model.state.pendingApprovals) { approval in
+            VStack(alignment: .leading, spacing: 6) {
+              Text(approval.safeSummary)
+                .font(.headline)
+              Text("\(approval.eventKind) · \(approval.actionKind)")
+                .foregroundStyle(.secondary)
+              Text("Expires \(approval.expiresAt.formatted(date: .omitted, time: .standard))")
+                .foregroundStyle(.secondary)
+              HStack {
+                Button("Approve") {
+                  model.approve(approval.approvalID)
+                }
+                Button("Deny") {
+                  model.deny(approval.approvalID)
+                }
+              }
+            }
+          }
+        }
+        Section("Recent") {
+          ForEach(model.state.recentCompletedApprovals) { approval in
+            VStack(alignment: .leading) {
+              Text("\(approval.policyID) · \(approval.state)")
+              Text("\(approval.result) · \(approval.reasonCode)")
+                .foregroundStyle(.secondary)
+            }
+          }
+        }
+      }
+    }
+    .padding(16)
+    .task {
+      model.approvals()
     }
   }
 }

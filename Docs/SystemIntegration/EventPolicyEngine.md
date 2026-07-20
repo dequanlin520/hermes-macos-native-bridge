@@ -22,6 +22,7 @@ Policies use:
 - `FileBackedHermesEventPolicyStore`
 - `HermesEventPolicyEngine`
 - `HermesEventPolicyExecutionRecord`
+- `HermesEventPolicyApprovalCoordinator`
 
 Policy IDs are bounded `hepol_` identifiers. Policies are versioned, revisioned,
 enabled or disabled, and contain bounded condition and action arrays.
@@ -67,6 +68,9 @@ The engine evaluates enabled policies in deterministic policy-ID order. It
 validates matches, suppresses duplicate events, enforces per-policy cooldown,
 per-policy and global rate limits, applies approval gates, supports dry-run and
 records safe decisions.
+Policies requiring approval persist one immutable approval snapshot and return
+`blockedApprovalRequired` with the approval ID. The action is not executed until
+the typed approval workflow approves that exact snapshot.
 
 Decision states are:
 
@@ -85,3 +89,6 @@ Global pause, emergency stop and the circuit breaker block new policy actions.
 Manual resume clears pause/circuit-breaker state. Emergency stop is in-memory
 and immediate; it does not use process-name matching, `killall`, `pkill`, PIDs
 or arbitrary executable controls.
+
+Approval workflow details are documented in
+`Docs/SystemIntegration/EventPolicyApprovals.md`.

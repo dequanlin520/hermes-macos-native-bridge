@@ -38,6 +38,14 @@ Audit event kinds are fixed by `HermesAuditEventKind`.
 | `eventPolicyActionFailed` | Event policy action failed with a redacted reason code. |
 | `eventPolicyPaused` | Event policy engine was paused. |
 | `eventPolicyResumed` | Event policy engine was manually resumed. |
+| `eventPolicyApprovalCreated` | Event-policy approval request was created. |
+| `eventPolicyApprovalApproved` | Event-policy approval request was approved. |
+| `eventPolicyApprovalDenied` | Event-policy approval request was denied. |
+| `eventPolicyApprovalExpired` | Event-policy approval request expired. |
+| `eventPolicyApprovalCancelled` | Event-policy approval request was cancelled. |
+| `eventPolicyApprovalExecuted` | Approved event-policy snapshot executed. |
+| `eventPolicyApprovalFailed` | Approved event-policy snapshot failed with a redacted reason. |
+| `eventPolicyApprovalInvalidated` | Approval was invalidated by revision, pause or emergency-stop gates. |
 | `doctorExecuted` | Health or permissions Doctor ran. |
 | `emergencyStopRequested` | Emergency stop was explicitly requested. |
 | `emergencyStopCompleted` | Emergency stop completed with bounded outcome. |

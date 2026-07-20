@@ -130,6 +130,33 @@ final class HermesBridgeMenuBarTests: XCTestCase {
     XCTAssertFalse(rendered.contains("/Users/"))
   }
 
+  func testApprovalInboxRenderingApproveAndDeny() async throws {
+    let approvalID = try HermesEventPolicyApprovalID.generate()
+    let xpc = try FakeXPC(approvals: [
+      makeApprovalSummary(id: approvalID, state: .pending)
+    ])
+    let viewModel = HermesBridgeMenuBarViewModel(environment: .fake(xpc: xpc))
+
+    let approvals = await viewModel.refreshApprovalInbox()
+    let state = await viewModel.state
+    XCTAssertEqual(state.pendingApprovalCount, 1)
+    XCTAssertEqual(approvals.first?.approvalID, approvalID.rawValue)
+    XCTAssertFalse(
+      String(describing: state.pendingApprovals).localizedCaseInsensitiveContains("prompt"))
+    XCTAssertFalse(
+      String(describing: state.pendingApprovals).localizedCaseInsensitiveContains("token"))
+    XCTAssertFalse(String(describing: state.pendingApprovals).contains("/Users/"))
+
+    let approve = await viewModel.approvePolicyApproval(id: approvalID)
+    let deny = await viewModel.denyPolicyApproval(id: approvalID)
+    XCTAssertTrue(approve.succeeded)
+    XCTAssertTrue(deny.succeeded)
+    let approvedIDs = await xpc.approvedIDs
+    let deniedIDs = await xpc.deniedIDs
+    XCTAssertEqual(approvedIDs, [approvalID])
+    XCTAssertEqual(deniedIDs, [approvalID])
+  }
+
   func testAuthorizedRootPanelConfigurationIsDirectoryOnlySingleSelection() {
     let add = HermesAuthorizedRootOpenPanelConfiguration.newDirectory()
     let refresh = HermesAuthorizedRootOpenPanelConfiguration.replacementDirectory(
@@ -455,9 +482,16 @@ private actor FakeServiceManager: HermesBridgeMenuBarServiceManaging {
 
 private actor FakeXPC: HermesBridgeMenuBarXPCClient {
   private let version: HermesBridgeProtocolVersion
+  private var approvals: [HermesBridgeEventPolicyApprovalSummary]
+  private(set) var approvedIDs: [HermesEventPolicyApprovalID] = []
+  private(set) var deniedIDs: [HermesEventPolicyApprovalID] = []
 
-  init(version: HermesBridgeProtocolVersion = .current) {
+  init(
+    version: HermesBridgeProtocolVersion = .current,
+    approvals: [HermesBridgeEventPolicyApprovalSummary] = []
+  ) {
     self.version = version
+    self.approvals = approvals
   }
 
   func protocolVersion() async throws -> HermesBridgeProtocolVersionPayload {
@@ -551,7 +585,122 @@ private actor FakeXPC: HermesBridgeMenuBarXPCClient {
     )
   }
 
+  func listEventPolicyApprovals() async throws -> HermesBridgeEventPolicyApprovalListPayload {
+    try HermesBridgeEventPolicyApprovalListPayload(approvals: approvals.map(makeRequest))
+  }
+
+  func approveEventPolicyExecution(id: HermesEventPolicyApprovalID) async throws
+    -> HermesBridgeEventPolicyApprovalPayload
+  {
+    approvedIDs.append(id)
+    return try approvalPayload(id: id, state: .executed, result: .executed)
+  }
+
+  func denyEventPolicyExecution(id: HermesEventPolicyApprovalID) async throws
+    -> HermesBridgeEventPolicyApprovalPayload
+  {
+    deniedIDs.append(id)
+    return try approvalPayload(id: id, state: .denied, result: .denied)
+  }
+
+  func eventPolicyApprovalQueueStatus() async throws
+    -> HermesBridgeEventPolicyApprovalQueueStatusPayload
+  {
+    HermesBridgeEventPolicyApprovalQueueStatusPayload(
+      status: HermesEventPolicyApprovalQueueStatus(requests: try approvals.map(makeRequest)))
+  }
+
   func close() async {}
+
+  private func approvalPayload(
+    id: HermesEventPolicyApprovalID,
+    state: HermesEventPolicyApprovalState,
+    result: HermesEventPolicyApprovalExecutionResult
+  ) throws -> HermesBridgeEventPolicyApprovalPayload {
+    guard let approval = approvals.first(where: { $0.approvalID == id.rawValue }) else {
+      throw HermesBridgeXPCError.requestNotFound
+    }
+    let updated = try makeApprovalSummary(id: id, state: state, result: result, base: approval)
+    approvals.removeAll { $0.approvalID == id.rawValue }
+    approvals.append(updated)
+    return HermesBridgeEventPolicyApprovalPayload(approval: try makeRequest(updated))
+  }
+}
+
+private func makeApprovalSummary(
+  id: HermesEventPolicyApprovalID,
+  state: HermesEventPolicyApprovalState,
+  result: HermesEventPolicyApprovalExecutionResult = .notExecuted,
+  base: HermesBridgeEventPolicyApprovalSummary? = nil
+) throws -> HermesBridgeEventPolicyApprovalSummary {
+  let action: HermesEventPolicyAction = .refreshBridgeHealth
+  let snapshot = try HermesEventPolicyApprovalSnapshot(
+    approvalID: id,
+    policyID: try HermesEventPolicyID(rawValue: base?.policyID ?? "hepol_menu"),
+    policyRevision: base?.policyRevision ?? 1,
+    eventID: try HermesSystemEventID(
+      rawValue: base?.eventID ?? HermesSystemEventID.generate().rawValue),
+    eventKind: base?.eventKind ?? .networkAvailable,
+    action: action,
+    safeRenderedSummary: base?.safeRenderedSummary
+      ?? "Policy hepol_menu networkAvailable refreshBridgeHealth",
+    createdAt: base?.createdAt ?? Date(),
+    expiresAt: base?.expiresAt ?? Date().addingTimeInterval(60),
+    approvalRequirement: base?.approvalRequirement ?? .requireUserApproval,
+    correlationID: base?.correlationID ?? "menu"
+  )
+  let request = try HermesEventPolicyApprovalRequest(
+    snapshot: snapshot,
+    state: state,
+    result: result,
+    reasonCode: state.rawValue
+  )
+  return HermesBridgeEventPolicyApprovalSummary(request: request)
+}
+
+private func makeRequest(
+  _ summary: HermesBridgeEventPolicyApprovalSummary
+) throws -> HermesEventPolicyApprovalRequest {
+  let id = try HermesEventPolicyApprovalID(rawValue: summary.approvalID)
+  let policyID = try HermesEventPolicyID(rawValue: summary.policyID)
+  let eventID = try HermesSystemEventID(rawValue: summary.eventID)
+  let action: HermesEventPolicyAction
+  switch summary.actionKind {
+  case .refreshBridgeHealth:
+    action = .refreshBridgeHealth
+  case .restartBridgeService:
+    action = .restartBridgeService
+  case .submitApprovedBinding:
+    action = .submitApprovedBinding(
+      bindingID: try HermesRequestBindingID(rawValue: summary.bindingID ?? "binding:v1:test"),
+      prompt: try HermesEventPolicyPromptTemplate(reviewedStaticTemplate: "{{eventKind}}")
+    )
+  case .recordAuditEvent:
+    action = .recordAuditEvent(reasonCode: "audit")
+  case .createUserNotification:
+    action = .createUserNotification(title: "Hermes", body: "Approval")
+  case .markPolicyAttentionRequired:
+    action = .markPolicyAttentionRequired(reasonCode: "attention")
+  }
+  let snapshot = try HermesEventPolicyApprovalSnapshot(
+    approvalID: id,
+    policyID: policyID,
+    policyRevision: summary.policyRevision,
+    eventID: eventID,
+    eventKind: summary.eventKind,
+    action: action,
+    safeRenderedSummary: summary.safeRenderedSummary,
+    createdAt: summary.createdAt,
+    expiresAt: summary.expiresAt,
+    approvalRequirement: summary.approvalRequirement,
+    correlationID: summary.correlationID
+  )
+  return try HermesEventPolicyApprovalRequest(
+    snapshot: snapshot,
+    state: summary.state,
+    result: summary.result,
+    reasonCode: summary.reasonCode
+  )
 }
 
 private struct FakeLister: HermesBridgeMenuBarRequestListing {

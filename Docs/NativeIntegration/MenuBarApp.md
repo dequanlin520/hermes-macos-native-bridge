@@ -43,6 +43,8 @@ The first menu surface displays:
 - enabled event-policy count;
 - event-policy paused/running state;
 - recent safe event-policy decisions;
+- pending event-policy approval count;
+- event-policy Approval Inbox;
 - service degradation state.
 
 It offers only:
@@ -59,6 +61,8 @@ It offers only:
 - Authorized Folders;
 - Pause Policies;
 - Resume Policies;
+- Approval Inbox;
+- Approve or deny an exact pending event-policy approval;
 - Dry Run a normalized test event;
 - Enable or disable an existing policy;
 - Open Shortcuts;
@@ -91,6 +95,10 @@ and enable/disable an existing policy through typed XPC operations. It is not a
 generic workflow editor and does not expose policy JSON editing, arbitrary
 actions, scripts, shell commands, AppleScript, executable paths, prompt bodies,
 raw events, clipboard content or window content.
+
+The Approval Inbox renders only approval ID, state, policy ID, safe event kind,
+action kind, safe summary, expiration and recent redacted result state. Approve
+and Deny send only the exact approval ID through typed XPC operations.
 
 Audit integrity views may show signing availability, an active signer
 fingerprint prefix, signed and unsigned segment counts, integrity state, last

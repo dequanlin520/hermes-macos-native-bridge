@@ -75,6 +75,17 @@ public protocol HermesBridgeRequestHandling: Sendable {
   func eventPolicyEngineStatus() async throws -> HermesBridgeEventPolicyEngineStatusPayload
   func pauseEventPolicies() async throws -> HermesBridgeEventPolicyEngineStatusPayload
   func resumeEventPolicies() async throws -> HermesBridgeEventPolicyEngineStatusPayload
+  func listEventPolicyApprovals() async throws -> HermesBridgeEventPolicyApprovalListPayload
+  func eventPolicyApprovalStatus(id: HermesEventPolicyApprovalID) async throws
+    -> HermesBridgeEventPolicyApprovalPayload
+  func approveEventPolicyExecution(id: HermesEventPolicyApprovalID) async throws
+    -> HermesBridgeEventPolicyApprovalPayload
+  func denyEventPolicyExecution(id: HermesEventPolicyApprovalID) async throws
+    -> HermesBridgeEventPolicyApprovalPayload
+  func cancelEventPolicyApproval(id: HermesEventPolicyApprovalID) async throws
+    -> HermesBridgeEventPolicyApprovalPayload
+  func eventPolicyApprovalQueueStatus() async throws
+    -> HermesBridgeEventPolicyApprovalQueueStatusPayload
   func submit(bindingID: HermesRequestBindingID, prompt: String) async throws -> HermesRequestID
   func status(requestID: HermesRequestID) async throws -> HermesRequestRecord
   func cancel(requestID: HermesRequestID) async throws -> HermesRequestRecord
@@ -257,6 +268,41 @@ extension HermesBridgeRequestHandling {
   }
 
   public func resumeEventPolicies() async throws -> HermesBridgeEventPolicyEngineStatusPayload {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func listEventPolicyApprovals() async throws -> HermesBridgeEventPolicyApprovalListPayload
+  {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func eventPolicyApprovalStatus(id _: HermesEventPolicyApprovalID) async throws
+    -> HermesBridgeEventPolicyApprovalPayload
+  {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func approveEventPolicyExecution(id _: HermesEventPolicyApprovalID) async throws
+    -> HermesBridgeEventPolicyApprovalPayload
+  {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func denyEventPolicyExecution(id _: HermesEventPolicyApprovalID) async throws
+    -> HermesBridgeEventPolicyApprovalPayload
+  {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func cancelEventPolicyApproval(id _: HermesEventPolicyApprovalID) async throws
+    -> HermesBridgeEventPolicyApprovalPayload
+  {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func eventPolicyApprovalQueueStatus() async throws
+    -> HermesBridgeEventPolicyApprovalQueueStatusPayload
+  {
     throw HermesBridgeXPCError.unsupportedCapability
   }
 }
@@ -477,7 +523,8 @@ public actor HermesBridgeXPCRequestDispatcher {
       }
     case .systemEventMonitorStatus:
       try validateOnlySystemEventPayload(envelope, expected: 0)
-    case .listEventPolicies, .eventPolicyEngineStatus, .pauseEventPolicies, .resumeEventPolicies:
+    case .listEventPolicies, .eventPolicyEngineStatus, .pauseEventPolicies, .resumeEventPolicies,
+      .listEventPolicyApprovals, .eventPolicyApprovalQueueStatus:
       try validateOnlyEventPolicyPayload(envelope, expected: 0)
     case .createEventPolicy:
       try validateOnlyEventPolicyPayload(envelope, expected: 1)
@@ -497,6 +544,12 @@ public actor HermesBridgeXPCRequestDispatcher {
     case .evaluateEventPolicyDryRun:
       try validateOnlyEventPolicyPayload(envelope, expected: 1)
       guard envelope.eventPolicyEvaluation != nil else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+    case .eventPolicyApprovalStatus, .approveEventPolicyExecution, .denyEventPolicyExecution,
+      .cancelEventPolicyApproval:
+      try validateOnlyEventPolicyPayload(envelope, expected: 1)
+      guard envelope.eventPolicyApprovalID != nil else {
         throw HermesBridgeXPCError.malformedPayload
       }
     }
@@ -790,6 +843,48 @@ public actor HermesBridgeXPCRequestDispatcher {
         try await mapEventPolicyError {
           try await handler.resumeEventPolicies()
         })
+    case .listEventPolicyApprovals:
+      return .listEventPolicyApprovals(
+        try await mapEventPolicyError {
+          try await handler.listEventPolicyApprovals()
+        })
+    case .eventPolicyApprovalStatus:
+      guard let payload = envelope.eventPolicyApprovalID else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+      return .eventPolicyApprovalStatus(
+        try await mapEventPolicyError {
+          try await handler.eventPolicyApprovalStatus(id: payload.approvalID)
+        })
+    case .approveEventPolicyExecution:
+      guard let payload = envelope.eventPolicyApprovalID else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+      return .approveEventPolicyExecution(
+        try await mapEventPolicyError {
+          try await handler.approveEventPolicyExecution(id: payload.approvalID)
+        })
+    case .denyEventPolicyExecution:
+      guard let payload = envelope.eventPolicyApprovalID else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+      return .denyEventPolicyExecution(
+        try await mapEventPolicyError {
+          try await handler.denyEventPolicyExecution(id: payload.approvalID)
+        })
+    case .cancelEventPolicyApproval:
+      guard let payload = envelope.eventPolicyApprovalID else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+      return .cancelEventPolicyApproval(
+        try await mapEventPolicyError {
+          try await handler.cancelEventPolicyApproval(id: payload.approvalID)
+        })
+    case .eventPolicyApprovalQueueStatus:
+      return .eventPolicyApprovalQueueStatus(
+        try await mapEventPolicyError {
+          try await handler.eventPolicyApprovalQueueStatus()
+        })
     case .submit:
       guard let submit = envelope.submit else {
         throw HermesBridgeXPCError.malformedPayload
@@ -939,6 +1034,17 @@ public actor HermesBridgeXPCRequestDispatcher {
       case .policyNotFound:
         throw HermesBridgeXPCError.requestNotFound
       case .invalidStoreRoot, .corruptStore, .persistenceFailed:
+        throw HermesBridgeXPCError.serviceUnavailable
+      }
+    } catch let error as HermesEventPolicyApprovalError {
+      switch error {
+      case .invalidApprovalID, .invalidSnapshot, .templateDigestMismatch:
+        throw HermesBridgeXPCError.malformedPayload
+      case .approvalNotFound:
+        throw HermesBridgeXPCError.requestNotFound
+      case .pendingLimitExceeded, .invalidState, .conflictingDecision, .revisionConflict:
+        throw HermesBridgeXPCError.invalidState
+      case .identifierGenerationFailed, .corruptStore, .invalidStoreRoot, .persistenceFailed:
         throw HermesBridgeXPCError.serviceUnavailable
       }
     } catch {
@@ -1217,7 +1323,9 @@ public actor HermesBridgeXPCRequestDispatcher {
       .fileEventMonitorStatus, .acknowledgeSystemEventBatch, .systemEventMonitorStatus,
       .listEventPolicies, .createEventPolicy, .updateEventPolicy, .enableEventPolicy,
       .disableEventPolicy, .removeEventPolicy, .evaluateEventPolicyDryRun,
-      .eventPolicyEngineStatus, .pauseEventPolicies, .resumeEventPolicies:
+      .eventPolicyEngineStatus, .pauseEventPolicies, .resumeEventPolicies,
+      .listEventPolicyApprovals, .eventPolicyApprovalStatus, .approveEventPolicyExecution,
+      .denyEventPolicyExecution, .cancelEventPolicyApproval, .eventPolicyApprovalQueueStatus:
       return
     }
   }
@@ -1254,7 +1362,9 @@ public actor HermesBridgeXPCRequestDispatcher {
       .acknowledgeSystemEventBatch, .systemEventMonitorStatus, .listEventPolicies,
       .createEventPolicy, .updateEventPolicy, .enableEventPolicy, .disableEventPolicy,
       .removeEventPolicy, .evaluateEventPolicyDryRun, .eventPolicyEngineStatus,
-      .pauseEventPolicies, .resumeEventPolicies:
+      .pauseEventPolicies, .resumeEventPolicies, .listEventPolicyApprovals,
+      .eventPolicyApprovalStatus, .approveEventPolicyExecution, .denyEventPolicyExecution,
+      .cancelEventPolicyApproval, .eventPolicyApprovalQueueStatus:
       return
     }
     try await auditStore.append(
@@ -1328,6 +1438,7 @@ extension HermesBridgeRequestEnvelope {
     if eventPolicy != nil { count += 1 }
     if eventPolicyID != nil { count += 1 }
     if eventPolicyEvaluation != nil { count += 1 }
+    if eventPolicyApprovalID != nil { count += 1 }
     return count
   }
 }

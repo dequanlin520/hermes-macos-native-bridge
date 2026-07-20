@@ -50,3 +50,7 @@ Policies do not support:
 Policy audit records contain safe policy IDs, revisions, event kinds, action
 kinds, decisions and reason codes. Prompt bodies, generated prompts, paths,
 clipboard content, window content and user content are not audit metadata.
+
+Approval audit records contain only approval ID, state, policy ID, event kind,
+action kind and reason codes. Approval details and notification content follow
+`Docs/SystemIntegration/EventPolicyApprovalSecurity.md`.

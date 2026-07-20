@@ -93,6 +93,14 @@ public enum HermesAuditEventKind: String, Codable, CaseIterable, Equatable, Send
   case eventPolicyActionFailed
   case eventPolicyPaused
   case eventPolicyResumed
+  case eventPolicyApprovalCreated
+  case eventPolicyApprovalApproved
+  case eventPolicyApprovalDenied
+  case eventPolicyApprovalExpired
+  case eventPolicyApprovalCancelled
+  case eventPolicyApprovalExecuted
+  case eventPolicyApprovalFailed
+  case eventPolicyApprovalInvalidated
 }
 
 public enum HermesAuditActor: String, Codable, CaseIterable, Equatable, Sendable {

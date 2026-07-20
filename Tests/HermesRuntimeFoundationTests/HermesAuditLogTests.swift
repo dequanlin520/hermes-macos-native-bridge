@@ -6,7 +6,7 @@ import XCTest
 
 final class HermesAuditLogTests: XCTestCase {
   func testEventKindCatalogIsFixedAndComplete() {
-    XCTAssertEqual(HermesAuditEventKind.allCases.count, 41)
+    XCTAssertEqual(HermesAuditEventKind.allCases.count, 49)
     XCTAssertTrue(HermesAuditEventKind.allCases.contains(.doctorExecuted))
     XCTAssertTrue(HermesAuditEventKind.allCases.contains(.auditExported))
     XCTAssertTrue(HermesAuditEventKind.allCases.contains(.auditSigningKeyRotated))
@@ -19,6 +19,14 @@ final class HermesAuditLogTests: XCTestCase {
     XCTAssertTrue(HermesAuditEventKind.allCases.contains(.eventPolicyCreated))
     XCTAssertTrue(HermesAuditEventKind.allCases.contains(.eventPolicyActionExecuted))
     XCTAssertTrue(HermesAuditEventKind.allCases.contains(.eventPolicyPaused))
+    XCTAssertTrue(HermesAuditEventKind.allCases.contains(.eventPolicyApprovalCreated))
+    XCTAssertTrue(HermesAuditEventKind.allCases.contains(.eventPolicyApprovalApproved))
+    XCTAssertTrue(HermesAuditEventKind.allCases.contains(.eventPolicyApprovalDenied))
+    XCTAssertTrue(HermesAuditEventKind.allCases.contains(.eventPolicyApprovalExpired))
+    XCTAssertTrue(HermesAuditEventKind.allCases.contains(.eventPolicyApprovalCancelled))
+    XCTAssertTrue(HermesAuditEventKind.allCases.contains(.eventPolicyApprovalExecuted))
+    XCTAssertTrue(HermesAuditEventKind.allCases.contains(.eventPolicyApprovalFailed))
+    XCTAssertTrue(HermesAuditEventKind.allCases.contains(.eventPolicyApprovalInvalidated))
   }
 
   func testAuditEventIDValidation() throws {
