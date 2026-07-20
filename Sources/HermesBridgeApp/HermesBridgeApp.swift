@@ -7,6 +7,7 @@ import SwiftUI
 struct HermesBridgeApp: App {
   @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
   @StateObject private var model = HermesBridgeAppModel()
+  @Environment(\.openWindow) private var openWindow
 
   var body: some Scene {
     MenuBarExtra("Hermes Bridge", systemImage: "point.3.connected.trianglepath.dotted") {
@@ -48,6 +49,9 @@ struct HermesBridgeApp: App {
         Button("Run Doctor") {
           model.doctor()
         }
+        Button("Authorized Folders") {
+          openWindow(id: "authorized-folders")
+        }
         Button("Open Shortcuts") {
           NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Shortcuts.app"))
         }
@@ -64,6 +68,11 @@ struct HermesBridgeApp: App {
       }
     }
     .menuBarExtraStyle(.window)
+
+    WindowGroup("Authorized Folders", id: "authorized-folders") {
+      HermesAuthorizedFoldersWindow()
+    }
+    .defaultSize(width: 560, height: 520)
   }
 }
 
@@ -115,5 +124,246 @@ final class HermesBridgeAppModel: ObservableObject {
     Task {
       await viewModel.cancelRefresh()
     }
+  }
+}
+
+@MainActor
+final class HermesAuthorizedFoldersModel: ObservableObject {
+  @Published var state = HermesAuthorizedRootManagementState()
+  private let viewModel: HermesAuthorizedRootManagementViewModel
+
+  init(
+    viewModel: HermesAuthorizedRootManagementViewModel = HermesAuthorizedRootManagementViewModel(
+      panelSelector: NSOpenPanelHermesAuthorizedRootSelector(),
+      bookmarkCreator: ProductionHermesAuthorizedRootBookmarkCreator(),
+      client: ProductionAuthorizedRootAppClient(layout: .production())
+    )
+  ) {
+    self.viewModel = viewModel
+  }
+
+  func load() async {
+    await viewModel.load()
+    state = await viewModel.state
+  }
+
+  func refresh() {
+    Task {
+      await viewModel.refresh()
+      state = await viewModel.state
+    }
+  }
+
+  func addFolder() {
+    Task {
+      _ = await viewModel.addFolder()
+      state = await viewModel.state
+    }
+  }
+
+  func refreshAuthorization(_ root: HermesAuthorizedRootViewState) {
+    Task {
+      _ = await viewModel.refreshAuthorization(rootID: root.rootID, expectedRevision: root.revision)
+      state = await viewModel.state
+    }
+  }
+
+  func deactivate(_ root: HermesAuthorizedRootViewState) {
+    Task {
+      _ = await viewModel.deactivate(rootID: root.rootID, expectedRevision: root.revision)
+      state = await viewModel.state
+    }
+  }
+
+  func reactivate(_ root: HermesAuthorizedRootViewState) {
+    Task {
+      _ = await viewModel.reactivate(rootID: root.rootID, expectedRevision: root.revision)
+      state = await viewModel.state
+    }
+  }
+
+  func remove(_ root: HermesAuthorizedRootViewState, confirmed: Bool) {
+    Task {
+      _ = await viewModel.remove(
+        rootID: root.rootID,
+        expectedRevision: root.revision,
+        confirmed: confirmed
+      )
+      state = await viewModel.state
+    }
+  }
+
+  func cancel() {
+    Task {
+      await viewModel.cancelTasks()
+    }
+  }
+}
+
+struct HermesAuthorizedFoldersWindow: View {
+  @StateObject private var model = HermesAuthorizedFoldersModel()
+  @State private var pendingRemoval: HermesAuthorizedRootViewState?
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      HStack {
+        Text("Authorized Folders")
+          .font(.title2)
+        Spacer()
+        Button {
+          model.refresh()
+        } label: {
+          Label("Refresh Status", systemImage: "arrow.clockwise")
+        }
+        Button {
+          model.addFolder()
+        } label: {
+          Label("Add Folder", systemImage: "folder.badge.plus")
+        }
+        .disabled(model.state.addInProgress)
+      }
+
+      statusView
+
+      if model.state.roots.isEmpty && model.state.loadingState == .loaded {
+        VStack(spacing: 8) {
+          Image(systemName: "folder")
+            .font(.largeTitle)
+            .foregroundStyle(.secondary)
+          Text("No Authorized Folders")
+            .font(.headline)
+            .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+      } else {
+        List(model.state.roots) { root in
+          HermesAuthorizedRootRow(
+            root: root,
+            refreshAuthorization: { model.refreshAuthorization(root) },
+            deactivate: { model.deactivate(root) },
+            reactivate: { model.reactivate(root) },
+            remove: { pendingRemoval = root }
+          )
+        }
+        .listStyle(.inset)
+      }
+
+      if let action = model.state.lastAction {
+        Text(action.safeMessage)
+          .foregroundStyle(action.succeeded ? Color.secondary : Color.red)
+          .lineLimit(2)
+      }
+    }
+    .padding(16)
+    .frame(minWidth: 520, minHeight: 460)
+    .task {
+      await model.load()
+    }
+    .onDisappear {
+      model.cancel()
+    }
+    .confirmationDialog(
+      "Remove Authorized Folder?",
+      isPresented: Binding(
+        get: { pendingRemoval != nil },
+        set: { if !$0 { pendingRemoval = nil } }
+      ),
+      presenting: pendingRemoval
+    ) { root in
+      Button("Remove", role: .destructive) {
+        model.remove(root, confirmed: true)
+        pendingRemoval = nil
+      }
+      Button("Cancel", role: .cancel) {
+        pendingRemoval = nil
+      }
+    } message: { root in
+      Text("Remove authorization for \(root.displayName)?")
+    }
+  }
+
+  @ViewBuilder
+  private var statusView: some View {
+    switch model.state.loadingState {
+    case .loading:
+      Label("Loading authorized folders", systemImage: "hourglass")
+        .foregroundStyle(.secondary)
+    case .loaded:
+      Label("\(model.state.roots.count) authorized folder(s)", systemImage: "checkmark.circle")
+        .foregroundStyle(.secondary)
+    case .unavailable:
+      Label(
+        model.state.safeMessage ?? "Authorized folder service unavailable",
+        systemImage: "exclamationmark.triangle"
+      )
+      .foregroundStyle(.orange)
+    case .failed:
+      Label(model.state.safeMessage ?? "Authorized folders failed", systemImage: "xmark.circle")
+        .foregroundStyle(.red)
+    }
+  }
+}
+
+struct HermesAuthorizedRootRow: View {
+  let root: HermesAuthorizedRootViewState
+  let refreshAuthorization: () -> Void
+  let deactivate: () -> Void
+  let reactivate: () -> Void
+  let remove: () -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(alignment: .firstTextBaseline) {
+        Text(root.displayName)
+          .font(.headline)
+        Spacer()
+        Text(root.active ? "Active" : "Inactive")
+          .foregroundStyle(root.active ? .green : .secondary)
+      }
+      HStack(spacing: 10) {
+        Label(
+          root.staleAuthorization ? "Stale authorization" : "Authorization current",
+          systemImage: root.staleAuthorization ? "exclamationmark.triangle" : "checkmark.seal")
+        Label("Monitor \(root.monitorState.rawValue)", systemImage: "waveform.path.ecg")
+        if root.rescanRequired {
+          Label("Rescan required", systemImage: "arrow.triangle.2.circlepath")
+        }
+      }
+      .font(.caption)
+      .foregroundStyle(.secondary)
+
+      Text("Last event ID: \(root.lastObservedEventID)")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+
+      HStack {
+        Button {
+          refreshAuthorization()
+        } label: {
+          Label("Refresh Authorization", systemImage: "lock.rotation")
+        }
+        if root.active {
+          Button {
+            deactivate()
+          } label: {
+            Label("Deactivate", systemImage: "pause.circle")
+          }
+        } else {
+          Button {
+            reactivate()
+          } label: {
+            Label("Activate", systemImage: "play.circle")
+          }
+        }
+        Spacer()
+        Button(role: .destructive) {
+          remove()
+        } label: {
+          Label("Remove", systemImage: "trash")
+        }
+      }
+      .buttonStyle(.bordered)
+    }
+    .padding(.vertical, 6)
   }
 }

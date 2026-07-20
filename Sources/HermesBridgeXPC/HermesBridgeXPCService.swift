@@ -550,6 +550,8 @@ public actor HermesBridgeXPCRequestDispatcher {
         throw HermesBridgeXPCError.rootNotFound
       case .inactiveRoot:
         throw HermesBridgeXPCError.rootInactive
+      case .duplicateResolvedRoot:
+        throw HermesBridgeXPCError.duplicateAuthorizedRoot
       case .bookmarkTooLarge:
         throw HermesBridgeXPCError.bookmarkTooLarge
       case .bookmarkResolutionFailed:
@@ -616,6 +618,8 @@ public actor HermesBridgeXPCRequestDispatcher {
       return "Bridge XPC service is unavailable."
     case .internalFailure:
       return "Bridge XPC service failed internally."
+    case .duplicateAuthorizedRoot:
+      return "Authorized root already exists."
     case .rootNotFound:
       return "Authorized root was not found."
     case .rootInactive:
