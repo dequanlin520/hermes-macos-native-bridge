@@ -44,6 +44,7 @@ It offers only:
 - Start Service;
 - Restart Service;
 - Run Doctor;
+- Authorized Folders;
 - Open Shortcuts;
 - Quit.
 
@@ -60,6 +61,24 @@ when requested by the app model during termination.
 If the service is unavailable, the app shows an unavailable state and offers
 Start Service through the service manager only. It does not auto-install.
 
+## Authorized Folders
+
+The `Authorized Folders` window is reachable from the menu bar. It lists safe
+authorized-root summaries and exposes Add Folder, Refresh Authorization,
+Activate, Deactivate, Remove and Refresh Status.
+
+Folder selection uses `NSOpenPanel` with directory-only, single-selection,
+alias-resolving configuration. The app creates bookmark data from the selected
+directory and sends it through the typed `HermesBridgeXPCClient` authorized-root
+operations. There is no path text field, generic filesystem access, arbitrary
+XPC data envelope, automatic indexing or file-content reading.
+
+The window renders display name, root ID, active state, stale authorization,
+security-scope state, monitor active/inactive state, rescan-required state and
+last observed event cursor metadata. It does not render absolute paths,
+bookmark bytes, file-event filenames, prompts, backend tokens, file contents or
+raw internal errors. Removal requires confirmation.
+
 ## Signing And Validation
 
 `Scripts/integration/m4-002-app-bundle-shortcuts.zsh` builds the app target,
@@ -70,6 +89,14 @@ available local level, and performs an in-process binding-discovery round trip.
 The current validation level is local ad-hoc signing. Developer ID signing,
 hardened runtime release signing, notarization, and installer indexing remain
 future release work.
+
+M5-003 adds `Scripts/integration/m5-003-authorized-root-ui.zsh`, which validates
+the authorized-root UI build, AppKit/`NSOpenPanel` linkage, injected
+artifact-owned bookmark creation, typed XPC registration, root listing,
+deactivate/reactivate/remove, privacy scans and residual app-process cleanup.
+The script also provides `--manual-nsopenpanel-validation` for explicit manual
+panel validation. Successful ordinary bookmark registration does not by itself
+prove App Sandbox security-scoped entitlement behavior.
 
 ## Shortcuts Discovery
 

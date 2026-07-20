@@ -183,7 +183,7 @@ public actor HermesAppIntentXPCClient: HermesAppIntentClient {
     case .unsupportedProtocolVersion:
       return .protocolIncompatible
     case .malformedPayload, .unsupportedOperation, .unsupportedCapability, .invalidState,
-      .rootNotFound, .rootInactive, .invalidBookmark, .staleAuthorization,
+      .duplicateAuthorizedRoot, .rootNotFound, .rootInactive, .invalidBookmark, .staleAuthorization,
       .securityScopeUnavailable, .subscriptionNotFound, .subscriptionExpired,
       .acknowledgementRejected, .eventBufferOverflow, .rescanRequired:
       return .operationRejected

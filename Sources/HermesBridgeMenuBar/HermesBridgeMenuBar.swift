@@ -1,7 +1,9 @@
+import AppKit
 import Foundation
 import HermesBridgeControlCore
 import HermesBridgeServiceManager
 import HermesBridgeXPC
+import HermesRuntimeFoundation
 
 public enum HermesBridgeMenuBarServiceStatus: String, Codable, Equatable, Sendable {
   case loading
@@ -104,6 +106,373 @@ public struct HermesBridgeMenuBarActionResult: Codable, Equatable, Sendable {
   }
 }
 
+public enum HermesAuthorizedRootLoadingState: String, Codable, Equatable, Sendable {
+  case loading
+  case loaded
+  case unavailable
+  case failed
+}
+
+public enum HermesAuthorizedRootSecurityScopeState: String, Codable, Equatable, Sendable {
+  case ordinaryBookmarkCreated
+  case securityScopedBookmarkCreated
+  case securityScopeStarted
+  case securityScopeUnavailable
+  case staleBookmark
+  case rejected
+}
+
+public enum HermesAuthorizedRootMonitorState: String, Codable, Equatable, Sendable {
+  case active
+  case inactive
+  case unavailable
+}
+
+public struct HermesAuthorizedRootActionAvailability: Codable, Equatable, Sendable {
+  public let canRefreshAuthorization: Bool
+  public let canActivate: Bool
+  public let canDeactivate: Bool
+  public let canRemove: Bool
+
+  public init(
+    canRefreshAuthorization: Bool,
+    canActivate: Bool,
+    canDeactivate: Bool,
+    canRemove: Bool
+  ) {
+    self.canRefreshAuthorization = canRefreshAuthorization
+    self.canActivate = canActivate
+    self.canDeactivate = canDeactivate
+    self.canRemove = canRemove
+  }
+}
+
+public struct HermesAuthorizedRootViewState: Codable, Equatable, Identifiable, Sendable {
+  public let id: String
+  public let rootID: String
+  public let displayName: String
+  public let active: Bool
+  public let staleAuthorization: Bool
+  public let securityScopeState: HermesAuthorizedRootSecurityScopeState
+  public let monitorState: HermesAuthorizedRootMonitorState
+  public let lastObservedEventID: UInt64
+  public let rescanRequired: Bool
+  public let actionAvailability: HermesAuthorizedRootActionAvailability
+  public let revision: Int
+
+  public init(
+    summary: HermesBridgeAuthorizedRootSummary,
+    monitorStatus: HermesBridgeFileEventMonitorStatusPayload?
+  ) {
+    let monitorActive = (monitorStatus?.activeSubscriptionCount ?? 0) > 0
+    self.id = Self.safeID(summary.rootID)
+    self.rootID = Self.safeID(summary.rootID)
+    self.displayName = Self.safeText(summary.displayName, maximumCharacters: 80)
+    self.active = summary.active
+    self.staleAuthorization = summary.staleAuthorization
+    if summary.staleAuthorization {
+      self.securityScopeState = .staleBookmark
+    } else {
+      self.securityScopeState =
+        summary.securityScopeStatus == .available
+        ? .securityScopeStarted : .securityScopeUnavailable
+    }
+    self.monitorState = monitorStatus == nil ? .unavailable : (monitorActive ? .active : .inactive)
+    self.lastObservedEventID = summary.lastObservedEventID
+    self.rescanRequired = monitorStatus?.rescanRequired ?? false
+    self.actionAvailability = HermesAuthorizedRootActionAvailability(
+      canRefreshAuthorization: true,
+      canActivate: !summary.active,
+      canDeactivate: summary.active,
+      canRemove: true
+    )
+    self.revision = max(0, summary.revision)
+  }
+
+  public init(
+    rootID: String,
+    displayName: String,
+    active: Bool,
+    staleAuthorization: Bool,
+    securityScopeState: HermesAuthorizedRootSecurityScopeState,
+    monitorState: HermesAuthorizedRootMonitorState,
+    lastObservedEventID: UInt64,
+    rescanRequired: Bool,
+    actionAvailability: HermesAuthorizedRootActionAvailability,
+    revision: Int
+  ) {
+    self.id = Self.safeID(rootID)
+    self.rootID = Self.safeID(rootID)
+    self.displayName = Self.safeText(displayName, maximumCharacters: 80)
+    self.active = active
+    self.staleAuthorization = staleAuthorization
+    self.securityScopeState = securityScopeState
+    self.monitorState = monitorState
+    self.lastObservedEventID = lastObservedEventID
+    self.rescanRequired = rescanRequired
+    self.actionAvailability = actionAvailability
+    self.revision = max(0, revision)
+  }
+
+  private static func safeID(_ value: String) -> String {
+    let filtered = value.filter {
+      $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_" || $0 == "-")
+    }
+    return String(filtered.prefix(HermesAuthorizedRootID.maximumLength))
+  }
+
+  private static func safeText(_ value: String, maximumCharacters: Int) -> String {
+    let filtered = value.unicodeScalars.filter { scalar in
+      scalar.value >= 0x20 && scalar.value != 0x7F
+    }
+    return String(String(String.UnicodeScalarView(filtered)).prefix(maximumCharacters))
+  }
+}
+
+public struct HermesAuthorizedRootActionResult: Codable, Equatable, Sendable {
+  public let succeeded: Bool
+  public let safeCode: String
+  public let safeMessage: String
+  public let updatedRoot: HermesAuthorizedRootViewState?
+
+  public init(
+    succeeded: Bool,
+    safeCode: String,
+    safeMessage: String,
+    updatedRoot: HermesAuthorizedRootViewState? = nil
+  ) {
+    self.succeeded = succeeded
+    self.safeCode = Self.safeToken(safeCode)
+    self.safeMessage = Self.safeText(safeMessage, maximumCharacters: 160)
+    self.updatedRoot = updatedRoot
+  }
+
+  private static func safeToken(_ value: String) -> String {
+    let filtered = value.filter {
+      $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_" || $0 == "-")
+    }
+    return String(filtered.prefix(64))
+  }
+
+  private static func safeText(_ value: String, maximumCharacters: Int) -> String {
+    let filtered = value.unicodeScalars.filter { scalar in
+      scalar.value >= 0x20 && scalar.value != 0x7F
+    }
+    return String(String(String.UnicodeScalarView(filtered)).prefix(maximumCharacters))
+  }
+}
+
+public enum HermesAuthorizedRootPanelResult: Equatable, Sendable {
+  case selected(URL)
+  case cancelled
+}
+
+public protocol HermesAuthorizedRootPanelSelecting: Sendable {
+  @MainActor func selectNewDirectory() async -> HermesAuthorizedRootPanelResult
+  @MainActor func selectReplacementDirectory(for rootID: String) async
+    -> HermesAuthorizedRootPanelResult
+}
+
+public struct HermesAuthorizedRootOpenPanelConfiguration: Equatable, Sendable {
+  public let canChooseDirectories: Bool
+  public let canChooseFiles: Bool
+  public let allowsMultipleSelection: Bool
+  public let canCreateDirectories: Bool
+  public let resolvesAliases: Bool
+  public let prompt: String
+  public let title: String
+  public let message: String
+
+  public static func newDirectory() -> HermesAuthorizedRootOpenPanelConfiguration {
+    HermesAuthorizedRootOpenPanelConfiguration(
+      canChooseDirectories: true,
+      canChooseFiles: false,
+      allowsMultipleSelection: false,
+      canCreateDirectories: false,
+      resolvesAliases: true,
+      prompt: NSLocalizedString("Add Folder", comment: "Authorized root add prompt"),
+      title: NSLocalizedString("Choose Authorized Folder", comment: "Authorized root add title"),
+      message: NSLocalizedString(
+        "Choose one folder for Hermes Bridge to authorize.",
+        comment: "Authorized root add message"
+      )
+    )
+  }
+
+  public static func replacementDirectory(rootID _: String)
+    -> HermesAuthorizedRootOpenPanelConfiguration
+  {
+    HermesAuthorizedRootOpenPanelConfiguration(
+      canChooseDirectories: true,
+      canChooseFiles: false,
+      allowsMultipleSelection: false,
+      canCreateDirectories: false,
+      resolvesAliases: true,
+      prompt: NSLocalizedString("Refresh Authorization", comment: "Authorized root refresh prompt"),
+      title: NSLocalizedString(
+        "Refresh Authorized Folder",
+        comment: "Authorized root refresh title"
+      ),
+      message: NSLocalizedString(
+        "Choose the same folder again to refresh authorization.",
+        comment: "Authorized root refresh message"
+      )
+    )
+  }
+}
+
+public final class NSOpenPanelHermesAuthorizedRootSelector: HermesAuthorizedRootPanelSelecting,
+  @unchecked Sendable
+{
+  public init() {}
+
+  @MainActor
+  public func selectNewDirectory() async -> HermesAuthorizedRootPanelResult {
+    await runPanel(configuration: .newDirectory())
+  }
+
+  @MainActor
+  public func selectReplacementDirectory(for rootID: String) async
+    -> HermesAuthorizedRootPanelResult
+  {
+    await runPanel(configuration: .replacementDirectory(rootID: rootID))
+  }
+
+  @MainActor
+  private func runPanel(configuration: HermesAuthorizedRootOpenPanelConfiguration) async
+    -> HermesAuthorizedRootPanelResult
+  {
+    let panel = NSOpenPanel()
+    panel.canChooseDirectories = configuration.canChooseDirectories
+    panel.canChooseFiles = configuration.canChooseFiles
+    panel.allowsMultipleSelection = configuration.allowsMultipleSelection
+    panel.canCreateDirectories = configuration.canCreateDirectories
+    panel.resolvesAliases = configuration.resolvesAliases
+    panel.prompt = configuration.prompt
+    panel.title = configuration.title
+    panel.message = configuration.message
+    let response = await panel.begin()
+    guard response == .OK, let url = panel.urls.first else {
+      return .cancelled
+    }
+    return .selected(url)
+  }
+}
+
+public protocol HermesAuthorizedRootBookmarkCreating: Sendable {
+  func createBookmark(for url: URL) throws -> HermesAuthorizedRootBookmarkCreation
+}
+
+public protocol HermesSecurityScopedResourceAccessing: Sendable {
+  func startAccessing(_ url: URL) -> Bool
+  func stopAccessing(_ url: URL)
+}
+
+public struct ProductionHermesSecurityScopedResourceAccessor:
+  HermesSecurityScopedResourceAccessing
+{
+  public init() {}
+
+  public func startAccessing(_ url: URL) -> Bool {
+    url.startAccessingSecurityScopedResource()
+  }
+
+  public func stopAccessing(_ url: URL) {
+    url.stopAccessingSecurityScopedResource()
+  }
+}
+
+public struct HermesAuthorizedRootBookmarkCreation: Equatable, Sendable {
+  public let bookmarkData: Data
+  public let displayName: String
+  public let securityScopeState: HermesAuthorizedRootSecurityScopeState
+
+  public init(
+    bookmarkData: Data,
+    displayName: String,
+    securityScopeState: HermesAuthorizedRootSecurityScopeState
+  ) {
+    self.bookmarkData = bookmarkData
+    self.displayName = displayName
+    self.securityScopeState = securityScopeState
+  }
+}
+
+public struct ProductionHermesAuthorizedRootBookmarkCreator:
+  HermesAuthorizedRootBookmarkCreating
+{
+  private let accessor: any HermesSecurityScopedResourceAccessing
+
+  public init(
+    accessor: any HermesSecurityScopedResourceAccessing =
+      ProductionHermesSecurityScopedResourceAccessor()
+  ) {
+    self.accessor = accessor
+  }
+
+  public func createBookmark(for url: URL) throws -> HermesAuthorizedRootBookmarkCreation {
+    let standardized = url.standardizedFileURL
+    let resolved = standardized.resolvingSymlinksInPath()
+    guard resolved.path != "/" else {
+      throw HermesBridgeXPCError.invalidBookmark
+    }
+    let home = FileManager.default.homeDirectoryForCurrentUser.standardizedFileURL
+      .resolvingSymlinksInPath()
+    guard resolved.path != home.path else {
+      throw HermesBridgeXPCError.invalidBookmark
+    }
+    guard !Self.isSymlink(standardized.path) else {
+      throw HermesBridgeXPCError.invalidBookmark
+    }
+    var isDirectory = ObjCBool(false)
+    guard FileManager.default.fileExists(atPath: resolved.path, isDirectory: &isDirectory),
+      isDirectory.boolValue
+    else {
+      throw HermesBridgeXPCError.invalidBookmark
+    }
+
+    let scopeStarted = accessor.startAccessing(resolved)
+    defer {
+      if scopeStarted {
+        accessor.stopAccessing(resolved)
+      }
+    }
+
+    let securityScopedData = try? resolved.bookmarkData(
+      options: [.withSecurityScope],
+      includingResourceValuesForKeys: nil,
+      relativeTo: nil
+    )
+    let state: HermesAuthorizedRootSecurityScopeState
+    let bookmarkData: Data
+    if let securityScopedData {
+      bookmarkData = securityScopedData
+      state = scopeStarted ? .securityScopeStarted : .securityScopedBookmarkCreated
+    } else {
+      bookmarkData = try resolved.bookmarkData(
+        options: [],
+        includingResourceValuesForKeys: nil,
+        relativeTo: nil
+      )
+      state = scopeStarted ? .securityScopeStarted : .ordinaryBookmarkCreated
+    }
+    guard bookmarkData.count <= HermesBridgeRegisterAuthorizedRootPayload.maximumBookmarkBytes
+    else {
+      throw HermesBridgeXPCError.bookmarkTooLarge
+    }
+    return HermesAuthorizedRootBookmarkCreation(
+      bookmarkData: bookmarkData,
+      displayName: resolved.lastPathComponent.isEmpty
+        ? "Authorized Folder" : resolved.lastPathComponent,
+      securityScopeState: state
+    )
+  }
+
+  private static func isSymlink(_ path: String) -> Bool {
+    (try? FileManager.default.destinationOfSymbolicLink(atPath: path)) != nil
+  }
+}
+
 public protocol HermesBridgeMenuBarServiceManaging: Sendable {
   func status() async -> HermesBridgeServiceStatus
   func start() async -> HermesBridgeMenuBarActionResult
@@ -123,6 +492,372 @@ public protocol HermesBridgeMenuBarRequestListing: Sendable {
 
 public protocol HermesBridgeMenuBarDoctorRunning: Sendable {
   func runDoctor() async -> HermesBridgeMenuBarActionResult
+}
+
+public protocol HermesAuthorizedRootAppClient: Sendable {
+  func listRoots() async throws -> HermesBridgeAuthorizedRootListPayload
+  func registerBookmark(displayName: String, bookmarkData: Data) async throws
+    -> HermesBridgeAuthorizedRootPayload
+  func refreshBookmark(rootID: String, bookmarkData: Data, expectedRevision: Int?) async throws
+    -> HermesBridgeAuthorizedRootPayload
+  func deactivate(rootID: String, expectedRevision: Int?) async throws
+    -> HermesBridgeAuthorizedRootPayload
+  func reactivate(rootID: String, bookmarkData: Data, expectedRevision: Int?) async throws
+    -> HermesBridgeAuthorizedRootPayload
+  func remove(rootID: String, expectedRevision: Int?) async throws
+    -> HermesBridgeAuthorizedRootPayload
+  func rootStatus(rootID: String) async throws -> HermesBridgeAuthorizedRootStatusPayload
+  func monitorStatus() async throws -> HermesBridgeFileEventMonitorStatusPayload
+}
+
+public struct HermesAuthorizedRootManagementState: Codable, Equatable, Sendable {
+  public var loadingState: HermesAuthorizedRootLoadingState
+  public var roots: [HermesAuthorizedRootViewState]
+  public var lastAction: HermesAuthorizedRootActionResult?
+  public var addInProgress: Bool
+  public var safeMessage: String?
+
+  public init(
+    loadingState: HermesAuthorizedRootLoadingState = .loading,
+    roots: [HermesAuthorizedRootViewState] = [],
+    lastAction: HermesAuthorizedRootActionResult? = nil,
+    addInProgress: Bool = false,
+    safeMessage: String? = nil
+  ) {
+    self.loadingState = loadingState
+    self.roots = Array(roots.prefix(HermesBridgeAuthorizedRootListPayload.maximumRootCount))
+    self.lastAction = lastAction
+    self.addInProgress = addInProgress
+    self.safeMessage = safeMessage.map { String($0.prefix(160)) }
+  }
+}
+
+public actor HermesAuthorizedRootManagementViewModel {
+  private let panelSelector: any HermesAuthorizedRootPanelSelecting
+  private let bookmarkCreator: any HermesAuthorizedRootBookmarkCreating
+  private let client: any HermesAuthorizedRootAppClient
+  private var refreshTask: Task<Void, Never>?
+  private var mutationTasks: [Task<Void, Never>] = []
+  private var addTaskActive = false
+  public private(set) var state = HermesAuthorizedRootManagementState()
+
+  public init(
+    panelSelector: any HermesAuthorizedRootPanelSelecting,
+    bookmarkCreator: any HermesAuthorizedRootBookmarkCreating,
+    client: any HermesAuthorizedRootAppClient
+  ) {
+    self.panelSelector = panelSelector
+    self.bookmarkCreator = bookmarkCreator
+    self.client = client
+  }
+
+  public func load() async {
+    await refresh()
+  }
+
+  public func refresh() async {
+    refreshTask?.cancel()
+    let task = Task { await self.performRefresh() }
+    refreshTask = task
+    await task.value
+  }
+
+  public func cancelTasks() {
+    refreshTask?.cancel()
+    refreshTask = nil
+    mutationTasks.forEach { $0.cancel() }
+    mutationTasks.removeAll()
+    addTaskActive = false
+  }
+
+  public func addFolder() async -> HermesAuthorizedRootActionResult {
+    guard !addTaskActive else {
+      let result = HermesAuthorizedRootActionResult(
+        succeeded: false,
+        safeCode: "add_in_progress",
+        safeMessage: "Add Folder is already in progress."
+      )
+      state.lastAction = result
+      return result
+    }
+    addTaskActive = true
+    state.addInProgress = true
+    defer {
+      addTaskActive = false
+      state.addInProgress = false
+    }
+    let selection = await panelSelector.selectNewDirectory()
+    guard case .selected(let url) = selection else {
+      let result = HermesAuthorizedRootActionResult(
+        succeeded: true,
+        safeCode: "cancelled",
+        safeMessage: "Folder selection cancelled."
+      )
+      state.lastAction = result
+      return result
+    }
+    do {
+      let bookmark = try bookmarkCreator.createBookmark(for: url)
+      let payload = try await client.registerBookmark(
+        displayName: bookmark.displayName,
+        bookmarkData: bookmark.bookmarkData
+      )
+      let viewState = HermesAuthorizedRootViewState(
+        summary: payload.root,
+        monitorStatus: try? await client.monitorStatus()
+      )
+      await refresh()
+      let result = HermesAuthorizedRootActionResult(
+        succeeded: true,
+        safeCode: bookmark.securityScopeState.rawValue,
+        safeMessage: "Folder authorization registered.",
+        updatedRoot: viewState
+      )
+      state.lastAction = result
+      return result
+    } catch {
+      let result = actionResult(for: error)
+      state.lastAction = result
+      return result
+    }
+  }
+
+  public func refreshAuthorization(rootID: String, expectedRevision: Int?) async
+    -> HermesAuthorizedRootActionResult
+  {
+    let selection = await panelSelector.selectReplacementDirectory(for: rootID)
+    guard case .selected(let url) = selection else {
+      let result = HermesAuthorizedRootActionResult(
+        succeeded: true,
+        safeCode: "cancelled",
+        safeMessage: "Authorization refresh cancelled."
+      )
+      state.lastAction = result
+      return result
+    }
+    do {
+      let bookmark = try bookmarkCreator.createBookmark(for: url)
+      let payload = try await client.refreshBookmark(
+        rootID: rootID,
+        bookmarkData: bookmark.bookmarkData,
+        expectedRevision: expectedRevision
+      )
+      let viewState = HermesAuthorizedRootViewState(
+        summary: payload.root,
+        monitorStatus: try? await client.monitorStatus()
+      )
+      await refresh()
+      let result = HermesAuthorizedRootActionResult(
+        succeeded: true,
+        safeCode: bookmark.securityScopeState.rawValue,
+        safeMessage: "Folder authorization refreshed.",
+        updatedRoot: viewState
+      )
+      state.lastAction = result
+      return result
+    } catch {
+      let result = actionResult(for: error)
+      state.lastAction = result
+      return result
+    }
+  }
+
+  public func deactivate(rootID: String, expectedRevision: Int?) async
+    -> HermesAuthorizedRootActionResult
+  {
+    await mutateAndRefresh(
+      successCode: "deactivated",
+      successMessage: "Folder authorization deactivated."
+    ) {
+      try await self.client.deactivate(rootID: rootID, expectedRevision: expectedRevision)
+    }
+  }
+
+  public func reactivate(rootID: String, expectedRevision: Int?) async
+    -> HermesAuthorizedRootActionResult
+  {
+    let selection = await panelSelector.selectReplacementDirectory(for: rootID)
+    guard case .selected(let url) = selection else {
+      let result = HermesAuthorizedRootActionResult(
+        succeeded: true,
+        safeCode: "cancelled",
+        safeMessage: "Reactivation cancelled."
+      )
+      state.lastAction = result
+      return result
+    }
+    do {
+      let bookmark = try bookmarkCreator.createBookmark(for: url)
+      let payload = try await client.reactivate(
+        rootID: rootID,
+        bookmarkData: bookmark.bookmarkData,
+        expectedRevision: expectedRevision
+      )
+      let viewState = HermesAuthorizedRootViewState(
+        summary: payload.root,
+        monitorStatus: try? await client.monitorStatus()
+      )
+      await refresh()
+      let result = HermesAuthorizedRootActionResult(
+        succeeded: true,
+        safeCode: bookmark.securityScopeState.rawValue,
+        safeMessage: "Folder authorization reactivated.",
+        updatedRoot: viewState
+      )
+      state.lastAction = result
+      return result
+    } catch {
+      let result = actionResult(for: error)
+      state.lastAction = result
+      return result
+    }
+  }
+
+  public func remove(rootID: String, expectedRevision: Int?, confirmed: Bool) async
+    -> HermesAuthorizedRootActionResult
+  {
+    guard confirmed else {
+      let result = HermesAuthorizedRootActionResult(
+        succeeded: false,
+        safeCode: "confirmation_required",
+        safeMessage: "Removal requires confirmation."
+      )
+      state.lastAction = result
+      return result
+    }
+    return await mutateAndRefresh(
+      successCode: "removed",
+      successMessage: "Folder authorization removed."
+    ) {
+      try await self.client.remove(rootID: rootID, expectedRevision: expectedRevision)
+    }
+  }
+
+  private func performRefresh() async {
+    if Task.isCancelled { return }
+    state.loadingState = .loading
+    do {
+      let rootsPayload = try await client.listRoots()
+      let monitor = try? await client.monitorStatus()
+      let roots = rootsPayload.roots.map {
+        HermesAuthorizedRootViewState(summary: $0, monitorStatus: monitor)
+      }
+      if Task.isCancelled { return }
+      state.loadingState = .loaded
+      state.roots = roots
+      state.safeMessage = nil
+    } catch let error as HermesBridgeXPCClientError {
+      state.loadingState = loadingState(for: error)
+      state.safeMessage = safeMessage(for: error)
+    } catch {
+      state.loadingState = .failed
+      state.safeMessage = "Authorized folders could not be loaded."
+    }
+  }
+
+  private func mutateAndRefresh(
+    successCode: String,
+    successMessage: String,
+    operation: @escaping @Sendable () async throws -> HermesBridgeAuthorizedRootPayload
+  ) async -> HermesAuthorizedRootActionResult {
+    do {
+      let payload = try await operation()
+      let viewState = HermesAuthorizedRootViewState(
+        summary: payload.root,
+        monitorStatus: try? await client.monitorStatus()
+      )
+      await refresh()
+      let result = HermesAuthorizedRootActionResult(
+        succeeded: true,
+        safeCode: successCode,
+        safeMessage: successMessage,
+        updatedRoot: viewState
+      )
+      state.lastAction = result
+      return result
+    } catch {
+      let result = actionResult(for: error)
+      state.lastAction = result
+      return result
+    }
+  }
+
+  private func actionResult(for error: Error) -> HermesAuthorizedRootActionResult {
+    if let xpcError = error as? HermesBridgeXPCClientError {
+      return HermesAuthorizedRootActionResult(
+        succeeded: false,
+        safeCode: safeCode(for: xpcError),
+        safeMessage: safeMessage(for: xpcError)
+      )
+    }
+    if let bridgeError = error as? HermesBridgeXPCError {
+      return HermesAuthorizedRootActionResult(
+        succeeded: false,
+        safeCode: bridgeError.rawValue,
+        safeMessage: safeMessage(for: .service(bridgeError))
+      )
+    }
+    return HermesAuthorizedRootActionResult(
+      succeeded: false,
+      safeCode: "failed",
+      safeMessage: "Authorized folder action failed."
+    )
+  }
+
+  private func loadingState(for error: HermesBridgeXPCClientError)
+    -> HermesAuthorizedRootLoadingState
+  {
+    switch error {
+    case .service(.serviceUnavailable), .invalidated, .interrupted, .timedOut:
+      return .unavailable
+    case .service(.unsupportedCapability), .protocolNegotiationFailed:
+      return .unavailable
+    default:
+      return .failed
+    }
+  }
+
+  private func safeCode(for error: HermesBridgeXPCClientError) -> String {
+    switch error {
+    case .service(let code):
+      return code.rawValue
+    case .timedOut:
+      return "timed_out"
+    case .interrupted:
+      return "interrupted"
+    case .invalidated:
+      return "invalidated"
+    case .responseDecodingFailure:
+      return "response_decoding_failure"
+    case .protocolNegotiationFailed:
+      return "protocol_negotiation_failed"
+    }
+  }
+
+  private func safeMessage(for error: HermesBridgeXPCClientError) -> String {
+    switch error {
+    case .service(.unsupportedCapability):
+      return "Authorized folder management is not supported by this Bridge service."
+    case .service(.duplicateAuthorizedRoot):
+      return "That folder is already authorized."
+    case .service(.bookmarkTooLarge):
+      return "The folder authorization bookmark is too large."
+    case .service(.invalidBookmark):
+      return "The selected folder could not be authorized."
+    case .service(.staleAuthorization):
+      return "Folder authorization is stale and must be refreshed."
+    case .service(.securityScopeUnavailable):
+      return "Security-scoped access was unavailable in this runtime."
+    case .service(.rootNotFound):
+      return "The authorized folder was not found."
+    case .service(.rootInactive):
+      return "The authorized folder is inactive."
+    case .service(.serviceUnavailable), .timedOut, .interrupted, .invalidated:
+      return "The Bridge service is unavailable."
+    default:
+      return "Authorized folder action failed."
+    }
+  }
 }
 
 public struct HermesBridgeMenuBarEnvironment: Sendable {
@@ -307,6 +1042,80 @@ public actor ProductionMenuBarXPCClient: HermesBridgeMenuBarXPCClient {
 
   public func close() async {
     await client.close()
+  }
+}
+
+public actor ProductionAuthorizedRootAppClient: HermesAuthorizedRootAppClient {
+  private let client: HermesBridgeXPCClient
+
+  public init(layout: HermesBridgeInstallationLayout, timeout: TimeInterval = 5) {
+    let name = try! HermesBridgeMachServiceName(layout.machService)
+    self.client = HermesBridgeXPCClient(machServiceName: name, timeout: timeout)
+  }
+
+  public func listRoots() async throws -> HermesBridgeAuthorizedRootListPayload {
+    try await client.listAuthorizedRoots()
+  }
+
+  public func registerBookmark(displayName: String, bookmarkData: Data) async throws
+    -> HermesBridgeAuthorizedRootPayload
+  {
+    try await client.registerAuthorizedRoot(displayName: displayName, bookmarkData: bookmarkData)
+  }
+
+  public func refreshBookmark(rootID: String, bookmarkData: Data, expectedRevision: Int?)
+    async throws
+    -> HermesBridgeAuthorizedRootPayload
+  {
+    try await client.refreshAuthorizedRoot(
+      rootID: try Self.parseRootID(rootID),
+      bookmarkData: bookmarkData,
+      expectedRevision: expectedRevision
+    )
+  }
+
+  public func deactivate(rootID: String, expectedRevision: Int?) async throws
+    -> HermesBridgeAuthorizedRootPayload
+  {
+    try await client.deactivateAuthorizedRoot(
+      rootID: try Self.parseRootID(rootID),
+      expectedRevision: expectedRevision
+    )
+  }
+
+  public func reactivate(rootID: String, bookmarkData: Data, expectedRevision: Int?) async throws
+    -> HermesBridgeAuthorizedRootPayload
+  {
+    try await client.reactivateAuthorizedRoot(
+      rootID: try Self.parseRootID(rootID),
+      bookmarkData: bookmarkData,
+      expectedRevision: expectedRevision
+    )
+  }
+
+  public func remove(rootID: String, expectedRevision: Int?) async throws
+    -> HermesBridgeAuthorizedRootPayload
+  {
+    try await client.removeAuthorizedRoot(
+      rootID: try Self.parseRootID(rootID),
+      expectedRevision: expectedRevision
+    )
+  }
+
+  public func rootStatus(rootID: String) async throws -> HermesBridgeAuthorizedRootStatusPayload {
+    try await client.authorizedRootStatus(rootID: try Self.parseRootID(rootID))
+  }
+
+  public func monitorStatus() async throws -> HermesBridgeFileEventMonitorStatusPayload {
+    try await client.fileEventMonitorStatus()
+  }
+
+  private static func parseRootID(_ value: String) throws -> HermesAuthorizedRootID {
+    do {
+      return try HermesAuthorizedRootID(rawValue: value)
+    } catch {
+      throw HermesBridgeXPCClientError.service(.rootNotFound)
+    }
   }
 }
 

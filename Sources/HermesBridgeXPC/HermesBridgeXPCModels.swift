@@ -113,6 +113,7 @@ public enum HermesBridgeXPCError: String, Codable, Error, Equatable, Sendable {
   case invalidState
   case serviceUnavailable
   case internalFailure
+  case duplicateAuthorizedRoot
   case rootNotFound
   case rootInactive
   case invalidBookmark

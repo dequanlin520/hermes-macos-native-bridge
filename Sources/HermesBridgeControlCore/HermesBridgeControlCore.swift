@@ -615,8 +615,8 @@ public struct HermesBridgeControlMappedError: Error, Sendable {
     case .serviceUnavailable:
       self.init(exitCode: .serviceUnavailable, code: error.rawValue, message: "service unavailable")
     case .malformedPayload, .oversizedPayload, .unsupportedOperation, .unsupportedCapability,
-      .internalFailure, .rootNotFound, .rootInactive, .invalidBookmark, .bookmarkTooLarge,
-      .staleAuthorization, .securityScopeUnavailable, .subscriptionNotFound,
+      .internalFailure, .duplicateAuthorizedRoot, .rootNotFound, .rootInactive, .invalidBookmark,
+      .bookmarkTooLarge, .staleAuthorization, .securityScopeUnavailable, .subscriptionNotFound,
       .subscriptionExpired, .acknowledgementRejected, .eventBufferOverflow, .rescanRequired:
       self.init(exitCode: .internalFailure, code: error.rawValue, message: "internal failure")
     }

@@ -67,6 +67,20 @@ final class HermesBridgeFileIntegrationXPCTests: XCTestCase {
     XCTAssertFalse(source.contains("path: String"))
   }
 
+  func testDuplicateAuthorizedRootMapsToTypedError() async throws {
+    let harness = try Harness()
+    _ = try await harness.registerRoot(displayName: "Docs")
+
+    await assertThrowsAsyncError(
+      try await harness.client.registerAuthorizedRoot(
+        displayName: "Duplicate",
+        bookmarkData: try harness.bookmarkData()
+      )
+    ) {
+      XCTAssertEqual($0 as? HermesBridgeXPCClientError, .service(.duplicateAuthorizedRoot))
+    }
+  }
+
   func testRefreshDeactivateReactivateAndRemoveRoot() async throws {
     let harness = try Harness()
     let registered = try await harness.registerRoot(displayName: "Docs")
