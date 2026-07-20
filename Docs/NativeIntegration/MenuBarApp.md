@@ -40,6 +40,9 @@ The first menu surface displays:
 - network online/offline state;
 - system-event monitor active state;
 - recent safe system-event summaries;
+- enabled event-policy count;
+- event-policy paused/running state;
+- recent safe event-policy decisions;
 - service degradation state.
 
 It offers only:
@@ -54,6 +57,10 @@ It offers only:
 - Latest Audit Events;
 - Export Audit Log;
 - Authorized Folders;
+- Pause Policies;
+- Resume Policies;
+- Dry Run a normalized test event;
+- Enable or disable an existing policy;
 - Open Shortcuts;
 - Quit.
 
@@ -76,6 +83,14 @@ classification, service-health classification and bounded reason code. The app
 does not provide a raw system log viewer and does not display executable paths,
 PIDs, window titles, document titles, URLs, clipboard, keystrokes, Prompts or
 backend tokens.
+
+Policy views render only enabled policy count, paused/running state and recent
+safe decisions containing policy ID, event kind, action kind, decision and
+reason code. The menu bar can pause/resume policies, dry-run a normalized event
+and enable/disable an existing policy through typed XPC operations. It is not a
+generic workflow editor and does not expose policy JSON editing, arbitrary
+actions, scripts, shell commands, AppleScript, executable paths, prompt bodies,
+raw events, clipboard content or window content.
 
 Audit integrity views may show signing availability, an active signer
 fingerprint prefix, signed and unsigned segment counts, integrity state, last

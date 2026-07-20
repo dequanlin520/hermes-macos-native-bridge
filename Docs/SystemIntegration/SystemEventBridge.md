@@ -49,3 +49,10 @@ operations:
 - `systemEventMonitorStatus`
 
 No generic event source, notification-name or arbitrary filter API is exposed.
+
+Protocol version `1.5` adds capability `systemEventPolicyManagement`. The
+policy engine receives only normalized `HermesSystemEvent` values and may
+execute only the fixed action catalog documented in
+`Docs/SystemIntegration/EventPolicyEngine.md`. It does not add generic
+automation, shell, AppleScript, URL-opening, executable-path or arbitrary XPC
+operations.

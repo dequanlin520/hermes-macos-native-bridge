@@ -177,7 +177,7 @@ final class HermesBridgeSystemEventXPCTests: XCTestCase {
     let harness = Harness(auditStore: store)
     let version = try await harness.client.protocolVersion()
     let capabilities = try await harness.client.capabilities()
-    XCTAssertEqual(version.version, HermesBridgeProtocolVersion(major: 1, minor: 4))
+    XCTAssertEqual(version.version, HermesBridgeProtocolVersion(major: 1, minor: 5))
     XCTAssertTrue(capabilities.capabilities.contains(.systemEventObservation))
 
     let sub = try await harness.client.createSystemEventSubscription(kinds: [.bridgeServiceDegraded]

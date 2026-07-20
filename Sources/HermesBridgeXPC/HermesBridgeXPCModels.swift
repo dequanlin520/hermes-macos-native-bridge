@@ -4,7 +4,7 @@ import HermesRuntimeFoundation
 public struct HermesBridgeProtocolVersion: Codable, Equatable, Sendable,
   CustomStringConvertible
 {
-  public static let current = HermesBridgeProtocolVersion(major: 1, minor: 4)
+  public static let current = HermesBridgeProtocolVersion(major: 1, minor: 5)
   public static let supportedMajor = 1
 
   public let major: Int
@@ -38,6 +38,7 @@ public enum HermesBridgeCapability: String, Codable, CaseIterable, Equatable, Se
   case authorizedRootManagement
   case fileEventObservation
   case systemEventObservation
+  case systemEventPolicyManagement
 }
 
 public enum HermesBridgeOperation: String, Codable, CaseIterable, Equatable, Sendable {
@@ -66,6 +67,16 @@ public enum HermesBridgeOperation: String, Codable, CaseIterable, Equatable, Sen
   case acknowledgeSystemEventBatch
   case cancelSystemEventSubscription
   case systemEventMonitorStatus
+  case listEventPolicies
+  case createEventPolicy
+  case updateEventPolicy
+  case enableEventPolicy
+  case disableEventPolicy
+  case removeEventPolicy
+  case evaluateEventPolicyDryRun
+  case eventPolicyEngineStatus
+  case pauseEventPolicies
+  case resumeEventPolicies
 }
 
 public struct HermesBridgeCorrelationID: Codable, Equatable, Hashable, Sendable,
@@ -579,6 +590,59 @@ public struct HermesBridgeSystemEventMonitorStatusPayload: Codable, Equatable, S
   }
 }
 
+public struct HermesBridgeEventPolicyListPayload: Codable, Equatable, Sendable {
+  public let policies: [HermesEventPolicy]
+
+  public init(policies: [HermesEventPolicy]) {
+    self.policies = Array(policies.prefix(FileBackedHermesEventPolicyStore.maximumPolicyCount))
+  }
+}
+
+public struct HermesBridgeEventPolicyPayload: Codable, Equatable, Sendable {
+  public let policy: HermesEventPolicy
+  public let expectedRevision: Int?
+
+  public init(policy: HermesEventPolicy, expectedRevision: Int? = nil) {
+    self.policy = policy
+    self.expectedRevision = expectedRevision
+  }
+}
+
+public struct HermesBridgeEventPolicyIDPayload: Codable, Equatable, Sendable {
+  public let policyID: HermesEventPolicyID
+  public let expectedRevision: Int?
+
+  public init(policyID: HermesEventPolicyID, expectedRevision: Int? = nil) {
+    self.policyID = policyID
+    self.expectedRevision = expectedRevision
+  }
+}
+
+public struct HermesBridgeEventPolicyEvaluationPayload: Codable, Equatable, Sendable {
+  public let event: HermesSystemEvent
+
+  public init(event: HermesSystemEvent) {
+    self.event = event
+  }
+}
+
+public struct HermesBridgeEventPolicyEvaluationResultPayload: Codable, Equatable, Sendable {
+  public let evaluations: [HermesEventPolicyEvaluation]
+
+  public init(evaluations: [HermesEventPolicyEvaluation]) {
+    self.evaluations = Array(
+      evaluations.prefix(FileBackedHermesEventPolicyStore.maximumPolicyCount))
+  }
+}
+
+public struct HermesBridgeEventPolicyEngineStatusPayload: Codable, Equatable, Sendable {
+  public let status: HermesEventPolicyEngineStatus
+
+  public init(status: HermesEventPolicyEngineStatus) {
+    self.status = status
+  }
+}
+
 public struct HermesBridgeSubmitPayload: Codable, Equatable, Sendable {
   public let bindingID: String
   public let prompt: String
@@ -633,6 +697,7 @@ public struct HermesBridgeBindingSummary: Codable, Equatable, Sendable {
   public let maximumPromptBytes: Int
   public let approvalPolicy: String
   public let enabled: Bool
+  public let allowsEventTriggeredInvocation: Bool
 
   public init(
     bindingID: HermesRequestBindingID,
@@ -640,7 +705,8 @@ public struct HermesBridgeBindingSummary: Codable, Equatable, Sendable {
     safeLocalizedDescription: String,
     maximumPromptBytes: Int,
     approvalPolicy: String,
-    enabled: Bool
+    enabled: Bool,
+    allowsEventTriggeredInvocation: Bool = false
   ) {
     self.bindingID = bindingID.rawValue
     self.localizedDisplayName = Self.safeText(
@@ -655,6 +721,7 @@ public struct HermesBridgeBindingSummary: Codable, Equatable, Sendable {
       0, min(maximumPromptBytes, HermesBridgeRequestEnvelope.maximumPromptBytes))
     self.approvalPolicy = Self.safeToken(approvalPolicy)
     self.enabled = enabled
+    self.allowsEventTriggeredInvocation = allowsEventTriggeredInvocation
   }
 
   private static func safeText(_ value: String, maximumCharacters: Int) -> String {
@@ -719,6 +786,9 @@ public struct HermesBridgeRequestEnvelope: Codable, Equatable, Sendable {
   public let pollSystemEventSubscription: HermesBridgePollSystemEventSubscriptionPayload?
   public let acknowledgeSystemEventBatch: HermesBridgeAcknowledgeSystemEventBatchPayload?
   public let cancelSystemEventSubscription: HermesBridgeCancelSystemEventSubscriptionPayload?
+  public let eventPolicy: HermesBridgeEventPolicyPayload?
+  public let eventPolicyID: HermesBridgeEventPolicyIDPayload?
+  public let eventPolicyEvaluation: HermesBridgeEventPolicyEvaluationPayload?
 
   public init(
     protocolVersion: HermesBridgeProtocolVersion = .current,
@@ -742,7 +812,10 @@ public struct HermesBridgeRequestEnvelope: Codable, Equatable, Sendable {
     createSystemEventSubscription: HermesBridgeCreateSystemEventSubscriptionPayload? = nil,
     pollSystemEventSubscription: HermesBridgePollSystemEventSubscriptionPayload? = nil,
     acknowledgeSystemEventBatch: HermesBridgeAcknowledgeSystemEventBatchPayload? = nil,
-    cancelSystemEventSubscription: HermesBridgeCancelSystemEventSubscriptionPayload? = nil
+    cancelSystemEventSubscription: HermesBridgeCancelSystemEventSubscriptionPayload? = nil,
+    eventPolicy: HermesBridgeEventPolicyPayload? = nil,
+    eventPolicyID: HermesBridgeEventPolicyIDPayload? = nil,
+    eventPolicyEvaluation: HermesBridgeEventPolicyEvaluationPayload? = nil
   ) {
     self.protocolVersion = protocolVersion
     self.correlationID = correlationID
@@ -766,6 +839,9 @@ public struct HermesBridgeRequestEnvelope: Codable, Equatable, Sendable {
     self.pollSystemEventSubscription = pollSystemEventSubscription
     self.acknowledgeSystemEventBatch = acknowledgeSystemEventBatch
     self.cancelSystemEventSubscription = cancelSystemEventSubscription
+    self.eventPolicy = eventPolicy
+    self.eventPolicyID = eventPolicyID
+    self.eventPolicyEvaluation = eventPolicyEvaluation
   }
 }
 
@@ -832,6 +908,16 @@ public enum HermesBridgeSuccessPayload: Codable, Equatable, Sendable {
   case acknowledgeSystemEventBatch(HermesBridgeAcknowledgementPayload)
   case cancelSystemEventSubscription(HermesBridgeSystemEventSubscriptionPayload)
   case systemEventMonitorStatus(HermesBridgeSystemEventMonitorStatusPayload)
+  case listEventPolicies(HermesBridgeEventPolicyListPayload)
+  case createEventPolicy(HermesBridgeEventPolicyPayload)
+  case updateEventPolicy(HermesBridgeEventPolicyPayload)
+  case enableEventPolicy(HermesBridgeEventPolicyPayload)
+  case disableEventPolicy(HermesBridgeEventPolicyPayload)
+  case removeEventPolicy(HermesBridgeEventPolicyIDPayload)
+  case evaluateEventPolicyDryRun(HermesBridgeEventPolicyEvaluationResultPayload)
+  case eventPolicyEngineStatus(HermesBridgeEventPolicyEngineStatusPayload)
+  case pauseEventPolicies(HermesBridgeEventPolicyEngineStatusPayload)
+  case resumeEventPolicies(HermesBridgeEventPolicyEngineStatusPayload)
   case submit(HermesBridgeRequestIDPayload)
   case status(HermesBridgeRequestStatusPayload)
   case cancel(HermesBridgeRequestStatusPayload)

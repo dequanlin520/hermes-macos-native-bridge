@@ -36,7 +36,7 @@ The current protocol version is:
 
 ```text
 major: 1
-minor: 4
+minor: 5
 ```
 
 The service rejects unsupported major versions before operation dispatch.
@@ -57,6 +57,7 @@ The confirmed capability set is:
 - `authorizedRootManagement`
 - `fileEventObservation`
 - `systemEventObservation`
+- `systemEventPolicyManagement`
 
 The service does not advertise or accept generic execution, generic JSON-RPC,
 generic HTTP, filesystem path, process, browser, GUI, AppleScript, JXA, or shell
@@ -97,6 +98,16 @@ Supported operations are:
 - `acknowledgeSystemEventBatch`: subscription ID and delivered event ordinal.
 - `cancelSystemEventSubscription`: subscription ID.
 - `systemEventMonitorStatus`: no payload.
+- `listEventPolicies`: no payload.
+- `createEventPolicy`: typed policy payload.
+- `updateEventPolicy`: typed policy payload and expected revision.
+- `enableEventPolicy`: policy ID and optional expected revision.
+- `disableEventPolicy`: policy ID and optional expected revision.
+- `removeEventPolicy`: policy ID and optional expected revision.
+- `evaluateEventPolicyDryRun`: normalized system event payload.
+- `eventPolicyEngineStatus`: no payload.
+- `pauseEventPolicies`: no payload.
+- `resumeEventPolicies`: no payload.
 
 The envelope contains no arbitrary dictionaries and no generic JSON blob field.
 Payloads are Swift `Codable` types with fixed fields. Unknown operation strings
@@ -305,6 +316,12 @@ The system-event contract never exposes generic notification names, arbitrary
 filters, executable paths, PIDs, window titles, document titles, URLs,
 clipboard, keystrokes, process arguments, environments, Prompts or backend
 tokens.
+
+Event-policy payloads contain typed policies, policy IDs, normalized system
+events, safe status summaries and safe evaluation records. They do not expose
+arbitrary policy JSON, executable paths, shell commands, AppleScript, generic
+XPC method names, prompt bodies, raw events, clipboard data, window content,
+file contents, environments or process arguments.
 
 ## App Intent Handoff Model
 

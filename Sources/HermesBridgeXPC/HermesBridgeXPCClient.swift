@@ -433,6 +433,169 @@ public actor HermesBridgeXPCClient {
     return payload
   }
 
+  public func listEventPolicies() async throws -> HermesBridgeEventPolicyListPayload {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .listEventPolicies
+      ))
+    guard case .success(.listEventPolicies(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
+  public func createEventPolicy(_ policy: HermesEventPolicy) async throws
+    -> HermesBridgeEventPolicyPayload
+  {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .createEventPolicy,
+        eventPolicy: HermesBridgeEventPolicyPayload(policy: policy)
+      ))
+    guard case .success(.createEventPolicy(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
+  public func updateEventPolicy(_ policy: HermesEventPolicy, expectedRevision: Int) async throws
+    -> HermesBridgeEventPolicyPayload
+  {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .updateEventPolicy,
+        eventPolicy: HermesBridgeEventPolicyPayload(
+          policy: policy,
+          expectedRevision: expectedRevision
+        )
+      ))
+    guard case .success(.updateEventPolicy(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
+  public func enableEventPolicy(
+    id: HermesEventPolicyID,
+    expectedRevision: Int? = nil
+  ) async throws -> HermesBridgeEventPolicyPayload {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .enableEventPolicy,
+        eventPolicyID: HermesBridgeEventPolicyIDPayload(
+          policyID: id,
+          expectedRevision: expectedRevision
+        )
+      ))
+    guard case .success(.enableEventPolicy(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
+  public func disableEventPolicy(
+    id: HermesEventPolicyID,
+    expectedRevision: Int? = nil
+  ) async throws -> HermesBridgeEventPolicyPayload {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .disableEventPolicy,
+        eventPolicyID: HermesBridgeEventPolicyIDPayload(
+          policyID: id,
+          expectedRevision: expectedRevision
+        )
+      ))
+    guard case .success(.disableEventPolicy(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
+  public func removeEventPolicy(
+    id: HermesEventPolicyID,
+    expectedRevision: Int? = nil
+  ) async throws -> HermesBridgeEventPolicyIDPayload {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .removeEventPolicy,
+        eventPolicyID: HermesBridgeEventPolicyIDPayload(
+          policyID: id,
+          expectedRevision: expectedRevision
+        )
+      ))
+    guard case .success(.removeEventPolicy(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
+  public func evaluateEventPolicyDryRun(event: HermesSystemEvent) async throws
+    -> HermesBridgeEventPolicyEvaluationResultPayload
+  {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .evaluateEventPolicyDryRun,
+        eventPolicyEvaluation: HermesBridgeEventPolicyEvaluationPayload(event: event)
+      ))
+    guard case .success(.evaluateEventPolicyDryRun(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
+  public func eventPolicyEngineStatus() async throws -> HermesBridgeEventPolicyEngineStatusPayload {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .eventPolicyEngineStatus
+      ))
+    guard case .success(.eventPolicyEngineStatus(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
+  public func pauseEventPolicies() async throws -> HermesBridgeEventPolicyEngineStatusPayload {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .pauseEventPolicies
+      ))
+    guard case .success(.pauseEventPolicies(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
+  public func resumeEventPolicies() async throws -> HermesBridgeEventPolicyEngineStatusPayload {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .resumeEventPolicies
+      ))
+    guard case .success(.resumeEventPolicies(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
   public func submit(bindingID: HermesRequestBindingID, prompt: String) async throws
     -> HermesRequestID
   {
@@ -651,6 +814,60 @@ public struct HermesBridgeSystemEventAppAdapter: Sendable {
     -> HermesBridgeSystemEventSubscriptionPayload
   {
     try await client.cancelSystemEventSubscription(subscriptionID: subscriptionID)
+  }
+}
+
+public struct HermesBridgeEventPolicyAppAdapter: Sendable {
+  private let client: HermesBridgeXPCClient
+
+  public init(client: HermesBridgeXPCClient) {
+    self.client = client
+  }
+
+  public func listPolicies() async throws -> HermesBridgeEventPolicyListPayload {
+    try await client.listEventPolicies()
+  }
+
+  public func createPolicy(_ policy: HermesEventPolicy) async throws
+    -> HermesBridgeEventPolicyPayload
+  {
+    try await client.createEventPolicy(policy)
+  }
+
+  public func updatePolicy(_ policy: HermesEventPolicy, expectedRevision: Int) async throws
+    -> HermesBridgeEventPolicyPayload
+  {
+    try await client.updateEventPolicy(policy, expectedRevision: expectedRevision)
+  }
+
+  public func enablePolicy(id: HermesEventPolicyID, expectedRevision: Int?) async throws
+    -> HermesBridgeEventPolicyPayload
+  {
+    try await client.enableEventPolicy(id: id, expectedRevision: expectedRevision)
+  }
+
+  public func disablePolicy(id: HermesEventPolicyID, expectedRevision: Int?) async throws
+    -> HermesBridgeEventPolicyPayload
+  {
+    try await client.disableEventPolicy(id: id, expectedRevision: expectedRevision)
+  }
+
+  public func dryRun(event: HermesSystemEvent) async throws
+    -> HermesBridgeEventPolicyEvaluationResultPayload
+  {
+    try await client.evaluateEventPolicyDryRun(event: event)
+  }
+
+  public func status() async throws -> HermesBridgeEventPolicyEngineStatusPayload {
+    try await client.eventPolicyEngineStatus()
+  }
+
+  public func pause() async throws -> HermesBridgeEventPolicyEngineStatusPayload {
+    try await client.pauseEventPolicies()
+  }
+
+  public func resume() async throws -> HermesBridgeEventPolicyEngineStatusPayload {
+    try await client.resumeEventPolicies()
   }
 }
 

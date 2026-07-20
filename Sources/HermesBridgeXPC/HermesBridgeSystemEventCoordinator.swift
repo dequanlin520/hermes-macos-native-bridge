@@ -22,6 +22,7 @@ public actor HermesBridgeSystemEventCoordinator: HermesBridgeRequestHandling {
 
   private let inactivityTimeout: TimeInterval
   private let productionMonitorsEnabled: Bool
+  private var eventHandler: (@Sendable (HermesSystemEvent) async -> Void)?
   private var networkMonitor: HermesSystemNetworkMonitor?
   private var workspaceMonitor: HermesSystemWorkspaceMonitor?
   private var subscriptions: [HermesSystemEventSubscriptionID: Subscription] = [:]
@@ -41,12 +42,14 @@ public actor HermesBridgeSystemEventCoordinator: HermesBridgeRequestHandling {
     networkMonitor: HermesSystemNetworkMonitor? = nil,
     workspaceMonitor: HermesSystemWorkspaceMonitor? = nil,
     inactivityTimeout: TimeInterval = 30,
-    productionMonitorsEnabled: Bool = true
+    productionMonitorsEnabled: Bool = true,
+    eventHandler: (@Sendable (HermesSystemEvent) async -> Void)? = nil
   ) {
     self.networkMonitor = networkMonitor
     self.workspaceMonitor = workspaceMonitor
     self.inactivityTimeout = max(0.05, inactivityTimeout)
     self.productionMonitorsEnabled = productionMonitorsEnabled
+    self.eventHandler = eventHandler
   }
 
   public func setNetworkMonitor(_ monitor: HermesSystemNetworkMonitor) {
@@ -57,6 +60,11 @@ public actor HermesBridgeSystemEventCoordinator: HermesBridgeRequestHandling {
   public func setWorkspaceMonitor(_ monitor: HermesSystemWorkspaceMonitor) {
     guard workspaceMonitor == nil else { return }
     workspaceMonitor = monitor
+  }
+
+  public func setEventHandler(_ handler: @escaping @Sendable (HermesSystemEvent) async -> Void) {
+    guard eventHandler == nil else { return }
+    eventHandler = handler
   }
 
   public nonisolated func submit(
@@ -342,6 +350,9 @@ public actor HermesBridgeSystemEventCoordinator: HermesBridgeRequestHandling {
     observedCursor += 1
     for (id, subscription) in subscriptions where subscription.kinds.contains(kind) {
       append(event, ordinal: observedCursor, to: id)
+    }
+    if let eventHandler {
+      await eventHandler(event)
     }
   }
 
