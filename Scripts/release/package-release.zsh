@@ -125,5 +125,8 @@ find "$staging_root" -exec touch -h -t 198001010000 {} +
   }
 )
 
-shasum -a 256 "$archive" > "$archive.sha256"
+(
+  cd "$archive:h"
+  shasum -a 256 "$archive:t" > "$archive:t.sha256"
+)
 print "archive=$archive"

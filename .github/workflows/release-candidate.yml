@@ -67,7 +67,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: hermes-bridge-release-candidate
-          path: artifacts/m8-002/release-candidates/**
+          path: |
+            artifacts/m8-002/release-candidates/**/*.tar.gz
+            artifacts/m8-002/release-candidates/**/*.tar.gz.sha256
+            artifacts/m8-002/release-candidates/**/staging/Payload/**
+            artifacts/m8-002/release-candidates/**/staging/ReleaseEvidence/**
           if-no-files-found: error
           retention-days: 30
 
