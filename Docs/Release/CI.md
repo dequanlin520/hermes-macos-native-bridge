@@ -21,3 +21,6 @@ CI validates:
 
 CI does not publish releases and does not consume Apple credentials.
 
+M8-003 validates this workflow on GitHub-hosted macOS by dispatching the real
+workflow with `Scripts/integration/m8-003-github-actions-rehearsal.zsh`. The
+rehearsal records the exact run ID and URL under `artifacts/m8-003`.
