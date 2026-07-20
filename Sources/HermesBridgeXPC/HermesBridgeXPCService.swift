@@ -32,6 +32,8 @@ public protocol HermesBridgeRequestHandling: Sendable {
   ) async throws -> HermesBridgeAuthorizedRootPayload
   func authorizedRootStatus(rootID: HermesAuthorizedRootID) async throws
     -> HermesBridgeAuthorizedRootStatusPayload
+  func resolveAuthorizedRoot(rootID: HermesAuthorizedRootID) async throws
+    -> HermesBridgeAuthorizedRootResolutionPayload
   func createFileEventSubscription(rootIDs: [HermesAuthorizedRootID]) async throws
     -> HermesBridgeFileEventSubscriptionPayload
   func pollFileEventSubscription(
@@ -104,6 +106,12 @@ extension HermesBridgeRequestHandling {
 
   public func authorizedRootStatus(rootID _: HermesAuthorizedRootID) async throws
     -> HermesBridgeAuthorizedRootStatusPayload
+  {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func resolveAuthorizedRoot(rootID _: HermesAuthorizedRootID) async throws
+    -> HermesBridgeAuthorizedRootResolutionPayload
   {
     throw HermesBridgeXPCError.unsupportedCapability
   }
@@ -283,6 +291,11 @@ public actor HermesBridgeXPCRequestDispatcher {
       guard envelope.authorizedRootStatus != nil else {
         throw HermesBridgeXPCError.malformedPayload
       }
+    case .resolveAuthorizedRoot:
+      try validateOnlyFilePayload(envelope, expected: 1)
+      guard envelope.resolveAuthorizedRoot != nil else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
     case .createFileEventSubscription:
       try validateOnlyFilePayload(envelope, expected: 1)
       guard envelope.createFileEventSubscription != nil else {
@@ -397,6 +410,14 @@ public actor HermesBridgeXPCRequestDispatcher {
       return .authorizedRootStatus(
         try await mapFileIntegrationError {
           try await handler.authorizedRootStatus(rootID: try decodeRootID(payload.rootID))
+        })
+    case .resolveAuthorizedRoot:
+      guard let payload = envelope.resolveAuthorizedRoot else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+      return .resolveAuthorizedRoot(
+        try await mapFileIntegrationError {
+          try await handler.resolveAuthorizedRoot(rootID: try decodeRootID(payload.rootID))
         })
     case .createFileEventSubscription:
       guard let payload = envelope.createFileEventSubscription else {
@@ -655,6 +676,7 @@ extension HermesBridgeRequestEnvelope {
     if reactivateAuthorizedRoot != nil { count += 1 }
     if removeAuthorizedRoot != nil { count += 1 }
     if authorizedRootStatus != nil { count += 1 }
+    if resolveAuthorizedRoot != nil { count += 1 }
     if createFileEventSubscription != nil { count += 1 }
     if pollFileEventSubscription != nil { count += 1 }
     if acknowledgeFileEventBatch != nil { count += 1 }

@@ -44,7 +44,7 @@ location.
 
 ## Entitlement Policy
 
-The entitlement policy is intentionally empty:
+The Bridge service entitlement policy is intentionally empty:
 
 ```text
 Packaging/Entitlements/HermesBridgeService.entitlements
@@ -65,6 +65,23 @@ No release entitlement is enabled for:
 
 `verify-release.zsh` extracts the signed entitlements from the binary and
 compares them to this policy.
+
+`Hermes Bridge.app` has a separate M5-004 sandbox policy:
+
+```text
+Packaging/Entitlements/HermesBridgeApp.entitlements
+```
+
+It contains only:
+
+- `com.apple.security.app-sandbox = true`;
+- `com.apple.security.files.user-selected.read-write = true`.
+
+M5-004 automated validation ad-hoc signs the app bundle with that entitlement
+file and verifies the embedded entitlements with `codesign`. The sandboxed app
+bundle remains a menu bar app with `LSUIElement=true`, retains App Intents
+metadata, and uses typed XPC bookmark handoff. The validation does not claim
+Developer ID signing, notarization, or release distribution readiness.
 
 ## Signing Modes
 
@@ -186,5 +203,8 @@ Public distribution remains blocked until:
 - Developer ID signing succeeds with hardened runtime;
 - notarization credentials are configured securely;
 - Apple notarization succeeds for the exact release artifact;
+- the sandboxed app bundle is validated under the release signing identity;
+- manual `NSOpenPanel`/TCC user-selection evidence is recorded for the signed
+  app;
 - a future installer or lifecycle issue owns final per-user placement,
   LaunchAgent installation, upgrade, removal, and user-facing controls.

@@ -238,6 +238,22 @@ public actor HermesBridgeXPCClient {
     return payload
   }
 
+  public func resolveAuthorizedRoot(rootID: HermesAuthorizedRootID) async throws
+    -> HermesBridgeAuthorizedRootResolutionPayload
+  {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .resolveAuthorizedRoot,
+        resolveAuthorizedRoot: HermesBridgeRootIDPayload(rootID: rootID.rawValue)
+      ))
+    guard case .success(.resolveAuthorizedRoot(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
   public func createFileEventSubscription(rootIDs: [HermesAuthorizedRootID]) async throws
     -> HermesBridgeFileEventSubscriptionPayload
   {

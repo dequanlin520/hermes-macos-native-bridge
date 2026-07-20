@@ -133,5 +133,9 @@ let package = Package(
       name: "M4003ScriptTests",
       dependencies: []
     ),
+    .testTarget(
+      name: "M5004SandboxedBookmarkLifecycleTests",
+      dependencies: []
+    ),
   ]
 )

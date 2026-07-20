@@ -28,7 +28,7 @@ scope unless that is directly proven.
 
 ## Runtime Validation Level
 
-Current automated validation runs with local ad-hoc signing. It proves the
+M5-003 automated validation runs with local ad-hoc signing and proves the
 production UI, bookmark creation path and typed XPC registration flow, but it
 does not by itself prove App Sandbox entitlement behavior.
 
@@ -38,15 +38,34 @@ the integration flow. A passing M5-003 result may still report
 `SECURITY_SCOPED_RUNTIME_PROVEN=no`; that means sandbox entitlement proof
 remains separate.
 
+M5-004 adds a dedicated sandboxed app entitlement policy and automated
+artifact-only validation. The M5-004 run proved:
+
+- embedded App Sandbox entitlement;
+- embedded user-selected read/write entitlement;
+- no broad filesystem or temporary exception entitlement;
+- `.withSecurityScope` bookmark creation;
+- typed XPC bookmark persistence into the Bridge registry;
+- app restart bookmark resolution;
+- service restart bookmark resolution;
+- service-side `startAccessingSecurityScopedResource()` success;
+- selected-root FSEvents delivery with no sibling-root event delivery.
+
+Because automated mode uses an injected artifact-owned selection, it does not
+claim real manual `NSOpenPanel` or TCC user-selection proof. That proof requires
+`Scripts/integration/m5-004-sandboxed-bookmark-lifecycle.zsh
+--manual-sandbox-bookmark-validation`.
+
 ## Privacy Boundary
 
 Security-scoped bookmark handling does not authorize file-content indexing.
 The app does not read selected folder contents, render full absolute paths,
 emit bookmark bytes, or expose file-event filenames in the authorized-root UI.
 
-## Next Step
+## Current Verdict
 
-The remaining validation step is a signed, sandboxed app build with explicit
-file-access entitlements and a manual `NSOpenPanel` selection, followed by
-verification that the Bridge service can resolve the resulting authorization
-under the intended release signing model.
+M5-004 VERDICT: CONDITIONAL GO
+
+The sandboxed ad-hoc app and service handoff are proven locally. Developer ID
+signing, notarization and manual user-selection evidence remain future
+validation work.

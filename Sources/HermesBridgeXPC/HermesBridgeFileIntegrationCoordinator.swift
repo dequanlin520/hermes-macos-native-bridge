@@ -147,6 +147,18 @@ public actor HermesBridgeFileIntegrationCoordinator: HermesBridgeRequestHandling
     return HermesBridgeAuthorizedRootStatusPayload(root: summary(record))
   }
 
+  public func resolveAuthorizedRoot(rootID: HermesAuthorizedRootID) async throws
+    -> HermesBridgeAuthorizedRootResolutionPayload
+  {
+    let record = try await registry.readRoot(rootID)
+    let resolution = try await registry.resolveRoot(rootID)
+    return HermesBridgeAuthorizedRootResolutionPayload(
+      rootID: rootID,
+      resolution: resolution,
+      expectedResolvedRootURL: record.resolvedRootURL
+    )
+  }
+
   public func createFileEventSubscription(rootIDs: [HermesAuthorizedRootID]) async throws
     -> HermesBridgeFileEventSubscriptionPayload
   {

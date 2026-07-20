@@ -99,6 +99,7 @@ indexing work. Those later layers must stay typed and must not expose arbitrary
 path access. Any future file-content indexing requires a separate issue,
 separate privacy review, and explicit user-facing product scope.
 
-Security-scoped runtime validation remains blocked until a signed, sandboxed,
-user-facing app performs a real `NSOpenPanel` authorization flow with the
-appropriate entitlements.
+M5-004 automated validation proved selected-root event observation from a
+sandboxed, ad-hoc signed app bookmark handoff and no sibling-root event
+delivery. Manual `NSOpenPanel`/TCC selection evidence and release-signed app
+validation remain separate work.
