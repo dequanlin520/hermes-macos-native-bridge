@@ -299,13 +299,13 @@ validate_rc_artifacts() {
     return 1
   fi
 
-  if [[ -f "$manifest" ]] && plutil -lint "$manifest" >/dev/null 2>&1; then
+  if [[ -f "$manifest" ]] && ruby -rjson -e 'JSON.parse(File.read(ARGV[0]))' "$manifest" >/dev/null 2>&1; then
     rc_manifest_valid="yes"
   else
     return 1
   fi
 
-  if [[ -f "$sbom" ]] && plutil -lint "$sbom" >/dev/null 2>&1 && grep -q '"spdxVersion": "SPDX-2.3"' "$sbom"; then
+  if [[ -f "$sbom" ]] && ruby -rjson -e 'JSON.parse(File.read(ARGV[0]))' "$sbom" >/dev/null 2>&1 && grep -q '"spdxVersion": "SPDX-2.3"' "$sbom"; then
     rc_sbom_valid="yes"
   else
     return 1

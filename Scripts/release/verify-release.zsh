@@ -97,8 +97,8 @@ print -- "$app_codesign_details" | grep -q '^Runtime Version=' || die "app harde
 print -- "$service_codesign_details" | grep -q '^Runtime Version=' || die "service hardened runtime missing"
 
 check "Info.plist validation failed" plutil -lint "$staging_root/Payload/Hermes Bridge.app/Contents/Info.plist"
-check "release manifest JSON validation failed" plutil -p "$staging_root/ReleaseEvidence/release-manifest.json"
-check "SPDX SBOM JSON validation failed" plutil -p "$staging_root/ReleaseEvidence/sbom.spdx.json"
+check "release manifest JSON validation failed" ruby -rjson -e 'JSON.parse(File.read(ARGV[0]))' "$staging_root/ReleaseEvidence/release-manifest.json"
+check "SPDX SBOM JSON validation failed" ruby -rjson -e 'JSON.parse(File.read(ARGV[0]))' "$staging_root/ReleaseEvidence/sbom.spdx.json"
 grep -q '"spdxVersion": "SPDX-2.3"' "$staging_root/ReleaseEvidence/sbom.spdx.json" || die "SBOM is not SPDX 2.3 JSON"
 
 (
