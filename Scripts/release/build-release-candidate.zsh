@@ -82,8 +82,9 @@ xcodebuild \
   build > "$log_root/xcodebuild.log"
 
 swift build --configuration release \
-  --product HermesBridgeService \
-  --product HermesBridgeControl > "$log_root/swift-build.log"
+  --product HermesBridgeService > "$log_root/swift-build.log"
+swift build --configuration release \
+  --product HermesBridgeControl >> "$log_root/swift-build.log"
 swift build --product HermesBridgeApp >> "$log_root/swift-build.log"
 
 bin_path="$(swift build --configuration release --show-bin-path | tail -n 1)"
