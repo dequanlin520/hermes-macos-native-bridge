@@ -7,6 +7,44 @@ import HermesRuntimeFoundation
 
 public protocol HermesBridgeRequestHandling: Sendable {
   func listEnabledBindings() async throws -> [HermesBridgeBindingSummary]
+  func listAuthorizedRoots() async throws -> HermesBridgeAuthorizedRootListPayload
+  func registerAuthorizedRoot(
+    displayName: String,
+    bookmarkData: Data
+  ) async throws -> HermesBridgeAuthorizedRootPayload
+  func refreshAuthorizedRoot(
+    rootID: HermesAuthorizedRootID,
+    bookmarkData: Data,
+    expectedRevision: Int?
+  ) async throws -> HermesBridgeAuthorizedRootPayload
+  func deactivateAuthorizedRoot(
+    rootID: HermesAuthorizedRootID,
+    expectedRevision: Int?
+  ) async throws -> HermesBridgeAuthorizedRootPayload
+  func reactivateAuthorizedRoot(
+    rootID: HermesAuthorizedRootID,
+    bookmarkData: Data,
+    expectedRevision: Int?
+  ) async throws -> HermesBridgeAuthorizedRootPayload
+  func removeAuthorizedRoot(
+    rootID: HermesAuthorizedRootID,
+    expectedRevision: Int?
+  ) async throws -> HermesBridgeAuthorizedRootPayload
+  func authorizedRootStatus(rootID: HermesAuthorizedRootID) async throws
+    -> HermesBridgeAuthorizedRootStatusPayload
+  func createFileEventSubscription(rootIDs: [HermesAuthorizedRootID]) async throws
+    -> HermesBridgeFileEventSubscriptionPayload
+  func pollFileEventSubscription(
+    subscriptionID: HermesBridgeFileEventSubscriptionID,
+    timeoutMilliseconds: Int
+  ) async throws -> HermesBridgeFileEventBatchPayload
+  func acknowledgeFileEventBatch(
+    subscriptionID: HermesBridgeFileEventSubscriptionID,
+    acknowledgedEventID: UInt64
+  ) async throws -> HermesBridgeAcknowledgementPayload
+  func cancelFileEventSubscription(subscriptionID: HermesBridgeFileEventSubscriptionID) async throws
+    -> HermesBridgeFileEventSubscriptionPayload
+  func fileEventMonitorStatus() async throws -> HermesBridgeFileEventMonitorStatusPayload
   func submit(bindingID: HermesRequestBindingID, prompt: String) async throws -> HermesRequestID
   func status(requestID: HermesRequestID) async throws -> HermesRequestRecord
   func cancel(requestID: HermesRequestID) async throws -> HermesRequestRecord
@@ -21,6 +59,83 @@ extension HermesRequestOrchestrator: HermesBridgeRequestHandling {}
 extension HermesBridgeRequestHandling {
   public func listEnabledBindings() async throws -> [HermesBridgeBindingSummary] {
     throw HermesBridgeXPCError.unsupportedOperation
+  }
+
+  public func listAuthorizedRoots() async throws -> HermesBridgeAuthorizedRootListPayload {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func registerAuthorizedRoot(
+    displayName _: String,
+    bookmarkData _: Data
+  ) async throws -> HermesBridgeAuthorizedRootPayload {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func refreshAuthorizedRoot(
+    rootID _: HermesAuthorizedRootID,
+    bookmarkData _: Data,
+    expectedRevision _: Int?
+  ) async throws -> HermesBridgeAuthorizedRootPayload {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func deactivateAuthorizedRoot(
+    rootID _: HermesAuthorizedRootID,
+    expectedRevision _: Int?
+  ) async throws -> HermesBridgeAuthorizedRootPayload {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func reactivateAuthorizedRoot(
+    rootID _: HermesAuthorizedRootID,
+    bookmarkData _: Data,
+    expectedRevision _: Int?
+  ) async throws -> HermesBridgeAuthorizedRootPayload {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func removeAuthorizedRoot(
+    rootID _: HermesAuthorizedRootID,
+    expectedRevision _: Int?
+  ) async throws -> HermesBridgeAuthorizedRootPayload {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func authorizedRootStatus(rootID _: HermesAuthorizedRootID) async throws
+    -> HermesBridgeAuthorizedRootStatusPayload
+  {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func createFileEventSubscription(rootIDs _: [HermesAuthorizedRootID]) async throws
+    -> HermesBridgeFileEventSubscriptionPayload
+  {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func pollFileEventSubscription(
+    subscriptionID _: HermesBridgeFileEventSubscriptionID,
+    timeoutMilliseconds _: Int
+  ) async throws -> HermesBridgeFileEventBatchPayload {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func acknowledgeFileEventBatch(
+    subscriptionID _: HermesBridgeFileEventSubscriptionID,
+    acknowledgedEventID _: UInt64
+  ) async throws -> HermesBridgeAcknowledgementPayload {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func cancelFileEventSubscription(
+    subscriptionID _: HermesBridgeFileEventSubscriptionID
+  ) async throws -> HermesBridgeFileEventSubscriptionPayload {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func fileEventMonitorStatus() async throws -> HermesBridgeFileEventMonitorStatusPayload {
+    throw HermesBridgeXPCError.unsupportedCapability
   }
 }
 
@@ -93,7 +208,7 @@ public actor HermesBridgeXPCRequestDispatcher {
     switch envelope.operation {
     case .submit:
       guard envelope.submit != nil, envelope.status == nil, envelope.cancel == nil,
-        envelope.approvalResponse == nil
+        envelope.approvalResponse == nil, envelope.filePayloadCount == 0
       else {
         throw HermesBridgeXPCError.malformedPayload
       }
@@ -105,28 +220,100 @@ public actor HermesBridgeXPCRequestDispatcher {
       }
     case .status:
       guard envelope.status != nil, envelope.submit == nil, envelope.cancel == nil,
-        envelope.approvalResponse == nil
+        envelope.approvalResponse == nil, envelope.filePayloadCount == 0
       else {
         throw HermesBridgeXPCError.malformedPayload
       }
     case .cancel:
       guard envelope.cancel != nil, envelope.submit == nil, envelope.status == nil,
-        envelope.approvalResponse == nil
+        envelope.approvalResponse == nil, envelope.filePayloadCount == 0
       else {
         throw HermesBridgeXPCError.malformedPayload
       }
     case .approvalResponse:
       guard envelope.approvalResponse != nil, envelope.submit == nil, envelope.status == nil,
-        envelope.cancel == nil
+        envelope.cancel == nil, envelope.filePayloadCount == 0
       else {
         throw HermesBridgeXPCError.malformedPayload
       }
     case .capabilities, .protocolVersion, .listEnabledBindings:
       guard envelope.submit == nil, envelope.status == nil, envelope.cancel == nil,
-        envelope.approvalResponse == nil
+        envelope.approvalResponse == nil, envelope.filePayloadCount == 0
       else {
         throw HermesBridgeXPCError.malformedPayload
       }
+    case .listAuthorizedRoots, .fileEventMonitorStatus:
+      try validateOnlyFilePayload(envelope, expected: 0)
+    case .registerAuthorizedRoot:
+      try validateOnlyFilePayload(envelope, expected: 1)
+      guard let payload = envelope.registerAuthorizedRoot,
+        !payload.bookmarkData.isEmpty,
+        payload.bookmarkData.count <= HermesBridgeRegisterAuthorizedRootPayload.maximumBookmarkBytes
+      else {
+        throw HermesBridgeXPCError.bookmarkTooLarge
+      }
+    case .refreshAuthorizedRoot:
+      try validateOnlyFilePayload(envelope, expected: 1)
+      guard let payload = envelope.refreshAuthorizedRoot,
+        !payload.bookmarkData.isEmpty,
+        payload.bookmarkData.count <= HermesBridgeRegisterAuthorizedRootPayload.maximumBookmarkBytes
+      else {
+        throw HermesBridgeXPCError.bookmarkTooLarge
+      }
+    case .deactivateAuthorizedRoot:
+      try validateOnlyFilePayload(envelope, expected: 1)
+      guard envelope.deactivateAuthorizedRoot != nil else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+    case .reactivateAuthorizedRoot:
+      try validateOnlyFilePayload(envelope, expected: 1)
+      guard let payload = envelope.reactivateAuthorizedRoot,
+        !payload.bookmarkData.isEmpty,
+        payload.bookmarkData.count <= HermesBridgeRegisterAuthorizedRootPayload.maximumBookmarkBytes
+      else {
+        throw HermesBridgeXPCError.bookmarkTooLarge
+      }
+    case .removeAuthorizedRoot:
+      try validateOnlyFilePayload(envelope, expected: 1)
+      guard envelope.removeAuthorizedRoot != nil else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+    case .authorizedRootStatus:
+      try validateOnlyFilePayload(envelope, expected: 1)
+      guard envelope.authorizedRootStatus != nil else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+    case .createFileEventSubscription:
+      try validateOnlyFilePayload(envelope, expected: 1)
+      guard envelope.createFileEventSubscription != nil else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+    case .pollFileEventSubscription:
+      try validateOnlyFilePayload(envelope, expected: 1)
+      guard envelope.pollFileEventSubscription != nil else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+    case .acknowledgeFileEventBatch:
+      try validateOnlyFilePayload(envelope, expected: 1)
+      guard envelope.acknowledgeFileEventBatch != nil else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+    case .cancelFileEventSubscription:
+      try validateOnlyFilePayload(envelope, expected: 1)
+      guard envelope.cancelFileEventSubscription != nil else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+    }
+  }
+
+  private func validateOnlyFilePayload(
+    _ envelope: HermesBridgeRequestEnvelope,
+    expected: Int
+  ) throws {
+    guard envelope.submit == nil, envelope.status == nil, envelope.cancel == nil,
+      envelope.approvalResponse == nil, envelope.filePayloadCount == expected
+    else {
+      throw HermesBridgeXPCError.malformedPayload
     }
   }
 
@@ -141,6 +328,123 @@ public actor HermesBridgeXPCRequestDispatcher {
     case .listEnabledBindings:
       return .listEnabledBindings(
         try HermesBridgeBindingListPayload(bindings: try await handler.listEnabledBindings()))
+    case .listAuthorizedRoots:
+      return .listAuthorizedRoots(
+        try await mapFileIntegrationError {
+          try await handler.listAuthorizedRoots()
+        })
+    case .registerAuthorizedRoot:
+      guard let payload = envelope.registerAuthorizedRoot else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+      return .registerAuthorizedRoot(
+        try await mapFileIntegrationError {
+          try await handler.registerAuthorizedRoot(
+            displayName: payload.displayName,
+            bookmarkData: payload.bookmarkData
+          )
+        })
+    case .refreshAuthorizedRoot:
+      guard let payload = envelope.refreshAuthorizedRoot else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+      return .refreshAuthorizedRoot(
+        try await mapFileIntegrationError {
+          try await handler.refreshAuthorizedRoot(
+            rootID: try decodeRootID(payload.rootID),
+            bookmarkData: payload.bookmarkData,
+            expectedRevision: payload.expectedRevision
+          )
+        })
+    case .deactivateAuthorizedRoot:
+      guard let payload = envelope.deactivateAuthorizedRoot else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+      return .deactivateAuthorizedRoot(
+        try await mapFileIntegrationError {
+          try await handler.deactivateAuthorizedRoot(
+            rootID: try decodeRootID(payload.rootID),
+            expectedRevision: payload.expectedRevision
+          )
+        })
+    case .reactivateAuthorizedRoot:
+      guard let payload = envelope.reactivateAuthorizedRoot else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+      return .reactivateAuthorizedRoot(
+        try await mapFileIntegrationError {
+          try await handler.reactivateAuthorizedRoot(
+            rootID: try decodeRootID(payload.rootID),
+            bookmarkData: payload.bookmarkData,
+            expectedRevision: payload.expectedRevision
+          )
+        })
+    case .removeAuthorizedRoot:
+      guard let payload = envelope.removeAuthorizedRoot else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+      return .removeAuthorizedRoot(
+        try await mapFileIntegrationError {
+          try await handler.removeAuthorizedRoot(
+            rootID: try decodeRootID(payload.rootID),
+            expectedRevision: payload.expectedRevision
+          )
+        })
+    case .authorizedRootStatus:
+      guard let payload = envelope.authorizedRootStatus else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+      return .authorizedRootStatus(
+        try await mapFileIntegrationError {
+          try await handler.authorizedRootStatus(rootID: try decodeRootID(payload.rootID))
+        })
+    case .createFileEventSubscription:
+      guard let payload = envelope.createFileEventSubscription else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+      return .createFileEventSubscription(
+        try await mapFileIntegrationError {
+          try await handler.createFileEventSubscription(
+            rootIDs: try payload.rootIDs.map(decodeRootID)
+          )
+        })
+    case .pollFileEventSubscription:
+      guard let payload = envelope.pollFileEventSubscription else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+      return .pollFileEventSubscription(
+        try await mapFileIntegrationError {
+          try await handler.pollFileEventSubscription(
+            subscriptionID: try decodeSubscriptionID(payload.subscriptionID),
+            timeoutMilliseconds: payload.timeoutMilliseconds
+          )
+        })
+    case .acknowledgeFileEventBatch:
+      guard let payload = envelope.acknowledgeFileEventBatch else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+      return .acknowledgeFileEventBatch(
+        try await mapFileIntegrationError {
+          try await handler.acknowledgeFileEventBatch(
+            subscriptionID: try decodeSubscriptionID(payload.subscriptionID),
+            acknowledgedEventID: payload.acknowledgedEventID
+          )
+        })
+    case .cancelFileEventSubscription:
+      guard let payload = envelope.cancelFileEventSubscription else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+      return .cancelFileEventSubscription(
+        try await mapFileIntegrationError {
+          try await handler.cancelFileEventSubscription(
+            subscriptionID: try decodeSubscriptionID(payload.subscriptionID)
+          )
+        })
+    case .fileEventMonitorStatus:
+      return .fileEventMonitorStatus(
+        try await mapFileIntegrationError {
+          try await handler.fileEventMonitorStatus()
+        })
     case .submit:
       guard let submit = envelope.submit else {
         throw HermesBridgeXPCError.malformedPayload
@@ -193,6 +497,24 @@ public actor HermesBridgeXPCRequestDispatcher {
     }
   }
 
+  private func decodeRootID(_ rawValue: String) throws -> HermesAuthorizedRootID {
+    do {
+      return try HermesAuthorizedRootID(rawValue: rawValue)
+    } catch {
+      throw HermesBridgeXPCError.malformedPayload
+    }
+  }
+
+  private func decodeSubscriptionID(_ rawValue: String) throws
+    -> HermesBridgeFileEventSubscriptionID
+  {
+    do {
+      return try HermesBridgeFileEventSubscriptionID(rawValue: rawValue)
+    } catch {
+      throw HermesBridgeXPCError.malformedPayload
+    }
+  }
+
   private func mapOrchestratorError<T>(
     _ body: () async throws -> T
   ) async throws -> T {
@@ -212,6 +534,31 @@ public actor HermesBridgeXPCRequestDispatcher {
       case .duplicateRequest, .stateStoreFailure, .reconciliationRequired:
         throw HermesBridgeXPCError.internalFailure
       }
+    } catch {
+      throw HermesBridgeXPCError.internalFailure
+    }
+  }
+
+  private func mapFileIntegrationError<T>(_ body: () async throws -> T) async throws -> T {
+    do {
+      return try await body()
+    } catch let error as HermesBridgeXPCError {
+      throw error
+    } catch let error as HermesAuthorizedRootRegistryError {
+      switch error {
+      case .unknownRoot:
+        throw HermesBridgeXPCError.rootNotFound
+      case .inactiveRoot:
+        throw HermesBridgeXPCError.rootInactive
+      case .bookmarkTooLarge:
+        throw HermesBridgeXPCError.bookmarkTooLarge
+      case .bookmarkResolutionFailed:
+        throw HermesBridgeXPCError.invalidBookmark
+      default:
+        throw HermesBridgeXPCError.internalFailure
+      }
+    } catch is HermesFileEventError {
+      throw HermesBridgeXPCError.oversizedPayload
     } catch {
       throw HermesBridgeXPCError.internalFailure
     }
@@ -257,6 +604,8 @@ public actor HermesBridgeXPCRequestDispatcher {
       return "Bridge XPC payload exceeds the size limit."
     case .unsupportedOperation:
       return "Bridge XPC operation is unsupported."
+    case .unsupportedCapability:
+      return "Bridge XPC capability is unsupported."
     case .invalidBinding:
       return "Request binding is not allowed."
     case .requestNotFound:
@@ -267,7 +616,46 @@ public actor HermesBridgeXPCRequestDispatcher {
       return "Bridge XPC service is unavailable."
     case .internalFailure:
       return "Bridge XPC service failed internally."
+    case .rootNotFound:
+      return "Authorized root was not found."
+    case .rootInactive:
+      return "Authorized root is inactive."
+    case .invalidBookmark:
+      return "Authorized-root bookmark is invalid."
+    case .bookmarkTooLarge:
+      return "Authorized-root bookmark exceeds the size limit."
+    case .staleAuthorization:
+      return "Authorized-root bookmark is stale."
+    case .securityScopeUnavailable:
+      return "Security scope is unavailable."
+    case .subscriptionNotFound:
+      return "File-event subscription was not found."
+    case .subscriptionExpired:
+      return "File-event subscription expired."
+    case .acknowledgementRejected:
+      return "File-event acknowledgement was rejected."
+    case .eventBufferOverflow:
+      return "File-event buffer overflow requires rescan."
+    case .rescanRequired:
+      return "File-event rescan is required."
     }
+  }
+}
+
+extension HermesBridgeRequestEnvelope {
+  fileprivate var filePayloadCount: Int {
+    var count = 0
+    if registerAuthorizedRoot != nil { count += 1 }
+    if refreshAuthorizedRoot != nil { count += 1 }
+    if deactivateAuthorizedRoot != nil { count += 1 }
+    if reactivateAuthorizedRoot != nil { count += 1 }
+    if removeAuthorizedRoot != nil { count += 1 }
+    if authorizedRootStatus != nil { count += 1 }
+    if createFileEventSubscription != nil { count += 1 }
+    if pollFileEventSubscription != nil { count += 1 }
+    if acknowledgeFileEventBatch != nil { count += 1 }
+    if cancelFileEventSubscription != nil { count += 1 }
+    return count
   }
 }
 

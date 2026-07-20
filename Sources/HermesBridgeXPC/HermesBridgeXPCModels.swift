@@ -4,7 +4,7 @@ import HermesRuntimeFoundation
 public struct HermesBridgeProtocolVersion: Codable, Equatable, Sendable,
   CustomStringConvertible
 {
-  public static let current = HermesBridgeProtocolVersion(major: 1, minor: 1)
+  public static let current = HermesBridgeProtocolVersion(major: 1, minor: 2)
   public static let supportedMajor = 1
 
   public let major: Int
@@ -35,6 +35,8 @@ public enum HermesBridgeCapability: String, Codable, CaseIterable, Equatable, Se
   case respondToApproval
   case protocolVersion
   case bindingDiscovery
+  case authorizedRootManagement
+  case fileEventObservation
 }
 
 public enum HermesBridgeOperation: String, Codable, CaseIterable, Equatable, Sendable {
@@ -45,6 +47,18 @@ public enum HermesBridgeOperation: String, Codable, CaseIterable, Equatable, Sen
   case capabilities
   case protocolVersion
   case listEnabledBindings
+  case listAuthorizedRoots
+  case registerAuthorizedRoot
+  case refreshAuthorizedRoot
+  case deactivateAuthorizedRoot
+  case reactivateAuthorizedRoot
+  case removeAuthorizedRoot
+  case authorizedRootStatus
+  case createFileEventSubscription
+  case pollFileEventSubscription
+  case acknowledgeFileEventBatch
+  case cancelFileEventSubscription
+  case fileEventMonitorStatus
 }
 
 public struct HermesBridgeCorrelationID: Codable, Equatable, Hashable, Sendable,
@@ -93,11 +107,292 @@ public enum HermesBridgeXPCError: String, Codable, Error, Equatable, Sendable {
   case malformedPayload
   case oversizedPayload
   case unsupportedOperation
+  case unsupportedCapability
   case invalidBinding
   case requestNotFound
   case invalidState
   case serviceUnavailable
   case internalFailure
+  case rootNotFound
+  case rootInactive
+  case invalidBookmark
+  case bookmarkTooLarge
+  case staleAuthorization
+  case securityScopeUnavailable
+  case subscriptionNotFound
+  case subscriptionExpired
+  case acknowledgementRejected
+  case eventBufferOverflow
+  case rescanRequired
+}
+
+public enum HermesBridgeSecurityScopeStatus: String, Codable, Equatable, Sendable {
+  case available
+  case unavailable
+}
+
+public enum HermesBridgeAuthorizedRootKind: String, Codable, Equatable, Sendable {
+  case directory
+}
+
+public struct HermesBridgeAuthorizedRootSummary: Codable, Equatable, Sendable {
+  public let rootID: String
+  public let displayName: String
+  public let active: Bool
+  public let staleAuthorization: Bool
+  public let securityScopeStatus: HermesBridgeSecurityScopeStatus
+  public let lastObservedEventID: UInt64
+  public let revision: Int
+  public let rootKind: HermesBridgeAuthorizedRootKind
+
+  public init(
+    record: HermesAuthorizedRootRecord,
+    securityScopeStatus: HermesBridgeSecurityScopeStatus = .unavailable
+  ) {
+    self.rootID = record.rootID.rawValue
+    self.displayName = record.displayName
+    self.active = record.state == .active
+    self.staleAuthorization = record.bookmarkDataIsStale
+    self.securityScopeStatus = securityScopeStatus
+    self.lastObservedEventID = record.lastObservedFSEventID
+    self.revision = record.revision
+    self.rootKind = .directory
+  }
+}
+
+public struct HermesBridgeAuthorizedRootListPayload: Codable, Equatable, Sendable {
+  public static let maximumRootCount = 128
+  public let roots: [HermesBridgeAuthorizedRootSummary]
+
+  public init(roots: [HermesBridgeAuthorizedRootSummary]) {
+    self.roots = Array(roots.prefix(Self.maximumRootCount))
+  }
+}
+
+public struct HermesBridgeAuthorizedRootPayload: Codable, Equatable, Sendable {
+  public let root: HermesBridgeAuthorizedRootSummary
+
+  public init(root: HermesBridgeAuthorizedRootSummary) {
+    self.root = root
+  }
+}
+
+public struct HermesBridgeRegisterAuthorizedRootPayload: Codable, Equatable, Sendable {
+  public static let maximumBookmarkBytes = 80 * 1024
+  public let displayName: String
+  public let bookmarkData: Data
+
+  public init(displayName: String, bookmarkData: Data) {
+    self.displayName = displayName
+    self.bookmarkData = bookmarkData
+  }
+}
+
+public struct HermesBridgeRootIDPayload: Codable, Equatable, Sendable {
+  public let rootID: String
+  public let expectedRevision: Int?
+
+  public init(rootID: String, expectedRevision: Int? = nil) {
+    self.rootID = rootID
+    self.expectedRevision = expectedRevision
+  }
+}
+
+public struct HermesBridgeRefreshAuthorizedRootPayload: Codable, Equatable, Sendable {
+  public let rootID: String
+  public let bookmarkData: Data
+  public let expectedRevision: Int?
+
+  public init(rootID: String, bookmarkData: Data, expectedRevision: Int? = nil) {
+    self.rootID = rootID
+    self.bookmarkData = bookmarkData
+    self.expectedRevision = expectedRevision
+  }
+}
+
+public typealias HermesBridgeReactivateAuthorizedRootPayload =
+  HermesBridgeRefreshAuthorizedRootPayload
+
+public struct HermesBridgeAuthorizedRootStatusPayload: Codable, Equatable, Sendable {
+  public let root: HermesBridgeAuthorizedRootSummary
+
+  public init(root: HermesBridgeAuthorizedRootSummary) {
+    self.root = root
+  }
+}
+
+public struct HermesBridgeFileEventSubscriptionID: Codable, Equatable, Hashable, Sendable,
+  CustomStringConvertible
+{
+  public static let prefix = "fsub_"
+  public let rawValue: String
+
+  public init(rawValue: String) throws {
+    guard rawValue.hasPrefix(Self.prefix), rawValue.count <= 80,
+      rawValue.dropFirst(Self.prefix.count).allSatisfy({
+        $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_")
+      })
+    else {
+      throw HermesBridgeXPCError.malformedPayload
+    }
+    self.rawValue = rawValue
+  }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.singleValueContainer()
+    try self.init(rawValue: container.decode(String.self))
+  }
+
+  public func encode(to encoder: Encoder) throws {
+    var container = encoder.singleValueContainer()
+    try container.encode(rawValue)
+  }
+
+  public var description: String { rawValue }
+}
+
+public struct HermesBridgeCreateFileEventSubscriptionPayload: Codable, Equatable, Sendable {
+  public let rootIDs: [String]
+
+  public init(rootIDs: [String]) {
+    self.rootIDs = rootIDs
+  }
+}
+
+public struct HermesBridgeFileEventSubscriptionPayload: Codable, Equatable, Sendable {
+  public let subscriptionID: String
+  public let rootIDs: [String]
+  public let expiresAt: Date
+  public let rescanRequired: Bool
+
+  public init(
+    subscriptionID: HermesBridgeFileEventSubscriptionID,
+    rootIDs: [HermesAuthorizedRootID],
+    expiresAt: Date,
+    rescanRequired: Bool = false
+  ) {
+    self.subscriptionID = subscriptionID.rawValue
+    self.rootIDs = rootIDs.map(\.rawValue)
+    self.expiresAt = expiresAt
+    self.rescanRequired = rescanRequired
+  }
+}
+
+public struct HermesBridgePollFileEventSubscriptionPayload: Codable, Equatable, Sendable {
+  public let subscriptionID: String
+  public let timeoutMilliseconds: Int
+
+  public init(subscriptionID: String, timeoutMilliseconds: Int = 0) {
+    self.subscriptionID = subscriptionID
+    self.timeoutMilliseconds = timeoutMilliseconds
+  }
+}
+
+public struct HermesBridgeAcknowledgeFileEventBatchPayload: Codable, Equatable, Sendable {
+  public let subscriptionID: String
+  public let acknowledgedEventID: UInt64
+
+  public init(subscriptionID: String, acknowledgedEventID: UInt64) {
+    self.subscriptionID = subscriptionID
+    self.acknowledgedEventID = acknowledgedEventID
+  }
+}
+
+public struct HermesBridgeAcknowledgementPayload: Codable, Equatable, Sendable {
+  public let subscriptionID: String
+  public let acknowledgedEventID: UInt64
+
+  public init(subscriptionID: HermesBridgeFileEventSubscriptionID, acknowledgedEventID: UInt64) {
+    self.subscriptionID = subscriptionID.rawValue
+    self.acknowledgedEventID = acknowledgedEventID
+  }
+}
+
+public struct HermesBridgeCancelFileEventSubscriptionPayload: Codable, Equatable, Sendable {
+  public let subscriptionID: String
+
+  public init(subscriptionID: String) {
+    self.subscriptionID = subscriptionID
+  }
+}
+
+public struct HermesBridgeFileEventSummary: Codable, Equatable, Sendable {
+  public static let maximumPathBytes = HermesRootRelativePath.maximumUTF8Bytes
+  public let rootID: String
+  public let relativePath: String
+  public let kind: String
+  public let eventID: UInt64
+  public let isDirectory: Bool?
+  public let flags: [String]
+  public let replayed: Bool
+
+  public init(event: HermesFileEvent, replayed: Bool) {
+    self.rootID = event.rootID.rawValue
+    self.relativePath = event.relativePath.rawValue
+    self.kind = event.kind.rawValue
+    self.eventID = event.fseventID
+    self.isDirectory = event.isDirectory
+    self.flags = event.flags.map(\.rawValue).sorted()
+    self.replayed = replayed
+  }
+}
+
+public struct HermesBridgeFileEventBatchPayload: Codable, Equatable, Sendable {
+  public static let maximumEventCount = 128
+  public static let maximumEncodedBytes = 64 * 1024
+  public let subscriptionID: String
+  public let rootID: String
+  public let events: [HermesBridgeFileEventSummary]
+  public let newestEventID: UInt64
+  public let replayed: Bool
+  public let historyDone: Bool
+  public let rescanRequired: Bool
+  public let droppedEventReason: String?
+
+  public init(
+    subscriptionID: HermesBridgeFileEventSubscriptionID,
+    rootID: HermesAuthorizedRootID,
+    events: [HermesBridgeFileEventSummary],
+    newestEventID: UInt64,
+    replayed: Bool,
+    historyDone: Bool = false,
+    rescanRequired: Bool,
+    droppedEventReason: HermesFileEventDroppedReason? = nil
+  ) throws {
+    self.subscriptionID = subscriptionID.rawValue
+    self.rootID = rootID.rawValue
+    self.events = Array(events.prefix(Self.maximumEventCount))
+    self.newestEventID = newestEventID
+    self.replayed = replayed
+    self.historyDone = historyDone
+    self.rescanRequired = rescanRequired
+    self.droppedEventReason = droppedEventReason?.rawValue
+    guard (try? JSONEncoder().encode(self).count) ?? Int.max <= Self.maximumEncodedBytes else {
+      throw HermesBridgeXPCError.oversizedPayload
+    }
+  }
+}
+
+public struct HermesBridgeFileEventMonitorStatusPayload: Codable, Equatable, Sendable {
+  public let activeSubscriptionCount: Int
+  public let observedCursor: UInt64
+  public let deliveredCursor: UInt64
+  public let acknowledgedCursor: UInt64
+  public let rescanRequired: Bool
+
+  public init(
+    activeSubscriptionCount: Int,
+    observedCursor: UInt64,
+    deliveredCursor: UInt64,
+    acknowledgedCursor: UInt64,
+    rescanRequired: Bool
+  ) {
+    self.activeSubscriptionCount = activeSubscriptionCount
+    self.observedCursor = observedCursor
+    self.deliveredCursor = deliveredCursor
+    self.acknowledgedCursor = acknowledgedCursor
+    self.rescanRequired = rescanRequired
+  }
 }
 
 public struct HermesBridgeSubmitPayload: Codable, Equatable, Sendable {
@@ -225,6 +520,16 @@ public struct HermesBridgeRequestEnvelope: Codable, Equatable, Sendable {
   public let status: HermesBridgeRequestIDPayload?
   public let cancel: HermesBridgeRequestIDPayload?
   public let approvalResponse: HermesBridgeApprovalResponsePayload?
+  public let registerAuthorizedRoot: HermesBridgeRegisterAuthorizedRootPayload?
+  public let refreshAuthorizedRoot: HermesBridgeRefreshAuthorizedRootPayload?
+  public let deactivateAuthorizedRoot: HermesBridgeRootIDPayload?
+  public let reactivateAuthorizedRoot: HermesBridgeReactivateAuthorizedRootPayload?
+  public let removeAuthorizedRoot: HermesBridgeRootIDPayload?
+  public let authorizedRootStatus: HermesBridgeRootIDPayload?
+  public let createFileEventSubscription: HermesBridgeCreateFileEventSubscriptionPayload?
+  public let pollFileEventSubscription: HermesBridgePollFileEventSubscriptionPayload?
+  public let acknowledgeFileEventBatch: HermesBridgeAcknowledgeFileEventBatchPayload?
+  public let cancelFileEventSubscription: HermesBridgeCancelFileEventSubscriptionPayload?
 
   public init(
     protocolVersion: HermesBridgeProtocolVersion = .current,
@@ -233,7 +538,17 @@ public struct HermesBridgeRequestEnvelope: Codable, Equatable, Sendable {
     submit: HermesBridgeSubmitPayload? = nil,
     status: HermesBridgeRequestIDPayload? = nil,
     cancel: HermesBridgeRequestIDPayload? = nil,
-    approvalResponse: HermesBridgeApprovalResponsePayload? = nil
+    approvalResponse: HermesBridgeApprovalResponsePayload? = nil,
+    registerAuthorizedRoot: HermesBridgeRegisterAuthorizedRootPayload? = nil,
+    refreshAuthorizedRoot: HermesBridgeRefreshAuthorizedRootPayload? = nil,
+    deactivateAuthorizedRoot: HermesBridgeRootIDPayload? = nil,
+    reactivateAuthorizedRoot: HermesBridgeReactivateAuthorizedRootPayload? = nil,
+    removeAuthorizedRoot: HermesBridgeRootIDPayload? = nil,
+    authorizedRootStatus: HermesBridgeRootIDPayload? = nil,
+    createFileEventSubscription: HermesBridgeCreateFileEventSubscriptionPayload? = nil,
+    pollFileEventSubscription: HermesBridgePollFileEventSubscriptionPayload? = nil,
+    acknowledgeFileEventBatch: HermesBridgeAcknowledgeFileEventBatchPayload? = nil,
+    cancelFileEventSubscription: HermesBridgeCancelFileEventSubscriptionPayload? = nil
   ) {
     self.protocolVersion = protocolVersion
     self.correlationID = correlationID
@@ -242,6 +557,16 @@ public struct HermesBridgeRequestEnvelope: Codable, Equatable, Sendable {
     self.status = status
     self.cancel = cancel
     self.approvalResponse = approvalResponse
+    self.registerAuthorizedRoot = registerAuthorizedRoot
+    self.refreshAuthorizedRoot = refreshAuthorizedRoot
+    self.deactivateAuthorizedRoot = deactivateAuthorizedRoot
+    self.reactivateAuthorizedRoot = reactivateAuthorizedRoot
+    self.removeAuthorizedRoot = removeAuthorizedRoot
+    self.authorizedRootStatus = authorizedRootStatus
+    self.createFileEventSubscription = createFileEventSubscription
+    self.pollFileEventSubscription = pollFileEventSubscription
+    self.acknowledgeFileEventBatch = acknowledgeFileEventBatch
+    self.cancelFileEventSubscription = cancelFileEventSubscription
   }
 }
 
@@ -290,6 +615,18 @@ public enum HermesBridgeSuccessPayload: Codable, Equatable, Sendable {
   case protocolVersion(HermesBridgeProtocolVersionPayload)
   case capabilities(HermesBridgeCapabilitiesPayload)
   case listEnabledBindings(HermesBridgeBindingListPayload)
+  case listAuthorizedRoots(HermesBridgeAuthorizedRootListPayload)
+  case registerAuthorizedRoot(HermesBridgeAuthorizedRootPayload)
+  case refreshAuthorizedRoot(HermesBridgeAuthorizedRootPayload)
+  case deactivateAuthorizedRoot(HermesBridgeAuthorizedRootPayload)
+  case reactivateAuthorizedRoot(HermesBridgeAuthorizedRootPayload)
+  case removeAuthorizedRoot(HermesBridgeAuthorizedRootPayload)
+  case authorizedRootStatus(HermesBridgeAuthorizedRootStatusPayload)
+  case createFileEventSubscription(HermesBridgeFileEventSubscriptionPayload)
+  case pollFileEventSubscription(HermesBridgeFileEventBatchPayload)
+  case acknowledgeFileEventBatch(HermesBridgeAcknowledgementPayload)
+  case cancelFileEventSubscription(HermesBridgeFileEventSubscriptionPayload)
+  case fileEventMonitorStatus(HermesBridgeFileEventMonitorStatusPayload)
   case submit(HermesBridgeRequestIDPayload)
   case status(HermesBridgeRequestStatusPayload)
   case cancel(HermesBridgeRequestStatusPayload)

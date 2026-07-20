@@ -8,6 +8,7 @@ public enum HermesBridgeCompositionRootError: Error, Equatable, Sendable {
   case processConfigurationFailed(String)
   case stateStoreFailed(String)
   case bindingRegistryFailed(String)
+  case authorizedRootRegistryFailed(String)
 }
 
 public final class HermesBridgeCompositionRoot: @unchecked Sendable {
@@ -18,6 +19,8 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
   public let protocolFactory: HermesProtocolClientFactory
   public let stateStore: FileBackedHermesRequestStateStore
   public let bindingRegistry: ConfigurationBackedHermesRequestBindingRegistry
+  public let authorizedRootRegistry: FileBackedHermesAuthorizedRootRegistry
+  public let fileIntegration: HermesBridgeFileIntegrationCoordinator
   public let orchestrator: HermesRequestOrchestrator
   public let requestHandler: HermesBridgeServiceRequestHandler
   public let dispatcher: HermesBridgeXPCRequestDispatcher
@@ -57,6 +60,22 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
       throw HermesBridgeCompositionRootError.bindingRegistryFailed(Self.safeCode(for: error))
     }
 
+    do {
+      self.authorizedRootRegistry = try FileBackedHermesAuthorizedRootRegistry(
+        registryRoot: resolvedPaths.authorizedRootsRoot,
+        policy: HermesAuthorizedRootPolicy(permittedRootParents: [])
+      )
+    } catch {
+      throw HermesBridgeCompositionRootError.authorizedRootRegistryFailed(Self.safeCode(for: error))
+    }
+    self.fileIntegration = HermesBridgeFileIntegrationCoordinator(
+      registry: authorizedRootRegistry
+    )
+    let monitor = HermesFSEventsMonitor(registry: authorizedRootRegistry) {
+      [fileIntegration] batch in
+      await fileIntegration.ingest(batch: batch)
+    }
+
     let processConfiguration: HermesProcessConfiguration
     do {
       processConfiguration = try HermesProcessConfiguration(
@@ -81,13 +100,17 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
     )
     self.requestHandler = HermesBridgeServiceRequestHandler(
       orchestrator: orchestrator,
-      bindingRegistry: bindingRegistry
+      bindingRegistry: bindingRegistry,
+      fileIntegration: fileIntegration
     )
     self.dispatcher = HermesBridgeXPCRequestDispatcher(
       handler: requestHandler,
       maximumConcurrentRequests: configuration.maximumConcurrentXPCRequests
     )
     self.xpcService = HermesBridgeXPCService(dispatcher: dispatcher)
+    Task {
+      await fileIntegration.setMonitor(monitor)
+    }
   }
 
   public func shutdown() async throws {
@@ -103,6 +126,7 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
     }
     logger.log(.stopping)
     xpcService.invalidate()
+    await fileIntegration.shutdown()
     do {
       try await orchestrator.shutdown()
       logger.log(.stopped)
@@ -150,17 +174,120 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
 public struct HermesBridgeServiceRequestHandler: HermesBridgeRequestHandling {
   private let orchestrator: HermesRequestOrchestrator
   private let bindingRegistry: ConfigurationBackedHermesRequestBindingRegistry
+  private let fileIntegration: HermesBridgeFileIntegrationCoordinator
 
   public init(
     orchestrator: HermesRequestOrchestrator,
-    bindingRegistry: ConfigurationBackedHermesRequestBindingRegistry
+    bindingRegistry: ConfigurationBackedHermesRequestBindingRegistry,
+    fileIntegration: HermesBridgeFileIntegrationCoordinator
   ) {
     self.orchestrator = orchestrator
     self.bindingRegistry = bindingRegistry
+    self.fileIntegration = fileIntegration
   }
 
   public func listEnabledBindings() async throws -> [HermesBridgeBindingSummary] {
     try await bindingRegistry.listEnabledBindings()
+  }
+
+  public func listAuthorizedRoots() async throws -> HermesBridgeAuthorizedRootListPayload {
+    try await fileIntegration.listAuthorizedRoots()
+  }
+
+  public func registerAuthorizedRoot(
+    displayName: String,
+    bookmarkData: Data
+  ) async throws -> HermesBridgeAuthorizedRootPayload {
+    try await fileIntegration.registerAuthorizedRoot(
+      displayName: displayName,
+      bookmarkData: bookmarkData
+    )
+  }
+
+  public func refreshAuthorizedRoot(
+    rootID: HermesAuthorizedRootID,
+    bookmarkData: Data,
+    expectedRevision: Int?
+  ) async throws -> HermesBridgeAuthorizedRootPayload {
+    try await fileIntegration.refreshAuthorizedRoot(
+      rootID: rootID,
+      bookmarkData: bookmarkData,
+      expectedRevision: expectedRevision
+    )
+  }
+
+  public func deactivateAuthorizedRoot(
+    rootID: HermesAuthorizedRootID,
+    expectedRevision: Int?
+  ) async throws -> HermesBridgeAuthorizedRootPayload {
+    try await fileIntegration.deactivateAuthorizedRoot(
+      rootID: rootID,
+      expectedRevision: expectedRevision
+    )
+  }
+
+  public func reactivateAuthorizedRoot(
+    rootID: HermesAuthorizedRootID,
+    bookmarkData: Data,
+    expectedRevision: Int?
+  ) async throws -> HermesBridgeAuthorizedRootPayload {
+    try await fileIntegration.reactivateAuthorizedRoot(
+      rootID: rootID,
+      bookmarkData: bookmarkData,
+      expectedRevision: expectedRevision
+    )
+  }
+
+  public func removeAuthorizedRoot(
+    rootID: HermesAuthorizedRootID,
+    expectedRevision: Int?
+  ) async throws -> HermesBridgeAuthorizedRootPayload {
+    try await fileIntegration.removeAuthorizedRoot(
+      rootID: rootID,
+      expectedRevision: expectedRevision
+    )
+  }
+
+  public func authorizedRootStatus(rootID: HermesAuthorizedRootID) async throws
+    -> HermesBridgeAuthorizedRootStatusPayload
+  {
+    try await fileIntegration.authorizedRootStatus(rootID: rootID)
+  }
+
+  public func createFileEventSubscription(rootIDs: [HermesAuthorizedRootID]) async throws
+    -> HermesBridgeFileEventSubscriptionPayload
+  {
+    try await fileIntegration.createFileEventSubscription(rootIDs: rootIDs)
+  }
+
+  public func pollFileEventSubscription(
+    subscriptionID: HermesBridgeFileEventSubscriptionID,
+    timeoutMilliseconds: Int
+  ) async throws -> HermesBridgeFileEventBatchPayload {
+    try await fileIntegration.pollFileEventSubscription(
+      subscriptionID: subscriptionID,
+      timeoutMilliseconds: timeoutMilliseconds
+    )
+  }
+
+  public func acknowledgeFileEventBatch(
+    subscriptionID: HermesBridgeFileEventSubscriptionID,
+    acknowledgedEventID: UInt64
+  ) async throws -> HermesBridgeAcknowledgementPayload {
+    try await fileIntegration.acknowledgeFileEventBatch(
+      subscriptionID: subscriptionID,
+      acknowledgedEventID: acknowledgedEventID
+    )
+  }
+
+  public func cancelFileEventSubscription(
+    subscriptionID: HermesBridgeFileEventSubscriptionID
+  ) async throws -> HermesBridgeFileEventSubscriptionPayload {
+    try await fileIntegration.cancelFileEventSubscription(subscriptionID: subscriptionID)
+  }
+
+  public func fileEventMonitorStatus() async throws -> HermesBridgeFileEventMonitorStatusPayload {
+    try await fileIntegration.fileEventMonitorStatus()
   }
 
   public func submit(bindingID: HermesRequestBindingID, prompt: String) async throws

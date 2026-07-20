@@ -36,7 +36,7 @@ The current protocol version is:
 
 ```text
 major: 1
-minor: 1
+minor: 2
 ```
 
 The service rejects unsupported major versions before operation dispatch.
@@ -54,6 +54,8 @@ The confirmed capability set is:
 - `respondToApproval`
 - `protocolVersion`
 - `bindingDiscovery`
+- `authorizedRootManagement`
+- `fileEventObservation`
 
 The service does not advertise or accept generic execution, generic JSON-RPC,
 generic HTTP, filesystem path, process, browser, GUI, AppleScript, JXA, or shell
@@ -77,6 +79,18 @@ Supported operations are:
 - `cancel`: request ID.
 - `approvalResponse`: request ID and confirmed approval decision.
 - `listEnabledBindings`: no payload.
+- `listAuthorizedRoots`: no payload.
+- `registerAuthorizedRoot`: display name and bounded bookmark data.
+- `refreshAuthorizedRoot`: root ID, bounded bookmark data, optional expected revision.
+- `deactivateAuthorizedRoot`: root ID and optional expected revision.
+- `reactivateAuthorizedRoot`: root ID, bounded bookmark data, optional expected revision.
+- `removeAuthorizedRoot`: root ID and optional expected revision.
+- `authorizedRootStatus`: root ID.
+- `createFileEventSubscription`: selected authorized root IDs.
+- `pollFileEventSubscription`: subscription ID and bounded timeout.
+- `acknowledgeFileEventBatch`: subscription ID and delivered event cursor.
+- `cancelFileEventSubscription`: subscription ID.
+- `fileEventMonitorStatus`: no payload.
 
 The envelope contains no arbitrary dictionaries and no generic JSON blob field.
 Payloads are Swift `Codable` types with fixed fields. Unknown operation strings
@@ -99,6 +113,10 @@ Success payloads are limited to:
 - redacted cancellation status summary;
 - redacted approval-response status summary.
 - enabled binding summaries.
+- authorized-root summaries.
+- file-event subscription status.
+- bounded file-event batches.
+- file-event acknowledgement summaries.
 
 Status summaries include request ID, binding ID, lifecycle state, cancellation
 flag, result availability, and redacted failure code/retryability. They do not
@@ -111,6 +129,17 @@ state. They do not include executable paths, process arguments, endpoints,
 backend tokens, JSON-RPC methods, environments, result locators, prompts, raw
 result bodies, or private filesystem paths.
 
+Authorized-root summaries include root ID, display name, active state, stale
+authorization state, security-scope status, last observed event ID, revision,
+and safe root-kind metadata. They do not include absolute resolved paths,
+bookmark data, file contents, volume-private identifiers, prompts, tokens, or
+private filesystem paths.
+
+File-event summaries include only root ID, root-relative path, event kind,
+event ID, directory hint, bounded flags, and replay state. File-event batch
+payloads include subscription ID, root ID, bounded events, newest event ID,
+history/replay markers, rescan-required state, and a safe dropped-event reason.
+
 ## Size Limits
 
 The shared protocol limits are:
@@ -120,6 +149,9 @@ maximum envelope: 128 KiB
 maximum transient prompt: 64 KiB
 maximum correlation ID: 128 characters
 maximum Mach service name: 255 characters
+maximum XPC bookmark payload: 80 KiB
+maximum XPC file-event batch: 64 KiB
+maximum XPC file-event count: 128
 ```
 
 The service rejects oversized envelopes before decoding. It rejects oversized
@@ -134,16 +166,31 @@ Caller-facing XPC errors are typed as `HermesBridgeXPCError`:
 - `malformedPayload`
 - `oversizedPayload`
 - `unsupportedOperation`
+- `unsupportedCapability`
 - `invalidBinding`
 - `requestNotFound`
 - `invalidState`
 - `serviceUnavailable`
+- `rootNotFound`
+- `rootInactive`
+- `invalidBookmark`
+- `bookmarkTooLarge`
+- `staleAuthorization`
+- `securityScopeUnavailable`
+- `subscriptionNotFound`
+- `subscriptionExpired`
+- `acknowledgementRejected`
+- `eventBufferOverflow`
+- `rescanRequired`
 - `internalFailure`
 
 The service maps `HermesRequestOrchestratorError` into this set and emits fixed
 safe messages. It does not propagate raw `NSError`, process, WebSocket,
 filesystem, backend token, prompt, stdout, stderr, or diagnostic descriptions
 through XPC.
+
+File-integration errors are similarly redacted. Raw bookmark, filesystem, and
+FSEvents error descriptions are mapped to typed safe codes.
 
 ## Service Dispatch
 
@@ -170,12 +217,48 @@ performs protocol-version negotiation, queries capabilities, and exposes only:
 - `cancel(requestID:)`
 - `respondToApproval(requestID:decision:)`
 - `listEnabledBindings()`
+- `listAuthorizedRoots()`
+- `registerAuthorizedRoot(displayName:bookmarkData:)`
+- `refreshAuthorizedRoot(rootID:bookmarkData:expectedRevision:)`
+- `deactivateAuthorizedRoot(rootID:expectedRevision:)`
+- `reactivateAuthorizedRoot(rootID:bookmarkData:expectedRevision:)`
+- `removeAuthorizedRoot(rootID:expectedRevision:)`
+- `authorizedRootStatus(rootID:)`
+- `createFileEventSubscription(rootIDs:)`
+- `pollFileEventSubscription(subscriptionID:timeoutMilliseconds:)`
+- `acknowledgeFileEventBatch(subscriptionID:acknowledgedEventID:)`
+- `cancelFileEventSubscription(subscriptionID:)`
+- `fileEventMonitorStatus()`
 - `close()`
 
 The public client API does not expose raw `Data`, arbitrary operation names, or
 generic request methods. Raw transport is confined to internal adapters.
 Timeouts are enforced by the client. Interruption and invalidation are surfaced
 as typed client errors. Repeated `close()` calls are idempotent.
+
+`HermesBridgeFileIntegrationAppAdapter` prepares future app UI code for
+authorized-root list, bookmark registration, and event-status display. The
+future `NSOpenPanel` bookmark creation flow remains a separate user
+authorization issue.
+
+## File-Event Subscription Semantics
+
+The Bridge composition root installs a narrow file-integration coordinator over
+the authorized-root registry and FSEvents monitor. The coordinator owns
+generated subscription IDs, verifies selected root IDs, starts/stops monitor
+lifecycle, normalizes monitor batches into XPC summaries, and performs shutdown
+cleanup. It does not submit file events to Hermes prompts.
+
+The broker keeps separate observed, delivered, and acknowledged cursors. The
+acknowledged cursor advances only after `acknowledgeFileEventBatch`. Duplicate
+acknowledgements at or behind the acknowledged cursor are idempotent; cursors
+beyond the delivered cursor are rejected.
+
+Polling is bounded by timeout and response size. Slow consumers are handled by
+bounded pending queues; overflow drops retained batches and emits
+`rescanRequired` with a safe dropped-event reason rather than growing memory.
+Replay and history-done states are explicit. When retained history is
+unavailable, clients must rescan and the service does not imply lossless replay.
 
 ## App Intent Handoff Model
 
@@ -202,6 +285,8 @@ The XPC boundary never exposes:
 - Keychain content;
 - prompt echoes in errors;
 - arbitrary filesystem paths;
+- file contents;
+- bookmark data in responses;
 - generic AppleScript, JXA, shell, GUI, browser, or remote-control APIs.
 
 All backend execution remains behind `HermesRequestOrchestrator`,
