@@ -199,6 +199,7 @@ public struct HermesBridgeMenuBarState: Codable, Equatable, Sendable {
   public var protocolCompatible: Bool
   public var protocolVersion: String?
   public var capabilities: [String]
+  public var realBackendCompatibility: HermesMenuBarRealBackendCompatibilityViewState?
   public var enabledBindingCount: Int
   public var recentRequests: [HermesBridgeMenuBarRequestSummary]
   public var permissionChecks: [HermesMenuBarPermissionCheckViewState]
@@ -225,6 +226,7 @@ public struct HermesBridgeMenuBarState: Codable, Equatable, Sendable {
     protocolCompatible: Bool = false,
     protocolVersion: String? = nil,
     capabilities: [String] = [],
+    realBackendCompatibility: HermesMenuBarRealBackendCompatibilityViewState? = nil,
     enabledBindingCount: Int = 0,
     recentRequests: [HermesBridgeMenuBarRequestSummary] = [],
     permissionChecks: [HermesMenuBarPermissionCheckViewState] = [],
@@ -250,6 +252,7 @@ public struct HermesBridgeMenuBarState: Codable, Equatable, Sendable {
     self.protocolCompatible = protocolCompatible
     self.protocolVersion = protocolVersion
     self.capabilities = capabilities.sorted()
+    self.realBackendCompatibility = realBackendCompatibility
     self.enabledBindingCount = min(
       max(0, enabledBindingCount), HermesBridgeBindingSummary.maximumCount)
     self.recentRequests = Array(recentRequests.prefix(8))
@@ -268,6 +271,28 @@ public struct HermesBridgeMenuBarState: Codable, Equatable, Sendable {
     self.approvalInboxUnavailable = approvalInboxUnavailable
     self.serviceDegraded = serviceDegraded
     self.lastActionMessage = lastActionMessage.map { String($0.prefix(120)) }
+  }
+}
+
+public struct HermesMenuBarRealBackendCompatibilityViewState: Codable, Equatable, Sendable {
+  public let executableAvailable: Bool
+  public let version: String?
+  public let compatibilityState: String
+  public let capabilities: [String]
+  public let checksumPrefix: String?
+  public let codeSigningClassification: String
+  public let lastProbeTimestamp: Date
+  public let remediationCode: String
+
+  public init(report: HermesBackendCompatibilityReport) {
+    self.executableAvailable = report.executableAvailable
+    self.version = report.version
+    self.compatibilityState = report.compatibilityState.rawValue
+    self.capabilities = report.capabilities
+    self.checksumPrefix = report.checksumPrefix
+    self.codeSigningClassification = report.codeSigningClassification
+    self.lastProbeTimestamp = report.lastProbeTimestamp
+    self.remediationCode = report.remediationCode
   }
 }
 
@@ -1450,7 +1475,8 @@ public actor HermesBridgeMenuBarViewModel {
       serviceStatus: menuStatus(for: serviceStatus),
       installed: serviceStatus != .notInstalled,
       running: [.starting, .runningHealthy, .runningUnhealthy].contains(serviceStatus),
-      healthy: serviceStatus == .runningHealthy
+      healthy: serviceStatus == .runningHealthy,
+      realBackendCompatibility: safeRealBackendCompatibility()
     )
     guard next.running else {
       state = next
@@ -1507,6 +1533,19 @@ public actor HermesBridgeMenuBarViewModel {
       next.serviceStatus = .unavailable
       state = next
     }
+  }
+
+  private func safeRealBackendCompatibility()
+    -> HermesMenuBarRealBackendCompatibilityViewState?
+  {
+    let reportURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+      .appendingPathComponent("artifacts/m9-001/compatibility-report.json")
+    guard let data = try? Data(contentsOf: reportURL),
+      let report = try? JSONDecoder().decode(HermesBackendCompatibilityReport.self, from: data)
+    else {
+      return HermesMenuBarRealBackendCompatibilityViewState(report: .unavailable())
+    }
+    return HermesMenuBarRealBackendCompatibilityViewState(report: report)
   }
 
   private func applyApprovals(_ approvals: [HermesBridgeEventPolicyApprovalSummary]) {
