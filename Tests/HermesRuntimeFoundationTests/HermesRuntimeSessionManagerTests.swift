@@ -4,6 +4,157 @@ import XCTest
 @testable import HermesRuntimeFoundation
 
 final class HermesRuntimeSessionManagerTests: XCTestCase {
+  func testEventBusPublishesAndReceivesEvent() async throws {
+    let eventBus = HermesRuntimeEventBus(
+      subscriptionIDFactory: {
+        UUID(uuidString: "20000000-0000-0000-0000-000000000001")!
+      }
+    )
+    let subscription = eventBus.subscribe()
+    var iterator = subscription.events.makeAsyncIterator()
+    let sessionID = UUID(uuidString: "10000000-0000-0000-0000-000000000101")!
+
+    eventBus.publish(
+      HermesRuntimeEvent(
+        kind: .sessionCreated,
+        session: HermesRuntimeEventSessionSummary(snapshot: Self.createdSnapshot(sessionID: sessionID))
+      )
+    )
+
+    let event = try await nextEvent(from: &iterator)
+    XCTAssertEqual(event.kind, .sessionCreated)
+    XCTAssertEqual(event.sequenceNumber, 1)
+    XCTAssertEqual(event.session.sessionID, sessionID)
+  }
+
+  func testEventBusDeliversToMultipleSubscribers() async throws {
+    let eventBus = HermesRuntimeEventBus()
+    let first = eventBus.subscribe()
+    let second = eventBus.subscribe()
+    var firstIterator = first.events.makeAsyncIterator()
+    var secondIterator = second.events.makeAsyncIterator()
+
+    eventBus.publish(
+      HermesRuntimeEvent(
+        kind: .sessionCreated,
+        session: HermesRuntimeEventSessionSummary(
+          snapshot: Self.createdSnapshot(
+            sessionID: UUID(uuidString: "10000000-0000-0000-0000-000000000102")!
+          )
+        )
+      )
+    )
+
+    let firstEvent = try await nextEvent(from: &firstIterator)
+    let secondEvent = try await nextEvent(from: &secondIterator)
+    XCTAssertEqual(firstEvent.kind, .sessionCreated)
+    XCTAssertEqual(secondEvent.kind, .sessionCreated)
+  }
+
+  func testEventBusUnsubscribeStopsDeliveryAndReleasesSubscription() async throws {
+    let eventBus = HermesRuntimeEventBus()
+    let subscription = eventBus.subscribe()
+    var iterator = subscription.events.makeAsyncIterator()
+
+    eventBus.unsubscribe(subscription.id)
+
+    let event = try await nextOptionalEvent(from: &iterator)
+    XCTAssertNil(event)
+    XCTAssertEqual(eventBus.subscriberCount(), 0)
+  }
+
+  func testSessionLifecyclePublishesOrderedEvents() async throws {
+    let sessionID = UUID(uuidString: "10000000-0000-0000-0000-000000000103")!
+    let eventBus = HermesRuntimeEventBus()
+    let subscription = eventBus.subscribe()
+    var iterator = subscription.events.makeAsyncIterator()
+    let backend = FakeRuntimeBackend(startResult: .success(Self.startResult()))
+    let manager = manager(sessionIDs: [sessionID], backends: [backend], eventBus: eventBus)
+
+    _ = manager.createSession()
+    _ = try await manager.startSession(sessionID)
+    _ = try await manager.stopSession(sessionID)
+
+    let events = try await nextEvents(count: 5, from: &iterator)
+    XCTAssertEqual(
+      events.map(\.kind),
+      [.sessionCreated, .sessionStarting, .sessionRunning, .sessionStopping, .sessionStopped]
+    )
+    XCTAssertEqual(events.map(\.sequenceNumber), [1, 2, 3, 4, 5])
+    XCTAssertEqual(events.map(\.session.currentStatus), [.created, .starting, .running, .stopping, .stopped])
+  }
+
+  func testSessionHealthChangePublishesEvent() async throws {
+    let sessionID = UUID(uuidString: "10000000-0000-0000-0000-000000000104")!
+    let eventBus = HermesRuntimeEventBus()
+    let subscription = eventBus.subscribe()
+    var iterator = subscription.events.makeAsyncIterator()
+    let backend = FakeRuntimeBackend(
+      startResult: .success(Self.startResult()),
+      healthResults: [
+        .success(Self.healthSnapshot(status: Self.status(gatewayRunning: false)))
+      ]
+    )
+    let manager = manager(sessionIDs: [sessionID], backends: [backend], eventBus: eventBus)
+    _ = manager.createSession()
+    _ = try await manager.startSession(sessionID)
+
+    _ = try await manager.refreshSessionStatus(sessionID)
+
+    let events = try await nextEvents(count: 4, from: &iterator)
+    XCTAssertEqual(events.map(\.kind), [.sessionCreated, .sessionStarting, .sessionRunning, .sessionHealthChanged])
+    XCTAssertEqual(events.last?.session.currentStatus, .degraded)
+  }
+
+  func testSessionStartFailurePublishesRedactedFailureEvent() async throws {
+    let sessionID = UUID(uuidString: "10000000-0000-0000-0000-000000000105")!
+    let eventBus = HermesRuntimeEventBus()
+    let subscription = eventBus.subscribe()
+    var iterator = subscription.events.makeAsyncIterator()
+    let backend = FakeRuntimeBackend(
+      startResult: .failure(
+        HermesBackendAdapterError.startupFailed(
+          "token=start-secret failed at /Users/example/private/hermes"
+        )
+      )
+    )
+    let manager = manager(sessionIDs: [sessionID], backends: [backend], eventBus: eventBus)
+    _ = manager.createSession()
+
+    await XCTAssertThrowsAsyncError(try await manager.startSession(sessionID))
+
+    let events = try await nextEvents(count: 3, from: &iterator)
+    XCTAssertEqual(events.map(\.kind), [.sessionCreated, .sessionStarting, .sessionFailed])
+    XCTAssertEqual(events.last?.session.currentStatus, .failed)
+    XCTAssertEqual(events.last?.session.shutdownReason, .startupFailed)
+    XCTAssertFalse(events.last?.description.contains("start-secret") ?? true)
+    XCTAssertFalse(events.last?.description.contains("/Users/example/private/hermes") ?? true)
+  }
+
+  func testSessionStopFailurePublishesFailureEvent() async throws {
+    let sessionID = UUID(uuidString: "10000000-0000-0000-0000-000000000106")!
+    let eventBus = HermesRuntimeEventBus()
+    let subscription = eventBus.subscribe()
+    var iterator = subscription.events.makeAsyncIterator()
+    let backend = FakeRuntimeBackend(
+      startResult: .success(Self.startResult()),
+      stopResult: .failure(HermesBackendAdapterError.shutdownFailed("forced stop failed"))
+    )
+    let manager = manager(sessionIDs: [sessionID], backends: [backend], eventBus: eventBus)
+    _ = manager.createSession()
+    _ = try await manager.startSession(sessionID)
+
+    await XCTAssertThrowsAsyncError(try await manager.stopSession(sessionID))
+
+    let events = try await nextEvents(count: 5, from: &iterator)
+    XCTAssertEqual(
+      events.map(\.kind),
+      [.sessionCreated, .sessionStarting, .sessionRunning, .sessionStopping, .sessionFailed]
+    )
+    XCTAssertEqual(events.last?.session.currentStatus, .failed)
+    XCTAssertEqual(events.last?.session.shutdownReason, .shutdownFailed)
+  }
+
   func testCreateSessionStoresTypedCreatedSnapshot() throws {
     let sessionID = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!
     let manager = manager(sessionIDs: [sessionID])
@@ -173,7 +324,8 @@ final class HermesRuntimeSessionManagerTests: XCTestCase {
   private func manager(
     sessionIDs: [UUID],
     backends: [FakeRuntimeBackend] = [FakeRuntimeBackend(startResult: .success(startResult()))],
-    dates: [Date] = [Date(timeIntervalSince1970: 1_700_000_001)]
+    dates: [Date] = [Date(timeIntervalSince1970: 1_700_000_001)],
+    eventBus: HermesRuntimeEventBus = HermesRuntimeEventBus()
   ) -> HermesRuntimeSessionManager {
     let backendBox = LockedTestValues(backends)
     let sessionIDBox = LockedTestValues(sessionIDs)
@@ -181,7 +333,21 @@ final class HermesRuntimeSessionManagerTests: XCTestCase {
     return HermesRuntimeSessionManager(
       backendFactory: { backendBox.next() },
       sessionIDFactory: { sessionIDBox.next() },
-      clock: { dateBox.next() }
+      clock: { dateBox.next() },
+      eventBus: eventBus
+    )
+  }
+
+  private static func createdSnapshot(sessionID: UUID) -> HermesRuntimeSessionSnapshot {
+    HermesRuntimeSessionSnapshot(
+      sessionID: sessionID,
+      backendIdentity: nil,
+      processIdentity: nil,
+      startTime: nil,
+      currentStatus: .created,
+      capabilities: nil,
+      lastError: nil,
+      shutdownReason: nil
     )
   }
 
@@ -269,6 +435,7 @@ final class HermesRuntimeSessionManagerTests: XCTestCase {
 private final class FakeRuntimeBackend: HermesBackendAdapting, @unchecked Sendable {
   private let lock = NSLock()
   private let startResult: Result<HermesBackendStartResult, Error>
+  private let stopResult: Result<HermesBackendStopResult, Error>
   private var healthResults: [Result<HermesBackendHealthSnapshot, Error>]
   private(set) var startCallCount = 0
   private(set) var stopCallCount = 0
@@ -276,9 +443,20 @@ private final class FakeRuntimeBackend: HermesBackendAdapting, @unchecked Sendab
 
   init(
     startResult: Result<HermesBackendStartResult, Error>,
+    stopResult: Result<HermesBackendStopResult, Error> = .success(
+      HermesBackendStopResult(
+        processStop: HermesProcessStopResult(
+          exitStatus: 0,
+          output: emptyOutputSnapshot(),
+          escapedDescendants: []
+        ),
+        protocolState: .closed
+      )
+    ),
     healthResults: [Result<HermesBackendHealthSnapshot, Error>] = []
   ) {
     self.startResult = startResult
+    self.stopResult = stopResult
     self.healthResults = healthResults
   }
 
@@ -297,14 +475,7 @@ private final class FakeRuntimeBackend: HermesBackendAdapting, @unchecked Sendab
     lock.withLock {
       stopCallCount += 1
     }
-    return HermesBackendStopResult(
-      processStop: HermesProcessStopResult(
-        exitStatus: 0,
-        output: emptyOutputSnapshot(),
-        escapedDescendants: []
-      ),
-      protocolState: .closed
-    )
+    return try stopResult.get()
   }
 
   func health() async throws -> HermesBackendHealthSnapshot {
@@ -355,4 +526,44 @@ private func XCTAssertThrowsAsyncError<T>(
   } catch {
     errorHandler(error)
   }
+}
+
+private func nextEvents(
+  count: Int,
+  from iterator: inout AsyncStream<HermesRuntimeEvent>.Iterator,
+  file: StaticString = #filePath,
+  line: UInt = #line
+) async throws -> [HermesRuntimeEvent] {
+  var events: [HermesRuntimeEvent] = []
+  for _ in 0..<count {
+    guard let event = try await nextOptionalEvent(from: &iterator, file: file, line: line) else {
+      XCTFail("expected event", file: file, line: line)
+      break
+    }
+    events.append(event)
+  }
+  return events
+}
+
+private func nextEvent(
+  from iterator: inout AsyncStream<HermesRuntimeEvent>.Iterator,
+  file: StaticString = #filePath,
+  line: UInt = #line
+) async throws -> HermesRuntimeEvent {
+  guard let event = try await nextOptionalEvent(from: &iterator, file: file, line: line) else {
+    throw EventBusTestError.streamFinished
+  }
+  return event
+}
+
+private func nextOptionalEvent(
+  from iterator: inout AsyncStream<HermesRuntimeEvent>.Iterator,
+  file: StaticString = #filePath,
+  line: UInt = #line
+) async throws -> HermesRuntimeEvent? {
+  await iterator.next()
+}
+
+private enum EventBusTestError: Error {
+  case streamFinished
 }
