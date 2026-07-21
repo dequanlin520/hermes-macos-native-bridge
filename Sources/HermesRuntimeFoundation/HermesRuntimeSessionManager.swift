@@ -22,17 +22,20 @@ public final class HermesRuntimeSessionManager: @unchecked Sendable {
   private let backendFactory: BackendFactory
   private let sessionIDFactory: SessionIDFactory
   private let clock: Clock
+  public let eventBus: HermesRuntimeEventBus
   private let lock = NSLock()
   private var sessions: [UUID: HermesRuntimeSession] = [:]
 
   public init(
     backendFactory: @escaping BackendFactory,
     sessionIDFactory: @escaping SessionIDFactory = UUID.init,
-    clock: @escaping Clock = Date.init
+    clock: @escaping Clock = Date.init,
+    eventBus: HermesRuntimeEventBus = HermesRuntimeEventBus()
   ) {
     self.backendFactory = backendFactory
     self.sessionIDFactory = sessionIDFactory
     self.clock = clock
+    self.eventBus = eventBus
   }
 
   @discardableResult
@@ -46,12 +49,34 @@ public final class HermesRuntimeSessionManager: @unchecked Sendable {
     lock.withLock {
       sessions[sessionID] = session
     }
-    return session.snapshot()
+    let snapshot = session.snapshot()
+    publish(.sessionCreated, snapshot: snapshot)
+    return snapshot
   }
 
   @discardableResult
   public func startSession(_ sessionID: UUID) async throws -> HermesRuntimeSessionSnapshot {
-    try await session(for: sessionID).start()
+    let session = try session(for: sessionID)
+    let beforeStart = session.snapshot()
+    if beforeStart.currentStatus == .created {
+      publish(.sessionStarting, snapshot: beforeStart, currentStatus: .starting)
+    }
+
+    do {
+      let snapshot = try await session.start()
+      if snapshot.currentStatus == .running {
+        publish(.sessionRunning, snapshot: snapshot)
+      } else if snapshot.currentStatus == .degraded {
+        publish(.sessionHealthChanged, snapshot: snapshot)
+      }
+      return snapshot
+    } catch {
+      let snapshot = session.snapshot()
+      if snapshot.currentStatus == .failed {
+        publish(.sessionFailed, snapshot: snapshot)
+      }
+      throw error
+    }
   }
 
   public func getSession(_ sessionID: UUID) throws -> HermesRuntimeSessionSnapshot {
@@ -66,7 +91,20 @@ public final class HermesRuntimeSessionManager: @unchecked Sendable {
 
   @discardableResult
   public func refreshSessionStatus(_ sessionID: UUID) async throws -> HermesRuntimeSessionSnapshot {
-    try await session(for: sessionID).refreshStatus()
+    let session = try session(for: sessionID)
+    do {
+      let snapshot = try await session.refreshStatus()
+      publish(.sessionHealthChanged, snapshot: snapshot)
+      return snapshot
+    } catch {
+      let snapshot = session.snapshot()
+      if snapshot.currentStatus == .degraded {
+        publish(.sessionHealthChanged, snapshot: snapshot)
+      } else if snapshot.currentStatus == .failed {
+        publish(.sessionFailed, snapshot: snapshot)
+      }
+      throw error
+    }
   }
 
   @discardableResult
@@ -74,7 +112,28 @@ public final class HermesRuntimeSessionManager: @unchecked Sendable {
     _ sessionID: UUID,
     reason: HermesRuntimeSessionShutdownReason = .requested
   ) async throws -> HermesRuntimeSessionSnapshot {
-    try await session(for: sessionID).stop(reason: reason)
+    let session = try session(for: sessionID)
+    let beforeStop = session.snapshot()
+    switch beforeStop.currentStatus {
+    case .running, .degraded, .starting, .stopping:
+      publish(.sessionStopping, snapshot: beforeStop, currentStatus: .stopping)
+    case .created, .failed, .stopped:
+      break
+    }
+
+    do {
+      let snapshot = try await session.stop(reason: reason)
+      if snapshot.currentStatus == .stopped {
+        publish(.sessionStopped, snapshot: snapshot)
+      }
+      return snapshot
+    } catch {
+      let snapshot = session.snapshot()
+      if snapshot.currentStatus == .failed {
+        publish(.sessionFailed, snapshot: snapshot)
+      }
+      throw error
+    }
   }
 
   @discardableResult
@@ -95,5 +154,21 @@ public final class HermesRuntimeSessionManager: @unchecked Sendable {
       throw HermesRuntimeSessionManagerError.sessionNotFound(sessionID)
     }
     return session
+  }
+
+  private func publish(
+    _ kind: HermesRuntimeEventKind,
+    snapshot: HermesRuntimeSessionSnapshot,
+    currentStatus: HermesRuntimeSessionStatus? = nil
+  ) {
+    eventBus.publish(
+      HermesRuntimeEvent(
+        kind: kind,
+        session: HermesRuntimeEventSessionSummary(
+          snapshot: snapshot,
+          currentStatus: currentStatus
+        )
+      )
+    )
   }
 }
