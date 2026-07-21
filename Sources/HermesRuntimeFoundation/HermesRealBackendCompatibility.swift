@@ -365,6 +365,7 @@ public struct HermesBackendDiscovery: Sendable {
 public struct HermesIsolatedBackendEnvironment: Codable, Equatable, Sendable {
   public let root: String
   public let home: String
+  public let hermesHome: String
   public let xdgConfigHome: String
   public let xdgCacheHome: String
   public let xdgStateHome: String
@@ -376,11 +377,12 @@ public struct HermesIsolatedBackendEnvironment: Codable, Equatable, Sendable {
   public init(artifactRoot: URL, realHome: URL = FileManager.default.homeDirectoryForCurrentUser) throws {
     let rootURL = artifactRoot.appendingPathComponent("runtime", isDirectory: true).standardizedFileURL
     let homeURL = rootURL.appendingPathComponent("home", isDirectory: true)
+    let hermesHomeURL = rootURL.appendingPathComponent("hermes-home", isDirectory: true)
     let configURL = rootURL.appendingPathComponent("xdg-config", isDirectory: true)
     let cacheURL = rootURL.appendingPathComponent("xdg-cache", isDirectory: true)
     let stateURL = rootURL.appendingPathComponent("xdg-state", isDirectory: true)
     let tmpURL = rootURL.appendingPathComponent("tmp", isDirectory: true)
-    for url in [rootURL, homeURL, configURL, cacheURL, stateURL, tmpURL] {
+    for url in [rootURL, homeURL, hermesHomeURL, configURL, cacheURL, stateURL, tmpURL] {
       try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
       try FileManager.default.setAttributes([.posixPermissions: NSNumber(value: Int16(0o700))], ofItemAtPath: url.path)
     }
@@ -391,6 +393,7 @@ public struct HermesIsolatedBackendEnvironment: Codable, Equatable, Sendable {
     }
     self.root = "artifacts/m9-001/runtime"
     self.home = "artifacts/m9-001/runtime/home"
+    self.hermesHome = "artifacts/m9-001/runtime/hermes-home"
     self.xdgConfigHome = "artifacts/m9-001/runtime/xdg-config"
     self.xdgCacheHome = "artifacts/m9-001/runtime/xdg-cache"
     self.xdgStateHome = "artifacts/m9-001/runtime/xdg-state"
@@ -403,12 +406,28 @@ public struct HermesIsolatedBackendEnvironment: Codable, Equatable, Sendable {
   public var processEnvironment: [String: String] {
     [
       "HOME": home,
+      "HERMES_HOME": hermesHome,
       "XDG_CONFIG_HOME": xdgConfigHome,
       "XDG_CACHE_HOME": xdgCacheHome,
       "XDG_STATE_HOME": xdgStateHome,
       "TMPDIR": tmpdir,
       "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
       "LANG": "C",
+      "LC_ALL": "C",
+    ]
+  }
+
+  public static func processEnvironment(runtimeRoot: URL) -> [String: String] {
+    [
+      "HOME": runtimeRoot.appendingPathComponent("home", isDirectory: true).path,
+      "HERMES_HOME": runtimeRoot.appendingPathComponent("hermes-home", isDirectory: true).path,
+      "XDG_CONFIG_HOME": runtimeRoot.appendingPathComponent("xdg-config", isDirectory: true).path,
+      "XDG_CACHE_HOME": runtimeRoot.appendingPathComponent("xdg-cache", isDirectory: true).path,
+      "XDG_STATE_HOME": runtimeRoot.appendingPathComponent("xdg-state", isDirectory: true).path,
+      "TMPDIR": runtimeRoot.appendingPathComponent("tmp", isDirectory: true).path,
+      "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+      "LANG": "C",
+      "LC_ALL": "C",
     ]
   }
 }
@@ -420,6 +439,106 @@ public struct HermesRealBackendCleanupReport: Codable, Equatable, Sendable {
   public let controlledEscalationUsed: Bool
   public let broadProcessTerminationUsed: Bool
   public let residualProcess: Bool
+}
+
+public struct HermesRealProfileMetadataSnapshot: Equatable, Sendable {
+  public let inode: UInt64
+  public let fileType: UInt16
+  public let posixMode: UInt16
+  public let ownerID: UInt32
+  public let groupID: UInt32
+  public let size: Int64
+  public let modificationTime: TimeInterval
+  public let changeTime: TimeInterval
+  public let birthTime: TimeInterval?
+  public let accessTime: TimeInterval
+
+  public init(
+    inode: UInt64,
+    fileType: UInt16,
+    posixMode: UInt16,
+    ownerID: UInt32,
+    groupID: UInt32,
+    size: Int64,
+    modificationTime: TimeInterval,
+    changeTime: TimeInterval,
+    birthTime: TimeInterval?,
+    accessTime: TimeInterval
+  ) {
+    self.inode = inode
+    self.fileType = fileType
+    self.posixMode = posixMode
+    self.ownerID = ownerID
+    self.groupID = groupID
+    self.size = size
+    self.modificationTime = modificationTime
+    self.changeTime = changeTime
+    self.birthTime = birthTime
+    self.accessTime = accessTime
+  }
+
+  public var substantiveFields: [String] {
+    [
+      String(inode),
+      String(fileType),
+      String(posixMode),
+      String(ownerID),
+      String(groupID),
+      String(size),
+      String(modificationTime),
+      String(changeTime),
+      birthTime.map { String($0) } ?? "birthtime-unavailable",
+    ]
+  }
+}
+
+public struct HermesRealProfileMetadataPair: Equatable, Sendable {
+  public let profile: HermesRealProfileMetadataSnapshot?
+  public let parentEntry: HermesRealProfileMetadataSnapshot?
+
+  public init(
+    profile: HermesRealProfileMetadataSnapshot?,
+    parentEntry: HermesRealProfileMetadataSnapshot?
+  ) {
+    self.profile = profile
+    self.parentEntry = parentEntry
+  }
+
+  public func substantiveMetadataChanged(comparedTo before: Self) -> Bool {
+    profile?.substantiveFields != before.profile?.substantiveFields ||
+      parentEntry?.substantiveFields != before.parentEntry?.substantiveFields
+  }
+
+  public func accessTimeChanged(comparedTo before: Self) -> Bool {
+    profile?.accessTime != before.profile?.accessTime ||
+      parentEntry?.accessTime != before.parentEntry?.accessTime
+  }
+
+  public static func capture(realHome: URL) -> Self {
+    let profile = realHome.appendingPathComponent(".hermes", isDirectory: true)
+    return Self(profile: snapshot(url: profile), parentEntry: snapshot(url: profile))
+  }
+
+  private static func snapshot(url: URL) -> HermesRealProfileMetadataSnapshot? {
+    var value = stat()
+    guard lstat(url.path, &value) == 0 else { return nil }
+    return HermesRealProfileMetadataSnapshot(
+      inode: UInt64(value.st_ino),
+      fileType: UInt16(value.st_mode & S_IFMT),
+      posixMode: UInt16(value.st_mode & 0o7777),
+      ownerID: value.st_uid,
+      groupID: value.st_gid,
+      size: Int64(value.st_size),
+      modificationTime: seconds(value.st_mtimespec),
+      changeTime: seconds(value.st_ctimespec),
+      birthTime: seconds(value.st_birthtimespec),
+      accessTime: seconds(value.st_atimespec)
+    )
+  }
+
+  private static func seconds(_ value: timespec) -> TimeInterval {
+    TimeInterval(value.tv_sec) + (TimeInterval(value.tv_nsec) / 1_000_000_000)
+  }
 }
 
 public struct HermesRealBackendSmokeTestRunner: Sendable {
@@ -447,16 +566,7 @@ public struct HermesRealBackendSmokeTestRunner: Sendable {
       allowedExecutableRoots: discovery.allowedExecutableRoots,
       timeoutSeconds: discovery.timeoutSeconds,
       outputLimitBytes: discovery.outputLimitBytes,
-      versionEnvironment: [
-        "HOME": runtimeRoot.appendingPathComponent("home", isDirectory: true).path,
-        "HERMES_HOME": runtimeRoot.appendingPathComponent("hermes-home", isDirectory: true).path,
-        "XDG_CONFIG_HOME": runtimeRoot.appendingPathComponent("xdg-config", isDirectory: true).path,
-        "XDG_CACHE_HOME": runtimeRoot.appendingPathComponent("xdg-cache", isDirectory: true).path,
-        "XDG_STATE_HOME": runtimeRoot.appendingPathComponent("xdg-state", isDirectory: true).path,
-        "TMPDIR": runtimeRoot.appendingPathComponent("tmp", isDirectory: true).path,
-        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
-        "LANG": "C",
-      ]
+      versionEnvironment: HermesIsolatedBackendEnvironment.processEnvironment(runtimeRoot: runtimeRoot)
     )
     let discovered = try isolatedDiscovery.discover()
     let capabilities = [HermesBackendCapability("version_output")]

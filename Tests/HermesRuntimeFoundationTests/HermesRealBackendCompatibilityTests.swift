@@ -171,6 +171,36 @@ final class HermesRealBackendCompatibilityTests: XCTestCase {
     }
   }
 
+  func testVersionProbeReceivesIsolatedHomeAndMinimalEnvironment() throws {
+    let executable = try fixtureExecutable(
+      name: "env-hermes",
+      body: """
+      printf 'Hermes Agent v0.18.2\\n'
+      printf 'HOME=%s\\n' "$HOME"
+      printf 'HERMES_HOME=%s\\n' "$HERMES_HOME"
+      printf 'PATH=%s\\n' "$PATH"
+      printf 'HERMES_TOKEN=%s\\n' "${HERMES_TOKEN-unset}"
+      printf 'AWS_SECRET_ACCESS_KEY=%s\\n' "${AWS_SECRET_ACCESS_KEY-unset}"
+      """
+    )
+    let runtimeRoot = temporaryDirectory
+      .appendingPathComponent("artifacts/m9-001/runtime", isDirectory: true)
+    let output = try HermesBackendDiscovery(
+      explicitExecutablePath: executable,
+      pathEnvironment: "",
+      knownExecutableLocations: [],
+      allowedExecutableRoots: [temporaryDirectory],
+      versionEnvironment: HermesIsolatedBackendEnvironment.processEnvironment(runtimeRoot: runtimeRoot)
+    ).discover().versionOutput
+
+    XCTAssertTrue(output.contains("HOME=\(runtimeRoot.appendingPathComponent("home").path)"))
+    XCTAssertTrue(output.contains("HERMES_HOME=\(runtimeRoot.appendingPathComponent("hermes-home").path)"))
+    XCTAssertTrue(output.contains("PATH=/usr/bin:/bin:/usr/sbin:/sbin"))
+    XCTAssertTrue(output.contains("HERMES_TOKEN=unset"))
+    XCTAssertTrue(output.contains("AWS_SECRET_ACCESS_KEY=unset"))
+    XCTAssertFalse(output.contains(FileManager.default.homeDirectoryForCurrentUser.path))
+  }
+
   func testIsolatedEnvironmentRootsAndRealProfileExclusion() throws {
     let environment = try HermesIsolatedBackendEnvironment(
       artifactRoot: temporaryDirectory.appendingPathComponent("artifacts/m9-001", isDirectory: true),
@@ -178,6 +208,7 @@ final class HermesRealBackendCompatibilityTests: XCTestCase {
     )
 
     XCTAssertTrue(environment.home.hasSuffix("runtime/home"))
+    XCTAssertTrue(environment.hermesHome.hasSuffix("runtime/hermes-home"))
     XCTAssertTrue(environment.xdgConfigHome.hasSuffix("runtime/xdg-config"))
     XCTAssertTrue(environment.xdgCacheHome.hasSuffix("runtime/xdg-cache"))
     XCTAssertTrue(environment.xdgStateHome.hasSuffix("runtime/xdg-state"))
@@ -185,7 +216,12 @@ final class HermesRealBackendCompatibilityTests: XCTestCase {
     XCTAssertTrue(environment.realHermesProfileExcluded)
     XCTAssertFalse(environment.keychainAccessed)
     XCTAssertFalse(environment.shellStartupFilesLoaded)
+    XCTAssertEqual(environment.processEnvironment["PATH"], "/usr/bin:/bin:/usr/sbin:/sbin")
+    XCTAssertEqual(environment.processEnvironment["LC_ALL"], "C")
+    XCTAssertEqual(environment.processEnvironment["HERMES_HOME"], "artifacts/m9-001/runtime/hermes-home")
     XCTAssertNil(environment.processEnvironment["HERMES_TOKEN"])
+    XCTAssertNil(environment.processEnvironment["SSH_AUTH_SOCK"])
+    XCTAssertNil(environment.processEnvironment["AWS_SECRET_ACCESS_KEY"])
   }
 
   func testFixedArgumentCatalogAndArbitraryArgumentRejection() throws {
@@ -257,6 +293,46 @@ final class HermesRealBackendCompatibilityTests: XCTestCase {
     XCTAssertFalse(cleanup.residualProcess)
   }
 
+  func testRealProfileMetadataAtimeOnlyChangeIsNotModification() throws {
+    let before = metadataPair()
+    let after = metadataPair(profile: metadataSnapshot(accessTime: 99), parent: metadataSnapshot(inode: 2, accessTime: 88))
+
+    XCTAssertTrue(after.accessTimeChanged(comparedTo: before))
+    XCTAssertFalse(after.substantiveMetadataChanged(comparedTo: before))
+  }
+
+  func testRealProfileMetadataSubstantiveChangesAreModification() throws {
+    assertSubstantiveChange(profile: metadataSnapshot(modificationTime: 2))
+    assertSubstantiveChange(profile: metadataSnapshot(changeTime: 3))
+    assertSubstantiveChange(profile: metadataSnapshot(inode: 42))
+    assertSubstantiveChange(profile: metadataSnapshot(posixMode: 0o755))
+    assertSubstantiveChange(profile: metadataSnapshot(ownerID: 501))
+    assertSubstantiveChange(profile: metadataSnapshot(groupID: 20))
+  }
+
+  func testIntegrationScriptUsesIsolatedEnvironmentAndRedactedProfileProofs() throws {
+    let source = try String(contentsOf: URL(fileURLWithPath: "Scripts/integration/m9-001-real-hermes-compatibility.zsh"))
+    let runtimeCreation = source.range(of: "mkdir -p \"$runtime_root/home\"")!.lowerBound
+    let versionProbe = source.range(of: "/usr/bin/env -i \"${safe_env[@]}\" \"$hermes_path\" --ignore-user-config --safe-mode version")!.lowerBound
+    let helpProbe = source.range(of: "/usr/bin/env -i \"${safe_env[@]}\" \"$hermes_path\" --ignore-user-config --safe-mode --help")!.lowerBound
+
+    XCTAssertLessThan(runtimeCreation, versionProbe)
+    XCTAssertLessThan(runtimeCreation, helpProbe)
+    XCTAssertTrue(source.contains("\"HERMES_HOME=$runtime_root/hermes-home\""))
+    XCTAssertTrue(source.contains("\"LC_ALL=C\""))
+    XCTAssertTrue(source.contains("REAL_PROFILE_ATIME_CHANGED=$real_profile_atime_changed"))
+    XCTAssertTrue(source.contains("REAL_PROFILE_SUBSTANTIVE_METADATA_CHANGED=$real_profile_substantive_metadata_changed"))
+    XCTAssertTrue(source.contains("VERSION_PROBE_ISOLATED=$version_probe_isolated"))
+    XCTAssertTrue(source.contains("HELP_PROBE_ISOLATED=$help_probe_isolated"))
+    XCTAssertTrue(source.contains("metadata_fingerprint atime"))
+    XCTAssertTrue(source.contains("metadata_fingerprint substantive"))
+    XCTAssertTrue(source.contains("parent-entry:%i:%HT:%p:%u:%g:%z:%m:%c:%B"))
+    XCTAssertFalse(source.contains("killall"))
+    XCTAssertFalse(source.contains("pkill"))
+    XCTAssertFalse(source.contains("find \"$HOME/.hermes\""))
+    XCTAssertTrue(source.contains("private_path_exposed=\"yes\""))
+  }
+
   private func fixtureExecutable(name: String, version: String) throws -> URL {
     try fixtureExecutable(name: name, body: "printf '\(version)\\n'\n")
   }
@@ -267,5 +343,53 @@ final class HermesRealBackendCompatibilityTests: XCTestCase {
     try ("#!/bin/sh\n" + body).write(to: url, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes([.posixPermissions: NSNumber(value: Int16(0o700))], ofItemAtPath: url.path)
     return url
+  }
+
+  private func metadataSnapshot(
+    inode: UInt64 = 1,
+    fileType: UInt16 = UInt16(S_IFDIR),
+    posixMode: UInt16 = 0o700,
+    ownerID: UInt32 = 1,
+    groupID: UInt32 = 1,
+    size: Int64 = 64,
+    modificationTime: TimeInterval = 1,
+    changeTime: TimeInterval = 1,
+    birthTime: TimeInterval? = 1,
+    accessTime: TimeInterval = 1
+  ) -> HermesRealProfileMetadataSnapshot {
+    HermesRealProfileMetadataSnapshot(
+      inode: inode,
+      fileType: fileType,
+      posixMode: posixMode,
+      ownerID: ownerID,
+      groupID: groupID,
+      size: size,
+      modificationTime: modificationTime,
+      changeTime: changeTime,
+      birthTime: birthTime,
+      accessTime: accessTime
+    )
+  }
+
+  private func metadataPair(
+    profile: HermesRealProfileMetadataSnapshot? = nil,
+    parent: HermesRealProfileMetadataSnapshot? = nil
+  ) -> HermesRealProfileMetadataPair {
+    HermesRealProfileMetadataPair(
+      profile: profile ?? metadataSnapshot(),
+      parentEntry: parent ?? metadataSnapshot(inode: 2)
+    )
+  }
+
+  private func assertSubstantiveChange(
+    profile: HermesRealProfileMetadataSnapshot,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) {
+    XCTAssertTrue(
+      metadataPair(profile: profile).substantiveMetadataChanged(comparedTo: metadataPair()),
+      file: file,
+      line: line
+    )
   }
 }

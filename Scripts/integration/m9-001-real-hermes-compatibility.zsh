@@ -20,7 +20,11 @@ isolated_home_used="yes"
 isolated_config_used="yes"
 real_profile_content_read="no"
 real_profile_modified="no"
+real_profile_atime_changed="no"
+real_profile_substantive_metadata_changed="no"
 real_keychain_accessed="no"
+version_probe_isolated="no"
+help_probe_isolated="no"
 startup_probe_passed="no"
 protocol_probe_passed="not_supported"
 capability_probe_passed="not_supported"
@@ -51,6 +55,10 @@ write_result() {
     print "ISOLATED_CONFIG_USED=$isolated_config_used"
     print "REAL_PROFILE_CONTENT_READ=$real_profile_content_read"
     print "REAL_PROFILE_MODIFIED=$real_profile_modified"
+    print "REAL_PROFILE_ATIME_CHANGED=$real_profile_atime_changed"
+    print "REAL_PROFILE_SUBSTANTIVE_METADATA_CHANGED=$real_profile_substantive_metadata_changed"
+    print "VERSION_PROBE_ISOLATED=$version_probe_isolated"
+    print "HELP_PROBE_ISOLATED=$help_probe_isolated"
     print "REAL_KEYCHAIN_ACCESSED=$real_keychain_accessed"
     print "STARTUP_PROBE_PASSED=$startup_probe_passed"
     print "PROTOCOL_PROBE_PASSED=$protocol_probe_passed"
@@ -68,13 +76,48 @@ write_result() {
   } > "$result_file"
 }
 
-metadata_fingerprint() {
+safe_env=(
+  "HOME=$runtime_root/home"
+  "XDG_CONFIG_HOME=$runtime_root/xdg-config"
+  "XDG_CACHE_HOME=$runtime_root/xdg-cache"
+  "XDG_STATE_HOME=$runtime_root/xdg-state"
+  "TMPDIR=$runtime_root/tmp"
+  "HERMES_HOME=$runtime_root/hermes-home"
+  "PATH=/usr/bin:/bin:/usr/sbin:/sbin"
+  "LANG=C"
+  "LC_ALL=C"
+)
+
+metadata_snapshot() {
+  local kind="$1"
   local profile="$HOME/.hermes"
-  if [[ -e "$profile" ]]; then
-    /usr/bin/stat -f '%m:%z:%p:%u:%g' "$profile" 2>/dev/null | /usr/bin/shasum -a 256 | /usr/bin/awk '{print $1}'
+  if [[ "$kind" == "substantive" ]]; then
+    if [[ -e "$profile" ]]; then
+      /usr/bin/stat -f 'profile:%i:%HT:%p:%u:%g:%z:%m:%c:%B' "$profile" 2>/dev/null || print "profile:stat-failed"
+    else
+      print "profile:absent"
+    fi
+    if [[ -e "$profile" || -L "$profile" ]]; then
+      /usr/bin/stat -f 'parent-entry:%i:%HT:%p:%u:%g:%z:%m:%c:%B' "$profile" 2>/dev/null || print "parent-entry:stat-failed"
+    else
+      print "parent-entry:absent"
+    fi
   else
-    print "absent"
+    if [[ -e "$profile" ]]; then
+      /usr/bin/stat -f 'profile:%a' "$profile" 2>/dev/null || print "profile:stat-failed"
+    else
+      print "profile:absent"
+    fi
+    if [[ -e "$profile" || -L "$profile" ]]; then
+      /usr/bin/stat -f 'parent-entry:%a' "$profile" 2>/dev/null || print "parent-entry:stat-failed"
+    else
+      print "parent-entry:absent"
+    fi
   fi
+}
+
+metadata_fingerprint() {
+  metadata_snapshot "$1" | /usr/bin/shasum -a 256 | /usr/bin/awk '{print $1}'
 }
 
 sanitize() {
@@ -105,7 +148,8 @@ discover_hermes() {
   [[ -n "$candidate" ]] && print -r -- "$candidate"
 }
 
-profile_before="$(metadata_fingerprint)"
+profile_substantive_before="$(metadata_fingerprint substantive)"
+profile_atime_before="$(metadata_fingerprint atime)"
 hermes_path="$(discover_hermes || true)"
 
 if [[ -n "$hermes_path" ]]; then
@@ -132,17 +176,7 @@ if [[ -n "$hermes_path" ]]; then
 }
 EOF
 
-  (
-    export HOME="$runtime_root/home"
-    export HERMES_HOME="$runtime_root/hermes-home"
-    export XDG_CONFIG_HOME="$runtime_root/xdg-config"
-    export XDG_CACHE_HOME="$runtime_root/xdg-cache"
-    export XDG_STATE_HOME="$runtime_root/xdg-state"
-    export TMPDIR="$runtime_root/tmp"
-    export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
-    export LANG="C"
-    "$hermes_path" --ignore-user-config --safe-mode version >"$logs_root/version.raw" 2>"$logs_root/version.stderr"
-  ) &
+  /usr/bin/env -i "${safe_env[@]}" "$hermes_path" --ignore-user-config --safe-mode version >"$logs_root/version.raw" 2>"$logs_root/version.stderr" &
   version_pid="$!"
   version_deadline=$((SECONDS + 15))
   while /bin/ps -p "$version_pid" >/dev/null 2>&1 && (( SECONDS < version_deadline )); do
@@ -155,6 +189,7 @@ EOF
     wait "$version_pid" 2>/dev/null || true
   fi
   if wait "$version_pid" 2>/dev/null; then
+    version_probe_isolated="yes"
     { cat "$logs_root/version.raw" "$logs_root/version.stderr"; } | sanitize > "$artifact_root/sanitized-version.txt"
     detected_version="$(/usr/bin/head -n 1 "$artifact_root/sanitized-version.txt" | /usr/bin/sed -nE 's/^Hermes Agent v([0-9]+\.[0-9]+(\.[0-9]+)?).*/\1/p')"
     [[ -n "$detected_version" ]] && version_detected="yes" || detected_version="unknown"
@@ -184,23 +219,18 @@ EOF
 }
 EOF
 
-  (
-    export HOME="$runtime_root/home"
-    export HERMES_HOME="$runtime_root/hermes-home"
-    export XDG_CONFIG_HOME="$runtime_root/xdg-config"
-    export XDG_CACHE_HOME="$runtime_root/xdg-cache"
-    export XDG_STATE_HOME="$runtime_root/xdg-state"
-    export TMPDIR="$runtime_root/tmp"
-    export PATH="/usr/bin:/bin:/usr/sbin:/sbin"
-    export LANG="C"
-    "$hermes_path" --ignore-user-config --safe-mode --help >"$logs_root/startup.stdout" 2>"$logs_root/startup.stderr" &
-    tracked_pid="$!"
-    print -r -- "$tracked_pid" > "$logs_root/tracked.pid"
-    sleep 0.1
-    tracked_pgid="$(/bin/ps -o pgid= -p "$tracked_pid" 2>/dev/null | /usr/bin/tr -d ' ')"
-    print -r -- "$tracked_pgid" > "$logs_root/tracked.pgid"
-    wait "$tracked_pid"
-  ) && startup_probe_passed="yes" || startup_probe_passed="no"
+  /usr/bin/env -i "${safe_env[@]}" "$hermes_path" --ignore-user-config --safe-mode --help >"$logs_root/startup.stdout" 2>"$logs_root/startup.stderr" &
+  tracked_pid="$!"
+  print -r -- "$tracked_pid" > "$logs_root/tracked.pid"
+  sleep 0.1
+  tracked_pgid="$(/bin/ps -o pgid= -p "$tracked_pid" 2>/dev/null | /usr/bin/tr -d ' ')"
+  print -r -- "$tracked_pgid" > "$logs_root/tracked.pgid"
+  if wait "$tracked_pid"; then
+    startup_probe_passed="yes"
+    help_probe_isolated="yes"
+  else
+    startup_probe_passed="no"
+  fi
 
   tracked_pid="$(cat "$logs_root/tracked.pid" 2>/dev/null || true)"
   tracked_pgid="$(cat "$logs_root/tracked.pgid" 2>/dev/null || true)"
@@ -240,8 +270,13 @@ cat > "$artifact_root/compatibility-report.json" <<EOF
 }
 EOF
 
-profile_after="$(metadata_fingerprint)"
-if [[ "$profile_before" != "$profile_after" ]]; then
+profile_substantive_after="$(metadata_fingerprint substantive)"
+profile_atime_after="$(metadata_fingerprint atime)"
+if [[ "$profile_atime_before" != "$profile_atime_after" ]]; then
+  real_profile_atime_changed="yes"
+fi
+if [[ "$profile_substantive_before" != "$profile_substantive_after" ]]; then
+  real_profile_substantive_metadata_changed="yes"
   real_profile_modified="yes"
 fi
 
@@ -279,6 +314,10 @@ cat > "$artifact_root/validation-report.md" <<EOF
 - cancellation: $cancellation_passed
 - real profile content read: $real_profile_content_read
 - real profile modified: $real_profile_modified
+- real profile atime changed: $real_profile_atime_changed
+- real profile substantive metadata changed: $real_profile_substantive_metadata_changed
+- version probe isolated: $version_probe_isolated
+- help probe isolated: $help_probe_isolated
 - cleanup residual process: $residual_process
 EOF
 
@@ -293,7 +332,8 @@ fi
 if [[ "$real_profile_content_read" == "yes" || "$real_profile_modified" == "yes" ||
   "$real_keychain_accessed" == "yes" || "$residual_process" == "yes" ||
   "$arbitrary_argument_available" == "yes" || "$compatibility_state" == "versionUnknown" ||
-  "$private_path_exposed" == "yes" || "$token_exposed" == "yes" ]]; then
+  "$private_path_exposed" == "yes" || "$token_exposed" == "yes" ||
+  "$version_probe_isolated" != "yes" || "$help_probe_isolated" != "yes" ]]; then
   write_result "FAIL"
 elif [[ "$real_hermes_discovered" == "yes" && "$version_detected" == "yes" &&
   "$isolated_home_used" == "yes" && "$isolated_config_used" == "yes" &&
