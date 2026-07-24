@@ -28,6 +28,10 @@ let package = Package(
       name: "HermesBridgeMenuBar",
       targets: ["HermesBridgeMenuBar"]
     ),
+    .library(
+      name: "HermesDashboard",
+      targets: ["HermesDashboard"]
+    ),
     .executable(
       name: "HermesBridgeService",
       targets: ["HermesBridgeServiceExecutable"]
@@ -95,6 +99,10 @@ let package = Package(
         "HermesAppIntents", "HermesBridgeControlCore", "HermesBridgeServiceManager",
         "HermesBridgeXPC", "HermesRuntimeFoundation",
       ]
+    ),
+    .target(
+      name: "HermesDashboard",
+      dependencies: ["HermesRuntimeFoundation"]
     ),
     .executableTarget(
       name: "HermesBridgeControl",
@@ -167,6 +175,10 @@ let package = Package(
     .testTarget(
       name: "HermesMenuBarTests",
       dependencies: ["HermesMenuBar", "HermesRuntimeFoundation"]
+    ),
+    .testTarget(
+      name: "HermesDashboardTests",
+      dependencies: ["HermesDashboard", "HermesRuntimeFoundation"]
     ),
     .testTarget(
       name: "M4003ScriptTests",
