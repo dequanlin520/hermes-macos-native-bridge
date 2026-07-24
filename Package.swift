@@ -36,6 +36,10 @@ let package = Package(
       name: "HermesLogsViewer",
       targets: ["HermesLogsViewer"]
     ),
+    .library(
+      name: "HermesSettings",
+      targets: ["HermesSettings"]
+    ),
     .executable(
       name: "HermesBridgeService",
       targets: ["HermesBridgeServiceExecutable"]
@@ -111,6 +115,9 @@ let package = Package(
     .target(
       name: "HermesLogsViewer",
       dependencies: ["HermesRuntimeFoundation"]
+    ),
+    .target(
+      name: "HermesSettings"
     ),
     .executableTarget(
       name: "HermesBridgeControl",
@@ -191,6 +198,10 @@ let package = Package(
     .testTarget(
       name: "HermesLogsViewerTests",
       dependencies: ["HermesLogsViewer", "HermesRuntimeFoundation"]
+    ),
+    .testTarget(
+      name: "HermesSettingsTests",
+      dependencies: ["HermesSettings"]
     ),
     .testTarget(
       name: "M4003ScriptTests",
