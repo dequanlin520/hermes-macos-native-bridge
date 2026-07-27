@@ -23,7 +23,7 @@
 /* Begin PBXLegacyTarget section */
 		1A2B3C4D5E6F700000000003 /* HermesBridgeApp */ = {
 			isa = PBXLegacyTarget;
-			buildArgumentsString = "swift build --product HermesBridgeApp";
+			buildArgumentsString = "swift build --product HermesBridgeApp --configuration $(SWIFT_PACKAGE_CONFIGURATION)";
 			buildConfigurationList = 1A2B3C4D5E6F700000000004 /* Build configuration list for PBXLegacyTarget "HermesBridgeApp" */;
 			buildPhases = (
 			);
@@ -66,6 +66,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				PRODUCT_NAME = HermesBridgeApp;
+				SWIFT_PACKAGE_CONFIGURATION = debug;
 			};
 			name = Debug;
 		};
@@ -73,6 +74,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				PRODUCT_NAME = HermesBridgeApp;
+				SWIFT_PACKAGE_CONFIGURATION = release;
 			};
 			name = Release;
 		};
@@ -113,4 +115,3 @@
 	};
 	rootObject = 1A2B3C4D5E6F700000000005 /* Project object */;
 }
-
