@@ -58,6 +58,16 @@ public struct HermesRuntimeLogEntry: Equatable, Identifiable, Sendable {
     )
   }
 
+  public init(commandEvent: HermesRuntimeCommandEvent) {
+    self.init(
+      id: commandEvent.sequenceNumber,
+      timestamp: commandEvent.occurredAt,
+      eventType: commandEvent.kind,
+      severity: Self.severity(for: commandEvent),
+      redactedSummary: Self.summary(for: commandEvent)
+    )
+  }
+
   public static func severity(for event: HermesRuntimeEvent) -> HermesRuntimeLogLevel {
     if event.kind == .sessionFailed || event.session.currentStatus == .failed {
       return .error
@@ -68,7 +78,31 @@ public struct HermesRuntimeLogEntry: Equatable, Identifiable, Sendable {
     return .info
   }
 
+  public static func severity(for event: HermesRuntimeCommandEvent) -> HermesRuntimeLogLevel {
+    if event.kind == .sessionFailed || event.session.currentStatus == .failed {
+      return .error
+    }
+    if event.session.currentStatus == .degraded || event.kind == .sessionHealthChanged {
+      return .warning
+    }
+    return .info
+  }
+
   public static func summary(for event: HermesRuntimeEvent) -> String {
+    let status = event.session.currentStatus.rawValue
+    var parts = ["Runtime session \(status)"]
+
+    if let shutdownReason = event.session.shutdownReason {
+      parts.append("shutdown: \(shutdownReason.description)")
+    }
+    if let lastErrorMessage = event.session.lastErrorMessage {
+      parts.append("error: \(lastErrorMessage)")
+    }
+
+    return redacted(parts.joined(separator: "; "), limit: 220)
+  }
+
+  public static func summary(for event: HermesRuntimeCommandEvent) -> String {
     let status = event.session.currentStatus.rawValue
     var parts = ["Runtime session \(status)"]
 

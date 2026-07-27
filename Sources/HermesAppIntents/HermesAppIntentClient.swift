@@ -185,7 +185,7 @@ public actor HermesAppIntentXPCClient: HermesAppIntentClient {
     case .malformedPayload, .unsupportedOperation, .unsupportedCapability, .invalidState,
       .duplicateAuthorizedRoot, .rootNotFound, .rootInactive, .invalidBookmark, .staleAuthorization,
       .securityScopeUnavailable, .subscriptionNotFound, .subscriptionExpired,
-      .acknowledgementRejected, .eventBufferOverflow, .rescanRequired:
+      .acknowledgementRejected, .eventBufferOverflow, .rescanRequired, .sessionNotFound:
       return .operationRejected
     case .oversizedPayload, .bookmarkTooLarge:
       return .oversizedPrompt

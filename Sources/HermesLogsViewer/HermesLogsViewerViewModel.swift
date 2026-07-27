@@ -18,6 +18,10 @@ public final class HermesLogsViewerViewModel: ObservableObject {
     self.init(controller: HermesLogsViewerController(eventBus: eventBus))
   }
 
+  public convenience init(eventSource: HermesLogsRuntimeEventSubscribing) {
+    self.init(controller: HermesLogsViewerController(eventSource: eventSource))
+  }
+
   public func startEventSubscription() {
     guard !subscriptionStarted else { return }
     subscriptionStarted = true

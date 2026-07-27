@@ -1,6 +1,29 @@
 import Foundation
 import HermesRuntimeFoundation
 
+public protocol HermesLogsRuntimeEventSubscribing: Sendable {
+  func subscribeRuntimeEvents() async throws -> HermesRuntimeCommandEventSubscription
+}
+
+extension HermesRuntimeEventBus: HermesLogsRuntimeEventSubscribing {
+  public func subscribeRuntimeEvents() async throws -> HermesRuntimeCommandEventSubscription {
+    let source = subscribe()
+    let stream = AsyncStream<HermesRuntimeCommandEvent> { continuation in
+      let task = Task {
+        for await event in source.events {
+          continuation.yield(HermesRuntimeCommandEvent(event: event))
+        }
+        continuation.finish()
+      }
+      continuation.onTermination = { [weak self] _ in
+        task.cancel()
+        self?.unsubscribe(source.id)
+      }
+    }
+    return HermesRuntimeCommandEventSubscription(id: source.id, events: stream)
+  }
+}
+
 public struct HermesLogsViewerState: Equatable, Sendable {
   public var entries: [HermesRuntimeLogEntry]
   public var filter: HermesRuntimeLogFilter
@@ -22,23 +45,23 @@ public struct HermesLogsViewerState: Equatable, Sendable {
 }
 
 public actor HermesLogsViewerController {
-  private let eventBus: HermesRuntimeEventBus
+  private let eventSource: HermesLogsRuntimeEventSubscribing
   private let maximumEntries: Int
   private var state: HermesLogsViewerState
   private var eventTask: Task<Void, Never>?
-  private var subscriptionID: UUID?
 
-  public init(eventBus: HermesRuntimeEventBus, maximumEntries: Int = 500) {
-    self.eventBus = eventBus
+  public init(eventSource: HermesLogsRuntimeEventSubscribing, maximumEntries: Int = 500) {
+    self.eventSource = eventSource
     self.maximumEntries = max(1, maximumEntries)
     self.state = HermesLogsViewerState()
   }
 
+  public init(eventBus: HermesRuntimeEventBus, maximumEntries: Int = 500) {
+    self.init(eventSource: eventBus, maximumEntries: maximumEntries)
+  }
+
   deinit {
     eventTask?.cancel()
-    if let subscriptionID {
-      eventBus.unsubscribe(subscriptionID)
-    }
   }
 
   public func currentState() -> HermesLogsViewerState {
@@ -49,8 +72,14 @@ public actor HermesLogsViewerController {
     onStateChange: (@Sendable (HermesLogsViewerState) async -> Void)? = nil
   ) async {
     guard eventTask == nil else { return }
-    let subscription = eventBus.subscribe()
-    subscriptionID = subscription.id
+    let subscription: HermesRuntimeCommandEventSubscription
+    do {
+      subscription = try await eventSource.subscribeRuntimeEvents()
+    } catch {
+      state.lastErrorMessage = HermesRuntimeLogEntry.redacted(String(describing: error))
+      await onStateChange?(state)
+      return
+    }
     eventTask = Task { [weak self] in
       for await event in subscription.events {
         await self?.record(event: event, onStateChange: onStateChange)
@@ -82,17 +111,13 @@ public actor HermesLogsViewerController {
   public func cancel() {
     eventTask?.cancel()
     eventTask = nil
-    if let subscriptionID {
-      eventBus.unsubscribe(subscriptionID)
-      self.subscriptionID = nil
-    }
   }
 
   private func record(
-    event: HermesRuntimeEvent,
+    event: HermesRuntimeCommandEvent,
     onStateChange: (@Sendable (HermesLogsViewerState) async -> Void)?
   ) async {
-    let entry = HermesRuntimeLogEntry(event: event)
+    let entry = HermesRuntimeLogEntry(commandEvent: event)
     state.entries.insert(entry, at: 0)
     state.entries = Array(state.entries.prefix(maximumEntries))
     state.lastErrorMessage = entry.severity == .error ? entry.redactedSummary : nil

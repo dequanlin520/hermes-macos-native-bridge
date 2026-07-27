@@ -4,7 +4,7 @@ import HermesRuntimeFoundation
 public struct HermesBridgeProtocolVersion: Codable, Equatable, Sendable,
   CustomStringConvertible
 {
-  public static let current = HermesBridgeProtocolVersion(major: 1, minor: 6)
+  public static let current = HermesBridgeProtocolVersion(major: 1, minor: 7)
   public static let supportedMajor = 1
 
   public let major: Int
@@ -40,6 +40,8 @@ public enum HermesBridgeCapability: String, Codable, CaseIterable, Equatable, Se
   case systemEventObservation
   case systemEventPolicyManagement
   case eventPolicyApprovalManagement
+  case runtimeCommand
+  case runtimeEventObservation
 }
 
 public enum HermesBridgeOperation: String, Codable, CaseIterable, Equatable, Sendable {
@@ -84,6 +86,10 @@ public enum HermesBridgeOperation: String, Codable, CaseIterable, Equatable, Sen
   case denyEventPolicyExecution
   case cancelEventPolicyApproval
   case eventPolicyApprovalQueueStatus
+  case runtimeCommand
+  case createRuntimeEventSubscription
+  case pollRuntimeEventSubscription
+  case cancelRuntimeEventSubscription
 }
 
 public struct HermesBridgeCorrelationID: Codable, Equatable, Hashable, Sendable,
@@ -150,6 +156,7 @@ public enum HermesBridgeXPCError: String, Codable, Error, Equatable, Sendable {
   case acknowledgementRejected
   case eventBufferOverflow
   case rescanRequired
+  case sessionNotFound
 }
 
 public enum HermesBridgeSecurityScopeStatus: String, Codable, Equatable, Sendable {
@@ -880,6 +887,9 @@ public struct HermesBridgeRequestEnvelope: Codable, Equatable, Sendable {
   public let eventPolicyID: HermesBridgeEventPolicyIDPayload?
   public let eventPolicyEvaluation: HermesBridgeEventPolicyEvaluationPayload?
   public let eventPolicyApprovalID: HermesBridgeEventPolicyApprovalIDPayload?
+  public let runtimeCommand: HermesBridgeRuntimeCommandPayload?
+  public let pollRuntimeEventSubscription: HermesBridgePollRuntimeEventSubscriptionPayload?
+  public let cancelRuntimeEventSubscription: HermesBridgeCancelRuntimeEventSubscriptionPayload?
 
   public init(
     protocolVersion: HermesBridgeProtocolVersion = .current,
@@ -907,7 +917,10 @@ public struct HermesBridgeRequestEnvelope: Codable, Equatable, Sendable {
     eventPolicy: HermesBridgeEventPolicyPayload? = nil,
     eventPolicyID: HermesBridgeEventPolicyIDPayload? = nil,
     eventPolicyEvaluation: HermesBridgeEventPolicyEvaluationPayload? = nil,
-    eventPolicyApprovalID: HermesBridgeEventPolicyApprovalIDPayload? = nil
+    eventPolicyApprovalID: HermesBridgeEventPolicyApprovalIDPayload? = nil,
+    runtimeCommand: HermesBridgeRuntimeCommandPayload? = nil,
+    pollRuntimeEventSubscription: HermesBridgePollRuntimeEventSubscriptionPayload? = nil,
+    cancelRuntimeEventSubscription: HermesBridgeCancelRuntimeEventSubscriptionPayload? = nil
   ) {
     self.protocolVersion = protocolVersion
     self.correlationID = correlationID
@@ -935,6 +948,9 @@ public struct HermesBridgeRequestEnvelope: Codable, Equatable, Sendable {
     self.eventPolicyID = eventPolicyID
     self.eventPolicyEvaluation = eventPolicyEvaluation
     self.eventPolicyApprovalID = eventPolicyApprovalID
+    self.runtimeCommand = runtimeCommand
+    self.pollRuntimeEventSubscription = pollRuntimeEventSubscription
+    self.cancelRuntimeEventSubscription = cancelRuntimeEventSubscription
   }
 }
 
@@ -955,6 +971,201 @@ public struct HermesBridgeRequestStatusPayload: Codable, Equatable, Sendable {
     self.resultAvailable = record.result?.availability == .available
     self.failureCode = record.failure?.code
     self.failureRetryable = record.failure?.retryable
+  }
+}
+
+public enum HermesBridgeRuntimeCommandKind: String, Codable, Equatable, Sendable {
+  case createSession
+  case startSession
+  case stopSession
+  case getSessionStatus
+  case listSessions
+}
+
+public struct HermesBridgeRuntimeCommandPayload: Codable, Equatable, Sendable {
+  public let kind: HermesBridgeRuntimeCommandKind
+  public let sessionID: UUID?
+  public let shutdownReason: HermesRuntimeSessionShutdownReason?
+
+  public init(
+    kind: HermesBridgeRuntimeCommandKind,
+    sessionID: UUID? = nil,
+    shutdownReason: HermesRuntimeSessionShutdownReason? = nil
+  ) {
+    self.kind = kind
+    self.sessionID = sessionID
+    self.shutdownReason = shutdownReason
+  }
+}
+
+public struct HermesBridgeRuntimeCapabilitiesPayload: Codable, Equatable, Sendable {
+  public let authMode: HermesBackendAuthMode?
+  public let desktopContract: Int?
+  public let gatewayRunning: Bool?
+  public let gatewayState: String?
+  public let gatewayBusy: Bool?
+  public let gatewayDrainable: Bool?
+  public let activeAgents: Int?
+
+  public init(capabilities: HermesRuntimeCapabilities?) {
+    authMode = capabilities?.authMode
+    desktopContract = capabilities?.desktopContract
+    gatewayRunning = capabilities?.gatewayRunning
+    gatewayState = capabilities?.gatewayState
+    gatewayBusy = capabilities?.gatewayBusy
+    gatewayDrainable = capabilities?.gatewayDrainable
+    activeAgents = capabilities?.activeAgents
+  }
+
+  public var runtimeCapabilities: HermesRuntimeCapabilities? {
+    guard authMode != nil || desktopContract != nil || gatewayRunning != nil || gatewayState != nil
+      || gatewayBusy != nil || gatewayDrainable != nil || activeAgents != nil
+    else { return nil }
+    return HermesRuntimeCapabilities(
+      authMode: authMode,
+      desktopContract: desktopContract,
+      gatewayRunning: gatewayRunning,
+      gatewayState: gatewayState,
+      gatewayBusy: gatewayBusy,
+      gatewayDrainable: gatewayDrainable,
+      activeAgents: activeAgents
+    )
+  }
+}
+
+public struct HermesBridgeRuntimeSessionStatusPayload: Codable, Equatable, Sendable {
+  public let sessionID: UUID
+  public let currentStatus: HermesRuntimeSessionStatus
+  public let backendVersion: String?
+  public let startTime: Date?
+  public let capabilities: HermesBridgeRuntimeCapabilitiesPayload
+  public let lastErrorMessage: String?
+  public let shutdownReason: HermesRuntimeSessionShutdownReason?
+
+  public init(status: HermesRuntimeCommandSessionStatus) {
+    sessionID = status.sessionID
+    currentStatus = status.currentStatus
+    backendVersion = status.backendVersion
+    startTime = status.startTime
+    capabilities = HermesBridgeRuntimeCapabilitiesPayload(capabilities: status.capabilities)
+    lastErrorMessage = status.lastErrorMessage
+    shutdownReason = status.shutdownReason
+  }
+
+  public var commandStatus: HermesRuntimeCommandSessionStatus {
+    HermesRuntimeCommandSessionStatus(
+      sessionID: sessionID,
+      currentStatus: currentStatus,
+      backendVersion: backendVersion,
+      startTime: startTime,
+      capabilities: capabilities.runtimeCapabilities,
+      lastErrorMessage: lastErrorMessage,
+      shutdownReason: shutdownReason
+    )
+  }
+}
+
+public struct HermesBridgeRuntimeEventSessionPayload: Codable, Equatable, Sendable {
+  public let sessionID: UUID
+  public let currentStatus: HermesRuntimeSessionStatus
+  public let backendVersion: String?
+  public let startTime: Date?
+  public let capabilities: HermesBridgeRuntimeCapabilitiesPayload
+  public let lastErrorMessage: String?
+  public let shutdownReason: HermesRuntimeSessionShutdownReason?
+
+  public init(session: HermesRuntimeCommandEventSession) {
+    sessionID = session.sessionID
+    currentStatus = session.currentStatus
+    backendVersion = session.backendVersion
+    startTime = session.startTime
+    capabilities = HermesBridgeRuntimeCapabilitiesPayload(capabilities: session.capabilities)
+    lastErrorMessage = session.lastErrorMessage
+    shutdownReason = session.shutdownReason
+  }
+
+  public var commandEventSession: HermesRuntimeCommandEventSession {
+    HermesRuntimeCommandEventSession(
+      sessionID: sessionID,
+      currentStatus: currentStatus,
+      backendVersion: backendVersion,
+      startTime: startTime,
+      capabilities: capabilities.runtimeCapabilities,
+      lastErrorMessage: lastErrorMessage,
+      shutdownReason: shutdownReason
+    )
+  }
+}
+
+public struct HermesBridgeRuntimeEventPayload: Codable, Equatable, Sendable {
+  public let sequenceNumber: UInt64
+  public let kind: HermesRuntimeEventKind
+  public let session: HermesBridgeRuntimeEventSessionPayload
+  public let occurredAt: Date
+
+  public init(event: HermesRuntimeCommandEvent) {
+    sequenceNumber = event.sequenceNumber
+    kind = event.kind
+    session = HermesBridgeRuntimeEventSessionPayload(session: event.session)
+    occurredAt = event.occurredAt
+  }
+
+  public var commandEvent: HermesRuntimeCommandEvent {
+    HermesRuntimeCommandEvent(
+      sequenceNumber: sequenceNumber,
+      kind: kind,
+      session: session.commandEventSession,
+      occurredAt: occurredAt
+    )
+  }
+}
+
+public struct HermesBridgeRuntimeCommandResultPayload: Codable, Equatable, Sendable {
+  public let session: HermesBridgeRuntimeSessionStatusPayload?
+  public let sessions: [HermesBridgeRuntimeSessionStatusPayload]?
+
+  public init(result: HermesRuntimeCommandResult) throws {
+    switch result {
+    case .sessionStatus(let status):
+      session = HermesBridgeRuntimeSessionStatusPayload(status: status)
+      sessions = nil
+    case .sessionList(let statuses):
+      session = nil
+      sessions = statuses.map(HermesBridgeRuntimeSessionStatusPayload.init(status:))
+    case .eventSubscription:
+      throw HermesBridgeXPCError.malformedPayload
+    }
+  }
+}
+
+public struct HermesBridgeRuntimeEventSubscriptionPayload: Codable, Equatable, Sendable {
+  public let subscriptionID: UUID
+
+  public init(subscriptionID: UUID) {
+    self.subscriptionID = subscriptionID
+  }
+}
+
+public struct HermesBridgePollRuntimeEventSubscriptionPayload: Codable, Equatable, Sendable {
+  public let subscriptionID: UUID
+  public let timeoutMilliseconds: Int
+
+  public init(subscriptionID: UUID, timeoutMilliseconds: Int = 0) {
+    self.subscriptionID = subscriptionID
+    self.timeoutMilliseconds = max(0, timeoutMilliseconds)
+  }
+}
+
+public typealias HermesBridgeCancelRuntimeEventSubscriptionPayload =
+  HermesBridgeRuntimeEventSubscriptionPayload
+
+public struct HermesBridgeRuntimeEventBatchPayload: Codable, Equatable, Sendable {
+  public let subscriptionID: UUID
+  public let events: [HermesBridgeRuntimeEventPayload]
+
+  public init(subscriptionID: UUID, events: [HermesRuntimeCommandEvent]) {
+    self.subscriptionID = subscriptionID
+    self.events = Array(events.prefix(128)).map(HermesBridgeRuntimeEventPayload.init(event:))
   }
 }
 
@@ -1017,6 +1228,10 @@ public enum HermesBridgeSuccessPayload: Codable, Equatable, Sendable {
   case denyEventPolicyExecution(HermesBridgeEventPolicyApprovalPayload)
   case cancelEventPolicyApproval(HermesBridgeEventPolicyApprovalPayload)
   case eventPolicyApprovalQueueStatus(HermesBridgeEventPolicyApprovalQueueStatusPayload)
+  case runtimeCommand(HermesBridgeRuntimeCommandResultPayload)
+  case createRuntimeEventSubscription(HermesBridgeRuntimeEventSubscriptionPayload)
+  case pollRuntimeEventSubscription(HermesBridgeRuntimeEventBatchPayload)
+  case cancelRuntimeEventSubscription(HermesBridgeRuntimeEventSubscriptionPayload)
   case submit(HermesBridgeRequestIDPayload)
   case status(HermesBridgeRequestStatusPayload)
   case cancel(HermesBridgeRequestStatusPayload)

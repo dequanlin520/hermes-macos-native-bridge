@@ -6,10 +6,40 @@ import XCTest
 
 @MainActor
 final class HermesNativeUICompositionTests: XCTestCase {
-  func testSharedRuntimeCommandAPIIdentity() {
-    let root = makeRoot()
+  func testAppCompositionRootOwnsNoConcreteRuntimeGraphTypes() throws {
+    let source = try String(
+      contentsOfFile: "Sources/HermesBridgeApp/HermesAppCompositionRoot.swift",
+      encoding: .utf8
+    )
 
-    XCTAssertTrue(root.runtimeGraph.commandAPI === root.runtimeGraph.commandAPI)
+    XCTAssertFalse(source.contains("HermesRuntimeSessionManager("))
+    XCTAssertFalse(source.contains("HermesRuntimeEventBus("))
+    XCTAssertFalse(source.contains("HermesRuntimeCommandAPI("))
+    XCTAssertFalse(source.contains("HermesProcessSupervisor("))
+    XCTAssertFalse(source.contains("HermesBackendAdapter("))
+    XCTAssertFalse(source.contains("HermesProtocolClient("))
+  }
+
+  func testRuntimeCommandsUseClientAbstraction() async {
+    let client = RecordingRuntimeClient()
+    let root = makeRoot(client: client)
+
+    root.menuBarViewModel.startHermes()
+    await client.waitForCommandCount(2)
+
+    let commands = await client.commands()
+    XCTAssertEqual(commands, [.createSession, .startSession(client.sessionID)])
+  }
+
+  func testRuntimeEventsUseClientSubscriptionAbstraction() async {
+    let client = RecordingRuntimeClient()
+    let root = makeRoot(client: client)
+
+    root.start()
+    await client.waitForSubscriptionCount(1)
+
+    let subscriptionCount = await client.subscriptionCount()
+    XCTAssertEqual(subscriptionCount, 1)
   }
 
   func testDashboardRouting() {
@@ -79,22 +109,7 @@ final class HermesNativeUICompositionTests: XCTestCase {
     XCTAssertEqual(root.windowCoordinator.windowCount(for: .logs), 1)
   }
 
-  func testApplicationShutdownCleanup() async {
-    let factory = RecordingWindowFactory()
-    let shutdown = ShutdownRecorder()
-    let root = makeRoot(factory: factory, shutdown: shutdown)
-
-    root.router.openSettings()
-    await root.shutdown()
-    await root.shutdown()
-
-    let shutdownCount = await shutdown.currentCount()
-    XCTAssertEqual(factory.window(for: .settings)?.cleanupCount, 1)
-    XCTAssertEqual(shutdownCount, 1)
-    XCTAssertEqual(root.windowCoordinator.openedWindowIdentifiers, [])
-  }
-
-  func testNoDuplicateRuntimeGraph() {
+  func testAllFeatureWindowsShareSameClientGraph() {
     let factory = RecordingWindowFactory()
     let root = makeRoot(factory: factory)
 
@@ -103,8 +118,56 @@ final class HermesNativeUICompositionTests: XCTestCase {
     root.router.openSettings()
     root.router.openDiagnostics()
 
-    XCTAssertEqual(Set(factory.runtimeGraphIDs).count, 1)
-    XCTAssertEqual(factory.runtimeGraphIDs.first, ObjectIdentifier(root.runtimeGraph))
+    XCTAssertEqual(Set(factory.clientGraphIDs).count, 1)
+    XCTAssertEqual(factory.clientGraphIDs.first, ObjectIdentifier(root.clientGraph))
+  }
+
+  func testApplicationShutdownInvalidatesClientResourcesAndDoesNotStopRuntime() async {
+    let factory = RecordingWindowFactory()
+    let client = RecordingRuntimeClient()
+    let root = makeRoot(client: client, factory: factory)
+
+    root.router.openSettings()
+    await root.shutdown()
+    await root.shutdown()
+
+    XCTAssertEqual(factory.window(for: .settings)?.cleanupCount, 1)
+    XCTAssertEqual(root.windowCoordinator.openedWindowIdentifiers, [])
+    let invalidateCount = await client.invalidateCount()
+    let commands = await client.commands()
+    XCTAssertEqual(invalidateCount, 1)
+    XCTAssertFalse(commands.contains { command in
+      if case .stopSession = command { return true }
+      return false
+    })
+  }
+
+  func testExplicitStopHermesForwardsExactlyOneStopCommand() async {
+    let client = RecordingRuntimeClient()
+    let root = makeRoot(client: client)
+
+    root.menuBarViewModel.startHermes()
+    await client.waitForCommandCount(2)
+    root.menuBarViewModel.stopHermes()
+    await client.waitForCommandCount(3)
+
+    let stopCommands = await client.commands().filter { command in
+      if case .stopSession = command { return true }
+      return false
+    }
+    XCTAssertEqual(stopCommands.count, 1)
+  }
+
+  func testNoDuplicateRuntimeGraphIsCreated() throws {
+    let source = try String(
+      contentsOfFile: "Sources/HermesBridgeApp/HermesAppCompositionRoot.swift",
+      encoding: .utf8
+    )
+
+    XCTAssertFalse(source.contains("HermesAppRuntimeGraph"))
+    XCTAssertFalse(source.contains("HermesRuntimeSessionManager("))
+    XCTAssertFalse(source.contains("HermesRuntimeEventBus("))
+    XCTAssertFalse(source.contains("HermesRuntimeCommandAPI("))
   }
 
   func testSafeWindowIdentifiers() {
@@ -121,42 +184,31 @@ final class HermesNativeUICompositionTests: XCTestCase {
   }
 
   private func makeRoot(
-    factory: RecordingWindowFactory = RecordingWindowFactory(),
-    shutdown: ShutdownRecorder = ShutdownRecorder()
+    client: RecordingRuntimeClient = RecordingRuntimeClient(),
+    factory: RecordingWindowFactory = RecordingWindowFactory()
   ) -> HermesAppCompositionRoot {
-    let eventBus = HermesRuntimeEventBus()
-    let sessionManager = HermesRuntimeSessionManager(
-      backendFactory: { StubBackend() },
-      eventBus: eventBus
+    let graph = HermesAppClientGraph(
+      runtimeClient: client,
+      settingsStore: InMemorySettingsStore()
     )
-    let commandAPI = HermesRuntimeCommandAPI(sessionManager: sessionManager)
-    let graph = HermesAppRuntimeGraph(
-      eventBus: eventBus,
-      sessionManager: sessionManager,
-      commandAPI: commandAPI,
-      settingsStore: InMemorySettingsStore(),
-      shutdownHandler: {
-        await shutdown.record()
-      }
-    )
-    return HermesAppCompositionRoot(runtimeGraph: graph, windowFactory: factory)
+    return HermesAppCompositionRoot(clientGraph: graph, windowFactory: factory)
   }
 }
 
 private final class RecordingWindowFactory: HermesNativeUIWindowFactory, @unchecked Sendable {
   @MainActor private var windows: [HermesNativeUIWindowIdentifier: RecordingWindow] = [:]
   @MainActor private(set) var createdIdentifiers: [HermesNativeUIWindowIdentifier] = []
-  @MainActor private(set) var runtimeGraphIDs: [ObjectIdentifier] = []
+  @MainActor private(set) var clientGraphIDs: [ObjectIdentifier] = []
 
   @MainActor
   func makeWindow(
     for identifier: HermesNativeUIWindowIdentifier,
-    runtimeGraph: HermesAppRuntimeGraph
+    clientGraph: HermesAppClientGraph
   ) -> HermesNativeUIWindowControlling {
     let window = RecordingWindow(identifier: identifier)
     windows[identifier] = window
     createdIdentifiers.append(identifier)
-    runtimeGraphIDs.append(ObjectIdentifier(runtimeGraph))
+    clientGraphIDs.append(ObjectIdentifier(clientGraph))
     return window
   }
 
@@ -199,15 +251,87 @@ private final class RecordingWindow: HermesNativeUIWindowControlling {
   }
 }
 
-private actor ShutdownRecorder {
-  private var count = 0
+private final class RecordingRuntimeClient: HermesAppRuntimeClienting, @unchecked Sendable {
+  let sessionID = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+  private let lock = NSLock()
+  private var recordedCommands: [HermesRuntimeCommand] = []
+  private var recordedSubscriptions = 0
+  private var recordedInvalidations = 0
 
-  func record() {
-    count += 1
+  func execute(_ command: HermesRuntimeCommand) async throws -> HermesRuntimeCommandResult {
+    lock.withLock {
+      recordedCommands.append(command)
+    }
+    switch command {
+    case .createSession:
+      return .sessionStatus(status(.created))
+    case .startSession:
+      return .sessionStatus(status(.running))
+    case .stopSession:
+      return .sessionStatus(status(.stopped))
+    case .getSessionStatus:
+      return .sessionStatus(status(.running))
+    case .listSessions:
+      return .sessionList([status(.running)])
+    case .subscribeEvents:
+      return .eventSubscription(try await subscribeRuntimeEvents())
+    }
   }
 
-  func currentCount() -> Int {
-    count
+  func subscribeRuntimeEvents() async throws -> HermesRuntimeCommandEventSubscription {
+    lock.withLock {
+      recordedSubscriptions += 1
+    }
+    return HermesRuntimeCommandEventSubscription(
+      id: UUID(),
+      events: AsyncStream { continuation in
+        continuation.finish()
+      }
+    )
+  }
+
+  func invalidate() async {
+    lock.withLock {
+      recordedInvalidations += 1
+    }
+  }
+
+  func commands() async -> [HermesRuntimeCommand] {
+    lock.withLock { recordedCommands }
+  }
+
+  func subscriptionCount() async -> Int {
+    lock.withLock { recordedSubscriptions }
+  }
+
+  func invalidateCount() async -> Int {
+    lock.withLock { recordedInvalidations }
+  }
+
+  func waitForCommandCount(_ expected: Int) async {
+    for _ in 0..<100 {
+      if await commands().count >= expected { return }
+      try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+  }
+
+  func waitForSubscriptionCount(_ expected: Int) async {
+    for _ in 0..<100 {
+      if await subscriptionCount() >= expected { return }
+      try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+  }
+
+  private func status(_ currentStatus: HermesRuntimeSessionStatus) -> HermesRuntimeCommandSessionStatus {
+    HermesRuntimeCommandSessionStatus(
+      sessionID: sessionID,
+      currentStatus: currentStatus,
+      backendVersion: "0.1.0",
+      startTime: Date(timeIntervalSince1970: 1),
+      capabilities: nil,
+      lastErrorMessage: nil,
+      shutdownReason: currentStatus == .stopped ? .requested : nil
+    )
   }
 }
 
@@ -220,43 +344,5 @@ private final class InMemorySettingsStore: HermesConfigurationStoring, @unchecke
 
   func save(_ settings: HermesSettings) throws {
     self.settings = settings
-  }
-}
-
-private final class StubBackend: HermesBackendAdapting, @unchecked Sendable {
-  func discover() throws -> HermesDiscoveryResult {
-    HermesDiscoveryResult(
-      candidate: HermesExecutableCandidate(
-        allowlistedCandidatePath: "/usr/local/bin/hermes",
-        originalPath: "/usr/local/bin/hermes",
-        resolvedPath: "/usr/local/bin/hermes",
-        symlinkStatus: .notSymlink
-      ),
-      versionInfo: HermesVersionInfo(
-        semanticVersion: "0.1.0",
-        displayVersion: "Hermes 0.1.0",
-        buildDateText: nil,
-        upstreamRevision: nil,
-        installationMethod: "fixture",
-        pythonVersion: nil,
-        openAISDKVersion: nil,
-        rawOutputSHA256Digest: "fixture",
-        capturedOutputByteCount: 7,
-        outputWasTruncated: false,
-        sanitizedDiagnosticMetadata: [:]
-      )
-    )
-  }
-
-  func start() async throws -> HermesBackendStartResult {
-    throw HermesBackendAdapterError.notStarted
-  }
-
-  func stop() async throws -> HermesBackendStopResult {
-    throw HermesBackendAdapterError.notStarted
-  }
-
-  func health() async throws -> HermesBackendHealthSnapshot {
-    throw HermesBackendAdapterError.notStarted
   }
 }

@@ -75,6 +75,8 @@ public enum HermesBackendAuthMode: String, Decodable, Equatable, Sendable {
   }
 }
 
+extension HermesBackendAuthMode: Encodable {}
+
 public struct HermesBackendStatus: Decodable, Equatable, Sendable {
   public let version: String
   public let releaseDate: String?

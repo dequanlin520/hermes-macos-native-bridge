@@ -10,6 +10,8 @@ public enum HermesRuntimeEventKind: String, Equatable, Sendable {
   case sessionStopped
 }
 
+extension HermesRuntimeEventKind: Codable {}
+
 public struct HermesRuntimeEventSessionSummary: Equatable, Sendable, CustomStringConvertible,
   CustomDebugStringConvertible
 {

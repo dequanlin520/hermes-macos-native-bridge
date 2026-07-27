@@ -22,7 +22,7 @@ public protocol HermesNativeUIWindowFactory: Sendable {
   @MainActor
   func makeWindow(
     for identifier: HermesNativeUIWindowIdentifier,
-    runtimeGraph: HermesAppRuntimeGraph
+    clientGraph: HermesAppClientGraph
   ) -> HermesNativeUIWindowControlling
 }
 
@@ -30,15 +30,15 @@ public protocol HermesNativeUIWindowFactory: Sendable {
 public final class HermesWindowCoordinator {
   public private(set) var openedWindowIdentifiers: Set<HermesNativeUIWindowIdentifier> = []
 
-  private let runtimeGraph: HermesAppRuntimeGraph
+  private let clientGraph: HermesAppClientGraph
   private let windowFactory: HermesNativeUIWindowFactory
   private var windows: [HermesNativeUIWindowIdentifier: HermesNativeUIWindowControlling] = [:]
 
   public init(
-    runtimeGraph: HermesAppRuntimeGraph,
+    clientGraph: HermesAppClientGraph,
     windowFactory: HermesNativeUIWindowFactory
   ) {
-    self.runtimeGraph = runtimeGraph
+    self.clientGraph = clientGraph
     self.windowFactory = windowFactory
   }
 
@@ -53,7 +53,7 @@ public final class HermesWindowCoordinator {
       return
     }
 
-    let window = windowFactory.makeWindow(for: identifier, runtimeGraph: runtimeGraph)
+    let window = windowFactory.makeWindow(for: identifier, clientGraph: clientGraph)
     windows[identifier] = window
     openedWindowIdentifiers.insert(identifier)
     window.show()

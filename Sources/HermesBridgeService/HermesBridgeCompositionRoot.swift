@@ -19,6 +19,9 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
   public let discovery: HermesDiscovery
   public let supervisor: HermesProcessSupervisor
   public let protocolFactory: HermesProtocolClientFactory
+  public let runtimeEventBus: HermesRuntimeEventBus
+  public let runtimeSessionManager: HermesRuntimeSessionManager
+  public let runtimeCommandAPI: HermesRuntimeCommandAPI
   public let stateStore: FileBackedHermesRequestStateStore
   public let bindingRegistry: ConfigurationBackedHermesRequestBindingRegistry
   public let authorizedRootRegistry: FileBackedHermesAuthorizedRootRegistry
@@ -53,6 +56,7 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
     )
     self.supervisor = HermesProcessSupervisor()
     self.protocolFactory = HermesProtocolClientFactory()
+    self.runtimeEventBus = HermesRuntimeEventBus()
 
     do {
       self.stateStore = try FileBackedHermesRequestStateStore(
@@ -118,6 +122,27 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
       throw HermesBridgeCompositionRootError.processConfigurationFailed(Self.safeCode(for: error))
     }
 
+    let backendConfiguration = HermesBackendAdapterConfiguration(
+      executableURL: URL(fileURLWithPath: processConfiguration.executable.resolvedPath),
+      port: processConfiguration.port,
+      runtimeRoot: processConfiguration.runtimeRoot,
+      startupTimeout: processConfiguration.startupTimeout,
+      gracefulShutdownTimeout: processConfiguration.gracefulShutdownTimeout,
+      forcedShutdownTimeout: processConfiguration.forcedShutdownTimeout
+    )
+    let runtimeSupervisor = supervisor
+    self.runtimeSessionManager = HermesRuntimeSessionManager(
+      backendFactory: {
+        HermesBackendAdapter(
+          allowlistedExecutableCandidates: configuration.allowlistedHermesExecutableCandidates,
+          configuration: backendConfiguration,
+          supervisor: runtimeSupervisor
+        )
+      },
+      eventBus: runtimeEventBus
+    )
+    self.runtimeCommandAPI = HermesRuntimeCommandAPI(sessionManager: runtimeSessionManager)
+
     self.orchestrator = HermesRequestOrchestrator(
       bindingRegistry: bindingRegistry,
       stateStore: stateStore,
@@ -152,7 +177,8 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
       bindingRegistry: bindingRegistry,
       fileIntegration: fileIntegration,
       systemEventIntegration: systemEventIntegration,
-      eventPolicyEngine: eventPolicyEngine
+      eventPolicyEngine: eventPolicyEngine,
+      runtimeCommandAPI: runtimeCommandAPI
     )
     self.dispatcher = HermesBridgeXPCRequestDispatcher(
       handler: requestHandler,
@@ -235,19 +261,24 @@ public struct HermesBridgeServiceRequestHandler: HermesBridgeRequestHandling {
   private let fileIntegration: HermesBridgeFileIntegrationCoordinator
   private let systemEventIntegration: HermesBridgeSystemEventCoordinator
   private let eventPolicyEngine: HermesEventPolicyEngine
+  private let runtimeCommandAPI: HermesRuntimeCommandAPI
+  private let runtimeEvents: HermesBridgeRuntimeEventSubscriptionCoordinator
 
   public init(
     orchestrator: HermesRequestOrchestrator,
     bindingRegistry: ConfigurationBackedHermesRequestBindingRegistry,
     fileIntegration: HermesBridgeFileIntegrationCoordinator,
     systemEventIntegration: HermesBridgeSystemEventCoordinator,
-    eventPolicyEngine: HermesEventPolicyEngine
+    eventPolicyEngine: HermesEventPolicyEngine,
+    runtimeCommandAPI: HermesRuntimeCommandAPI
   ) {
     self.orchestrator = orchestrator
     self.bindingRegistry = bindingRegistry
     self.fileIntegration = fileIntegration
     self.systemEventIntegration = systemEventIntegration
     self.eventPolicyEngine = eventPolicyEngine
+    self.runtimeCommandAPI = runtimeCommandAPI
+    self.runtimeEvents = HermesBridgeRuntimeEventSubscriptionCoordinator(commandAPI: runtimeCommandAPI)
   }
 
   public func listEnabledBindings() async throws -> [HermesBridgeBindingSummary] {
@@ -503,6 +534,32 @@ public struct HermesBridgeServiceRequestHandler: HermesBridgeRequestHandling {
       status: try await eventPolicyEngine.approvalQueueStatus())
   }
 
+  public func executeRuntimeCommand(_ command: HermesRuntimeCommand) async throws
+    -> HermesRuntimeCommandResult
+  {
+    try await runtimeCommandAPI.execute(command)
+  }
+
+  public func createRuntimeEventSubscription() async throws -> HermesBridgeRuntimeEventSubscriptionPayload {
+    try await runtimeEvents.createSubscription()
+  }
+
+  public func pollRuntimeEventSubscription(
+    subscriptionID: UUID,
+    timeoutMilliseconds: Int
+  ) async throws -> HermesBridgeRuntimeEventBatchPayload {
+    try await runtimeEvents.pollSubscription(
+      subscriptionID: subscriptionID,
+      timeoutMilliseconds: timeoutMilliseconds
+    )
+  }
+
+  public func cancelRuntimeEventSubscription(subscriptionID: UUID) async throws
+    -> HermesBridgeRuntimeEventSubscriptionPayload
+  {
+    try await runtimeEvents.cancelSubscription(subscriptionID: subscriptionID)
+  }
+
   public func submit(bindingID: HermesRequestBindingID, prompt: String) async throws
     -> HermesRequestID
   {
@@ -522,6 +579,71 @@ public struct HermesBridgeServiceRequestHandler: HermesBridgeRequestHandling {
     decision: HermesApprovalResponseDecision
   ) async throws -> HermesRequestRecord {
     try await orchestrator.respondToApproval(requestID: requestID, decision: decision)
+  }
+}
+
+private actor HermesBridgeRuntimeEventSubscriptionCoordinator {
+  private struct Subscription {
+    let task: Task<Void, Never>
+    var buffer: [HermesRuntimeCommandEvent]
+  }
+
+  private let commandAPI: HermesRuntimeCommandAPI
+  private var subscriptions: [UUID: Subscription] = [:]
+
+  init(commandAPI: HermesRuntimeCommandAPI) {
+    self.commandAPI = commandAPI
+  }
+
+  func createSubscription() async throws -> HermesBridgeRuntimeEventSubscriptionPayload {
+    let result = try await commandAPI.execute(.subscribeEvents)
+    guard case .eventSubscription(let source) = result else {
+      throw HermesBridgeXPCError.internalFailure
+    }
+    let id = source.id
+    let task = Task { [weak self] in
+      for await event in source.events {
+        await self?.append(event, to: id)
+      }
+    }
+    subscriptions[id] = Subscription(task: task, buffer: [])
+    return HermesBridgeRuntimeEventSubscriptionPayload(subscriptionID: id)
+  }
+
+  func pollSubscription(
+    subscriptionID: UUID,
+    timeoutMilliseconds: Int
+  ) async throws -> HermesBridgeRuntimeEventBatchPayload {
+    guard subscriptions[subscriptionID] != nil else {
+      throw HermesBridgeXPCError.subscriptionNotFound
+    }
+    if subscriptions[subscriptionID]?.buffer.isEmpty == true, timeoutMilliseconds > 0 {
+      try? await Task.sleep(nanoseconds: UInt64(min(timeoutMilliseconds, 5_000)) * 1_000_000)
+    }
+    guard var subscription = subscriptions[subscriptionID] else {
+      throw HermesBridgeXPCError.subscriptionNotFound
+    }
+    let events = Array(subscription.buffer.prefix(128))
+    subscription.buffer.removeFirst(min(events.count, subscription.buffer.count))
+    subscriptions[subscriptionID] = subscription
+    return HermesBridgeRuntimeEventBatchPayload(subscriptionID: subscriptionID, events: events)
+  }
+
+  func cancelSubscription(subscriptionID: UUID) async throws -> HermesBridgeRuntimeEventSubscriptionPayload {
+    guard let subscription = subscriptions.removeValue(forKey: subscriptionID) else {
+      throw HermesBridgeXPCError.subscriptionNotFound
+    }
+    subscription.task.cancel()
+    return HermesBridgeRuntimeEventSubscriptionPayload(subscriptionID: subscriptionID)
+  }
+
+  private func append(_ event: HermesRuntimeCommandEvent, to subscriptionID: UUID) {
+    guard var subscription = subscriptions[subscriptionID] else { return }
+    subscription.buffer.append(event)
+    if subscription.buffer.count > 512 {
+      subscription.buffer.removeFirst(subscription.buffer.count - 512)
+    }
+    subscriptions[subscriptionID] = subscription
   }
 }
 

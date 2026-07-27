@@ -10,6 +10,8 @@ public enum HermesRuntimeSessionStatus: String, Equatable, Sendable {
   case failed
 }
 
+extension HermesRuntimeSessionStatus: Codable {}
+
 public enum HermesRuntimeSessionShutdownReason: Equatable, Sendable, CustomStringConvertible {
   case requested
   case startupFailed
@@ -23,6 +25,37 @@ public enum HermesRuntimeSessionShutdownReason: Equatable, Sendable, CustomStrin
       return "startup failed"
     case .shutdownFailed:
       return "shutdown failed"
+    }
+  }
+}
+
+extension HermesRuntimeSessionShutdownReason: Codable {
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.singleValueContainer()
+    switch try container.decode(String.self) {
+    case "requested":
+      self = .requested
+    case "startupFailed":
+      self = .startupFailed
+    case "shutdownFailed":
+      self = .shutdownFailed
+    default:
+      throw DecodingError.dataCorruptedError(
+        in: container,
+        debugDescription: "Unknown runtime session shutdown reason"
+      )
+    }
+  }
+
+  public func encode(to encoder: Encoder) throws {
+    var container = encoder.singleValueContainer()
+    switch self {
+    case .requested:
+      try container.encode("requested")
+    case .startupFailed:
+      try container.encode("startupFailed")
+    case .shutdownFailed:
+      try container.encode("shutdownFailed")
     }
   }
 }
@@ -132,6 +165,8 @@ public struct HermesRuntimeCapabilities: Equatable, Sendable {
     )
   }
 }
+
+extension HermesRuntimeCapabilities: Codable {}
 
 public struct HermesRuntimeSessionSnapshot: Equatable, Sendable, CustomStringConvertible,
   CustomDebugStringConvertible

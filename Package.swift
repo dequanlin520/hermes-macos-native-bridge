@@ -138,8 +138,9 @@ let package = Package(
     .executableTarget(
       name: "HermesBridgeApp",
       dependencies: [
+        "HermesBridgeXPC",
         "HermesDashboard", "HermesDiagnostics", "HermesLogsViewer", "HermesMenuBar",
-        "HermesRuntimeFoundation", "HermesSettings",
+        "HermesSettings",
       ]
     ),
     .target(

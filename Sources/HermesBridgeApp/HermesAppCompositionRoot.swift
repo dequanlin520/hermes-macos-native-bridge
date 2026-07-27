@@ -1,71 +1,50 @@
 import Foundation
+import AppKit
+import HermesBridgeXPC
 import HermesDashboard
 import HermesDiagnostics
 import HermesLogsViewer
 import HermesMenuBar
-import HermesRuntimeFoundation
 import HermesSettings
 import SwiftUI
 
-public final class HermesAppRuntimeGraph: @unchecked Sendable {
-  public let eventBus: HermesRuntimeEventBus
-  public let sessionManager: HermesRuntimeSessionManager
-  public let commandAPI: HermesRuntimeCommandAPI
+extension HermesBridgeRuntimeClientAdapter: HermesRuntimeCommandExecuting,
+  HermesDashboardRuntimeCommandExecuting, HermesDiagnosticsRuntimeCommandExecuting,
+  HermesLogsRuntimeEventSubscribing
+{}
+
+public protocol HermesAppRuntimeClienting: HermesRuntimeCommandExecuting,
+  HermesDashboardRuntimeCommandExecuting, HermesDiagnosticsRuntimeCommandExecuting,
+  HermesLogsRuntimeEventSubscribing, Sendable
+{
+  func invalidate() async
+}
+
+extension HermesBridgeRuntimeClientAdapter: HermesAppRuntimeClienting {}
+
+public final class HermesAppClientGraph: @unchecked Sendable {
+  public let runtimeClient: any HermesAppRuntimeClienting
   public let settingsStore: HermesConfigurationStoring
 
   private let shutdownHandler: @Sendable () async -> Void
 
   public init(
-    eventBus: HermesRuntimeEventBus,
-    sessionManager: HermesRuntimeSessionManager,
-    commandAPI: HermesRuntimeCommandAPI,
+    runtimeClient: any HermesAppRuntimeClienting,
     settingsStore: HermesConfigurationStoring = HermesConfigurationStore(),
     shutdownHandler: (@Sendable () async -> Void)? = nil
   ) {
-    self.eventBus = eventBus
-    self.sessionManager = sessionManager
-    self.commandAPI = commandAPI
+    self.runtimeClient = runtimeClient
     self.settingsStore = settingsStore
     self.shutdownHandler = shutdownHandler ?? {
-      let sessions = commandAPI.listSessions()
-      for session in sessions where session.currentStatus != .stopped {
-        _ = try? await commandAPI.stopSession(session.sessionID, reason: .requested)
-      }
+      await runtimeClient.invalidate()
     }
   }
 
-  public static func production() -> HermesAppRuntimeGraph {
-    let eventBus = HermesRuntimeEventBus()
-    let runtimeRoot = FileManager.default
-      .urls(for: .applicationSupportDirectory, in: .userDomainMask)
-      .first?
-      .appendingPathComponent("HermesBridgeApp", isDirectory: true)
-      ?? URL(fileURLWithPath: NSTemporaryDirectory())
-        .appendingPathComponent("HermesBridgeApp", isDirectory: true)
-
-    let executableCandidates = [
-      URL(fileURLWithPath: "/opt/homebrew/bin/hermes"),
-      URL(fileURLWithPath: "/usr/local/bin/hermes"),
-    ]
-    let configuration = HermesBackendAdapterConfiguration(
-      executableURL: executableCandidates[0],
-      port: 19123,
-      runtimeRoot: runtimeRoot
-    )
-    let sessionManager = HermesRuntimeSessionManager(
-      backendFactory: {
-        HermesBackendAdapter(
-          allowlistedExecutableCandidates: executableCandidates,
-          configuration: configuration
-        )
-      },
-      eventBus: eventBus
-    )
-    let commandAPI = HermesRuntimeCommandAPI(sessionManager: sessionManager)
-    return HermesAppRuntimeGraph(
-      eventBus: eventBus,
-      sessionManager: sessionManager,
-      commandAPI: commandAPI
+  public static func production() -> HermesAppClientGraph {
+    let serviceName = try! HermesBridgeMachServiceName("com.hermes.bridge.xpc")
+    let client = HermesBridgeXPCClient(machServiceName: serviceName)
+    return HermesAppClientGraph(
+      runtimeClient: HermesBridgeRuntimeClientAdapter(client: client)
     )
   }
 
@@ -76,7 +55,7 @@ public final class HermesAppRuntimeGraph: @unchecked Sendable {
 
 @MainActor
 public final class HermesAppCompositionRoot: ObservableObject {
-  public let runtimeGraph: HermesAppRuntimeGraph
+  public let clientGraph: HermesAppClientGraph
   public let menuBarViewModel: HermesMenuBarViewModel
   public let windowCoordinator: HermesWindowCoordinator
   public let router: HermesNativeUIRouter
@@ -84,13 +63,13 @@ public final class HermesAppCompositionRoot: ObservableObject {
   private var didShutdown = false
 
   public init(
-    runtimeGraph: HermesAppRuntimeGraph = .production(),
+    clientGraph: HermesAppClientGraph = .production(),
     windowFactory: HermesNativeUIWindowFactory = HermesProductionNativeUIWindowFactory()
   ) {
-    self.runtimeGraph = runtimeGraph
-    self.menuBarViewModel = HermesMenuBarViewModel(commandAPI: runtimeGraph.commandAPI)
+    self.clientGraph = clientGraph
+    self.menuBarViewModel = HermesMenuBarViewModel(commandAPI: clientGraph.runtimeClient)
     self.windowCoordinator = HermesWindowCoordinator(
-      runtimeGraph: runtimeGraph,
+      clientGraph: clientGraph,
       windowFactory: windowFactory
     )
     self.router = HermesNativeUIRouter(windowCoordinator: windowCoordinator)
@@ -106,7 +85,7 @@ public final class HermesAppCompositionRoot: ObservableObject {
     didShutdown = true
     menuBarViewModel.cancel()
     windowCoordinator.cleanup()
-    await runtimeGraph.shutdown()
+    await clientGraph.shutdown()
   }
 }
 
@@ -116,27 +95,27 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
   @MainActor
   public func makeWindow(
     for identifier: HermesNativeUIWindowIdentifier,
-    runtimeGraph: HermesAppRuntimeGraph
+    clientGraph: HermesAppClientGraph
   ) -> HermesNativeUIWindowControlling {
     let controller: NSWindowController
     switch identifier {
     case .dashboard:
       controller = HermesDashboardWindowController(
-        viewModel: HermesDashboardViewModel(commandAPI: runtimeGraph.commandAPI)
+        viewModel: HermesDashboardViewModel(commandAPI: clientGraph.runtimeClient)
       )
     case .logs:
       controller = HermesLogsViewerWindowController(
-        viewModel: HermesLogsViewerViewModel(eventBus: runtimeGraph.eventBus)
+        viewModel: HermesLogsViewerViewModel(eventSource: clientGraph.runtimeClient)
       )
     case .settings:
       controller = HermesSettingsWindowController(
-        viewModel: HermesSettingsViewModel(store: runtimeGraph.settingsStore)
+        viewModel: HermesSettingsViewModel(store: clientGraph.settingsStore)
       )
     case .diagnostics:
       controller = HermesDiagnosticsWindowController(
         viewModel: HermesDiagnosticsViewModel(
           provider: HermesDiagnosticProvider(
-            commandAPI: runtimeGraph.commandAPI,
+            commandAPI: clientGraph.runtimeClient,
             eventBusState: { .ready }
           )
         )
