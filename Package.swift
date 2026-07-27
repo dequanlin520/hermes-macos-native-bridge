@@ -273,6 +273,10 @@ let package = Package(
       dependencies: []
     ),
     .testTarget(
+      name: "HermesReleaseTests",
+      dependencies: []
+    ),
+    .testTarget(
       name: "HermesInstallerTests",
       dependencies: ["HermesBridgeServiceManager"]
     ),
