@@ -272,5 +272,9 @@ let package = Package(
       name: "M8002ReleasePipelineTests",
       dependencies: []
     ),
+    .testTarget(
+      name: "HermesInstallerTests",
+      dependencies: ["HermesBridgeServiceManager"]
+    ),
   ]
 )
