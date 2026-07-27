@@ -27,6 +27,7 @@ The report contains one check for each `HermesPermissionKind`:
 - `signing`
 - `hardenedRuntime`
 - `notarization`
+- `realBackendCompatibility`
 
 The report may also carry a bounded audit-integrity summary with state,
 verified segment count, verified event count, safe issue codes and verification
@@ -89,9 +90,22 @@ Remediation uses fixed codes:
 - `configureAuditSigningAccess`
 - `resumeAuditKeyRotation`
 - `resetAuditSigningConfiguration`
+- `installHermes`
+- `upgradeHermes`
+- `validateHermesBackend`
 
 System Settings remediation opens only fixed documented URL schemes after an
 explicit user click. The Bridge never changes a permission automatically.
+
+## Real Backend Compatibility
+
+M9-001 adds a real-backend compatibility check. It reports only redacted
+fields: executable availability, detected version, compatibility state,
+normalized capabilities, checksum prefix, code-signing classification, last
+probe timestamp, and remediation code.
+
+The check must not expose absolute Hermes executable paths, real `~/.hermes`
+contents, Keychain credentials, tokens, Prompt text, or private file paths.
 
 ## Audit Signing Operations
 

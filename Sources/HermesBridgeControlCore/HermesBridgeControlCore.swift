@@ -32,6 +32,7 @@ public struct HermesBridgeCLIStatusOutput: Codable, Equatable, Sendable {
   public let activeVersion: String?
   public let label: String
   public let machService: String
+  public let realBackendCompatibility: HermesBackendCompatibilityReport?
 
   public init(
     schemaVersion: Int = 1,
@@ -42,7 +43,8 @@ public struct HermesBridgeCLIStatusOutput: Codable, Equatable, Sendable {
     capabilities: [String],
     activeVersion: String?,
     label: String,
-    machService: String
+    machService: String,
+    realBackendCompatibility: HermesBackendCompatibilityReport? = nil
   ) {
     self.schemaVersion = schemaVersion
     self.status = status
@@ -53,6 +55,7 @@ public struct HermesBridgeCLIStatusOutput: Codable, Equatable, Sendable {
     self.activeVersion = activeVersion
     self.label = label
     self.machService = machService
+    self.realBackendCompatibility = realBackendCompatibility
   }
 }
 
@@ -87,15 +90,18 @@ public struct HermesBridgeDoctorReport: Codable, Equatable, Sendable {
   public let overallStatus: HermesBridgeDoctorCheckStatus
   public let checks: [HermesBridgeDoctorCheck]
   public let permissions: HermesPermissionsDoctorReport
+  public let realBackendCompatibility: HermesBackendCompatibilityReport?
 
   public init(
     schemaVersion: Int = 1,
     checks: [HermesBridgeDoctorCheck],
-    permissions: HermesPermissionsDoctorReport = HermesPermissionsDoctorReport(checks: [])
+    permissions: HermesPermissionsDoctorReport = HermesPermissionsDoctorReport(checks: []),
+    realBackendCompatibility: HermesBackendCompatibilityReport? = nil
   ) {
     self.schemaVersion = schemaVersion
     self.checks = checks
     self.permissions = permissions
+    self.realBackendCompatibility = realBackendCompatibility
     if checks.contains(where: { $0.status == .fail }) {
       self.overallStatus = .fail
     } else if checks.contains(where: { $0.status == .warning }) {
@@ -180,6 +186,7 @@ public enum HermesBridgeCLICommand: Equatable, Sendable {
   case status
   case doctor
   case permissionsDoctor
+  case realBackendCompatibility
   case recentAuditEvents
   case verifyAudit
   case auditSigningStatus
@@ -287,6 +294,8 @@ public struct HermesBridgeCLIInvocation: Equatable, Sendable {
       self.command = .doctor
     case "permissions-doctor":
       self.command = .permissionsDoctor
+    case "real-backend-compatibility":
+      self.command = .realBackendCompatibility
     case "recent-audit-events":
       self.command = .recentAuditEvents
     case "verify-audit":
@@ -505,6 +514,13 @@ public struct HermesBridgeControlRunner: Sendable {
           HermesBridgeControlRenderer.renderPermissions(
             report.permissions, format: invocation.format)
         )
+      case .realBackendCompatibility:
+        let report = await runtime.doctor.report(layout: layout, timeout: invocation.timeout)
+        return success(
+          HermesBridgeControlRenderer.renderRealBackendCompatibility(
+            report.realBackendCompatibility ?? .unavailable(),
+            format: invocation.format
+          ))
       case .recentAuditEvents:
         let events = try await runtime.audit.recentEvents(layout: layout, limit: 20)
         return success(
@@ -588,7 +604,8 @@ public struct HermesBridgeControlRunner: Sendable {
           capabilities: [],
           activeVersion: try manager.activeVersion(),
           label: layout.label,
-          machService: layout.machService
+          machService: layout.machService,
+          realBackendCompatibility: safeRealBackendCompatibility()
         )
         return success(HermesBridgeControlRenderer.renderStatus(output, format: invocation.format))
       case .restart:
@@ -694,12 +711,28 @@ public struct HermesBridgeControlRunner: Sendable {
       capabilities: capabilities?.capabilities.map(\.rawValue).sorted() ?? [],
       activeVersion: try manager.activeVersion(),
       label: layout.label,
-      machService: layout.machService
+      machService: layout.machService,
+      realBackendCompatibility: safeRealBackendCompatibility()
     )
   }
 
   private func success(_ output: String) -> HermesBridgeCLIRunResult {
     HermesBridgeCLIRunResult(exitCode: .success, stdout: output + "\n", stderr: "")
+  }
+
+  private func safeRealBackendCompatibility() -> HermesBackendCompatibilityReport {
+    Self.loadRealBackendCompatibilityArtifact()
+  }
+
+  private static func loadRealBackendCompatibilityArtifact() -> HermesBackendCompatibilityReport {
+    let reportURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+      .appendingPathComponent("artifacts/m9-001/compatibility-report.json")
+    guard let data = try? Data(contentsOf: reportURL),
+      let report = try? JSONDecoder().decode(HermesBackendCompatibilityReport.self, from: data)
+    else {
+      return .unavailable()
+    }
+    return report
   }
 
   private func failure(
@@ -978,6 +1011,7 @@ public enum HermesBridgeControlRenderer {
       "activeVersion: \(output.activeVersion ?? "none")",
       "protocolVersion: \(output.protocolVersion ?? "unavailable")",
       "capabilities: \(output.capabilities.joined(separator: ","))",
+      "realBackendCompatibility: \(output.realBackendCompatibility?.compatibilityState.rawValue ?? "not_checked")",
     ].joined(separator: "\n")
   }
 
@@ -1006,6 +1040,22 @@ public enum HermesBridgeControlRenderer {
         "\($0.state.rawValue) \($0.kind.rawValue): \($0.detailCode)"
           + ($0.remediationCode.map { " [\($0.rawValue)]" } ?? "")
       }).joined(separator: "\n")
+  }
+
+  public static func renderRealBackendCompatibility(
+    _ report: HermesBackendCompatibilityReport,
+    format: HermesBridgeCLIOutputFormat
+  ) -> String {
+    if format == .json { return json(report) }
+    return [
+      "realBackendCompatibility: \(report.compatibilityState.rawValue)",
+      "executableAvailable: \(report.executableAvailable)",
+      "version: \(report.version ?? "unknown")",
+      "capabilities: \(report.capabilities.joined(separator: ","))",
+      "checksumPrefix: \(report.checksumPrefix ?? "unavailable")",
+      "codeSigning: \(report.codeSigningClassification)",
+      "remediationCode: \(report.remediationCode)",
+    ].joined(separator: "\n")
   }
 
   public static func renderAuditEvents(
@@ -1313,6 +1363,7 @@ public struct ProductionDoctorChecker: HermesBridgeDoctorChecking {
     "xpc.protocolVersion",
     "xpc.capabilities",
     "hermes.executableDiscovery",
+    "hermes.realBackendCompatibility",
     "backend.processStatus",
     "requestState.rootReadable",
     "runtimeLog.rootPermissions",
@@ -1377,11 +1428,21 @@ public struct ProductionDoctorChecker: HermesBridgeDoctorChecking {
       check(xpc.protocol, "xpc.protocolVersion", "protocol major compatible", "UPDATE_BRIDGE"))
     checks.append(
       check(xpc.capabilities, "xpc.capabilities", "capabilities available", "CHECK_XPC"))
+    let realBackend = safeRealBackendCompatibility()
     checks.append(
       HermesBridgeDoctorCheck(
-        id: "hermes.executableDiscovery", status: .warning,
-        explanation: "Hermes executable discovery is deferred to service configuration",
-        remediationCode: "CHECK_HERMES_INSTALL"))
+        id: "hermes.executableDiscovery",
+        status: realBackend.executableAvailable ? .pass : .warning,
+        explanation: realBackend.executableAvailable
+          ? "Hermes executable discovered" : "Hermes executable unavailable",
+        remediationCode: realBackend.executableAvailable ? nil : "CHECK_HERMES_INSTALL"))
+    checks.append(
+      HermesBridgeDoctorCheck(
+        id: "hermes.realBackendCompatibility",
+        status: doctorStatus(for: realBackend.compatibilityState),
+        explanation: "real backend compatibility \(realBackend.compatibilityState.rawValue)",
+        remediationCode: realBackend.compatibilityState == .supported
+          ? nil : realBackend.remediationCode))
     checks.append(
       HermesBridgeDoctorCheck(
         id: "backend.processStatus", status: launchdVisible ? .pass : .notApplicable,
@@ -1432,7 +1493,8 @@ public struct ProductionDoctorChecker: HermesBridgeDoctorChecking {
       launchdVisible: launchdVisible,
       xpcVisible: xpc.handshake,
       auditIntegrity: auditIntegrity.map(HermesAuditExportIntegrityEvidence.init(report:)),
-      auditSigningStatus: HermesAuditPublicTrustAnchorStore(root: auditRoot).status()
+      auditSigningStatus: HermesAuditPublicTrustAnchorStore(root: auditRoot).status(),
+      realBackendCompatibility: realBackend
     )
     try? await auditStore(layout: layout).append(
       HermesAuditEvent.make(
@@ -1442,7 +1504,11 @@ public struct ProductionDoctorChecker: HermesBridgeDoctorChecking {
         reasonCode: "doctor_complete",
         metadata: try HermesAuditMetadata(["permissionChecks": "\(permissions.checks.count)"])
       ))
-    return HermesBridgeDoctorReport(checks: checks, permissions: permissions)
+    return HermesBridgeDoctorReport(
+      checks: checks,
+      permissions: permissions,
+      realBackendCompatibility: realBackend
+    )
   }
 
   private func permissionsReport(
@@ -1451,7 +1517,8 @@ public struct ProductionDoctorChecker: HermesBridgeDoctorChecking {
     launchdVisible: Bool,
     xpcVisible: Bool,
     auditIntegrity: HermesAuditExportIntegrityEvidence?,
-    auditSigningStatus: HermesAuditSigningStatus?
+    auditSigningStatus: HermesAuditSigningStatus?,
+    realBackendCompatibility: HermesBackendCompatibilityReport?
   ) async -> HermesPermissionsDoctorReport {
     let roots = try? await HermesBridgeXPCClient(
       machServiceName: try HermesBridgeMachServiceName(layout.machService),
@@ -1473,8 +1540,35 @@ public struct ProductionDoctorChecker: HermesBridgeDoctorChecking {
         appIntentMetadataPresent: appIntentMetadata,
         notificationsRelevant: true,
         auditIntegrity: auditIntegrity,
-        auditSigningStatus: auditSigningStatus
+        auditSigningStatus: auditSigningStatus,
+        realBackendCompatibility: realBackendCompatibility
       ))
+  }
+
+  private func safeRealBackendCompatibility() -> HermesBackendCompatibilityReport {
+    let reportURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+      .appendingPathComponent("artifacts/m9-001/compatibility-report.json")
+    guard let data = try? Data(contentsOf: reportURL),
+      let report = try? JSONDecoder().decode(HermesBackendCompatibilityReport.self, from: data)
+    else {
+      return .unavailable()
+    }
+    return report
+  }
+
+  private func doctorStatus(
+    for state: HermesBackendCompatibilityState
+  ) -> HermesBridgeDoctorCheckStatus {
+    switch state {
+    case .supported:
+      return .pass
+    case .supportedWithWarnings:
+      return .warning
+    case .executableUnavailable:
+      return .warning
+    case .unsupportedTooOld, .unsupportedTooNew, .incompatibleProtocol, .versionUnknown:
+      return .fail
+    }
   }
 
   private func auditStore(layout: HermesBridgeInstallationLayout) async throws

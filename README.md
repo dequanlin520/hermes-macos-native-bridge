@@ -2,6 +2,19 @@
 
 Native, bidirectional macOS integration for Hermes Agent.
 
+## Real Hermes Compatibility
+
+M9-001 validates a real installed Hermes executable from an isolated
+artifact-owned environment without using the normal Hermes profile:
+
+```zsh
+Scripts/integration/m9-001-real-hermes-compatibility.zsh
+```
+
+See `Docs/HermesIntegration/RealBackendCompatibility.md`,
+`Docs/HermesIntegration/SupportedVersions.md`, and
+`Docs/HermesIntegration/IsolatedBackendTesting.md`.
+
 ## Release Candidate Acceptance
 
 The M8 release-candidate harness composes the app, menu bar, XPC client,

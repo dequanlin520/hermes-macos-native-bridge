@@ -516,6 +516,7 @@ public final class HermesProcessSupervisor: @unchecked Sendable {
       "XDG_RUNTIME_DIR=\(runtimeDirectory.appendingPathComponent("xdg-runtime", isDirectory: true).path)",
       "PATH=/usr/bin:/bin:/usr/sbin:/sbin",
       "LANG=C",
+      "LC_ALL=C",
     ]
   }
 

@@ -177,6 +177,7 @@ public struct HermesReleaseCandidateManifest: Codable, Equatable, Sendable {
   public let acceptanceGateResults: [HermesReleaseCandidateGateResult]
   public let developerIDAvailable: Bool
   public let notarizationAvailable: Bool
+  public let realBackendCompatibility: HermesBackendCompatibilityReport?
   public let cleanupResult: HermesReleaseCandidateCleanupReport
 
   public init(
@@ -199,6 +200,7 @@ public struct HermesReleaseCandidateManifest: Codable, Equatable, Sendable {
     acceptanceGateResults: [HermesReleaseCandidateGateResult],
     developerIDAvailable: Bool,
     notarizationAvailable: Bool,
+    realBackendCompatibility: HermesBackendCompatibilityReport? = nil,
     cleanupResult: HermesReleaseCandidateCleanupReport
   ) throws {
     try Self.validate(gates: acceptanceGateResults)
@@ -221,6 +223,7 @@ public struct HermesReleaseCandidateManifest: Codable, Equatable, Sendable {
     self.acceptanceGateResults = acceptanceGateResults.sorted { $0.gate.rawValue < $1.gate.rawValue }
     self.developerIDAvailable = developerIDAvailable
     self.notarizationAvailable = notarizationAvailable
+    self.realBackendCompatibility = realBackendCompatibility
     self.cleanupResult = cleanupResult
   }
 

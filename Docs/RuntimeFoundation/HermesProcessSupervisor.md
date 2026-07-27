@@ -146,3 +146,15 @@ escaped-descendant telemetry. The supervisor follows that ownership model.
 `HermesProtocolClient` remains blocked. No run submission, run status,
 cancellation, approval, event streaming, capability discovery, or production
 authentication model is implemented by this issue.
+
+## M9-001 Real Backend Compatibility
+
+The real-backend compatibility layer follows the same process-supervision
+principles: exact executable URL, fixed harmless arguments, bounded startup and
+output capture, PID/PGID tracking, graceful shutdown, and no broad process-name
+cleanup.
+
+The M9-001 integration script may launch only harmless real Hermes diagnostics
+or isolated backend mode. Unsupported machine protocol probes are reported as
+`not_supported`; the Bridge must not send a real user Prompt during
+compatibility validation.
