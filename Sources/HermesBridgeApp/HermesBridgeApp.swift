@@ -5,6 +5,18 @@ import SwiftUI
 struct HermesBridgeApp: App {
   @NSApplicationDelegateAdaptor(HermesBridgeAppDelegate.self) private var appDelegate
   @StateObject private var compositionRoot = HermesAppCompositionRoot()
+  @State private var acceptanceController: HermesM11003AcceptanceController?
+
+  init() {
+    if var controller = HermesM11003AcceptanceController.fromCommandLine() {
+      _acceptanceController = State(initialValue: nil)
+      Task { @MainActor in
+        controller.startIfNeeded(compositionRoot: HermesAppCompositionRoot())
+      }
+    } else {
+      _acceptanceController = State(initialValue: nil)
+    }
+  }
 
   var body: some Scene {
     MenuBarExtra("Hermes Bridge", systemImage: "point.3.connected.trianglepath.dotted") {
@@ -12,6 +24,7 @@ struct HermesBridgeApp: App {
         .onAppear {
           appDelegate.compositionRoot = compositionRoot
           compositionRoot.start()
+          acceptanceController?.startIfNeeded(compositionRoot: compositionRoot)
         }
     }
     .menuBarExtraStyle(.window)
