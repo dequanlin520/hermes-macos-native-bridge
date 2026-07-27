@@ -1,5 +1,6 @@
 import Foundation
 @testable import HermesBridgeApp
+@testable import HermesBridgeAppAcceptanceSupport
 import XCTest
 
 @MainActor
@@ -39,6 +40,10 @@ final class HermesProductionAppBundleAcceptanceTests: XCTestCase {
       "APPLICATIONS_MODIFIED",
       "PERMANENT_INSTALLATION",
       "RESIDUAL_PROCESS",
+      "ACCEPTANCE_SUPPORT_ISOLATED",
+      "RELEASE_CONTAINS_ACCEPTANCE_CONTROLLER",
+      "RELEASE_ACCEPTS_TEST_LAUNCH_ARGUMENTS",
+      "RELEASE_CONTAINS_ACCEPTANCE_SENTINELS",
       "M11_003_RESULT",
     ]
     let renderedKeys = script.components(separatedBy: "\n").compactMap { line -> String? in
@@ -74,7 +79,7 @@ final class HermesProductionAppBundleAcceptanceTests: XCTestCase {
     XCTAssertTrue(script.contains("kill -TERM \"$APP_PID\""))
   }
 
-  func testAcceptanceHookIsLaunchArgumentGated() throws {
+  func testAcceptanceSupportParsesHarnessLaunchArguments() throws {
     XCTAssertNil(HermesM11003AcceptanceController.fromCommandLine(arguments: ["HermesBridgeApp"]))
     XCTAssertNotNil(
       HermesM11003AcceptanceController.fromCommandLine(arguments: [
@@ -84,6 +89,52 @@ final class HermesProductionAppBundleAcceptanceTests: XCTestCase {
         "/tmp/state",
         "/tmp/evidence",
       ]))
+  }
+
+  func testProductionAppSourceDoesNotReferenceAcceptanceSupport() throws {
+    let sourceRoot = URL(fileURLWithPath: "Sources/HermesBridgeApp", isDirectory: true)
+    let fileURLs = try FileManager.default.contentsOfDirectory(
+      at: sourceRoot,
+      includingPropertiesForKeys: nil
+    ).filter { $0.pathExtension == "swift" }
+
+    let combinedSource = try fileURLs.map {
+      try String(contentsOf: $0, encoding: .utf8)
+    }.joined(separator: "\n")
+
+    XCTAssertFalse(combinedSource.contains("HermesM11003AcceptanceController"))
+    XCTAssertFalse(combinedSource.contains("HermesBridgeAppAcceptanceSupport"))
+    XCTAssertFalse(combinedSource.contains("--hermes-m11-003-acceptance"))
+  }
+
+  func testAcceptanceSupportIsOwnedByDedicatedPackageTargets() throws {
+    let manifest = try String(contentsOfFile: "Package.swift", encoding: .utf8)
+
+    XCTAssertTrue(manifest.contains("name: \"HermesBridgeAppAcceptanceSupport\""))
+    XCTAssertTrue(manifest.contains("name: \"HermesBridgeAppAcceptanceHarness\""))
+    XCTAssertTrue(manifest.contains("name: \"HermesBridgeAppExecutable\""))
+    XCTAssertTrue(manifest.contains(".define(\"HERMES_M11_003_ACCEPTANCE_SUPPORT\")"))
+    XCTAssertTrue(
+      manifest.contains(
+        """
+        name: "HermesBridgeAppExecutable",
+              dependencies: ["HermesBridgeApp"]
+        """
+      )
+    )
+  }
+
+  func testReleaseMembershipExcludesAcceptanceSourceFiles() throws {
+    let project = try String(
+      contentsOfFile: "Packaging/HermesBridgeApp/HermesBridgeApp.xcodeproj/project.pbxproj",
+      encoding: .utf8
+    )
+    let manifest = try String(contentsOfFile: "Package.swift", encoding: .utf8)
+
+    XCTAssertFalse(project.contains("HermesM11003AcceptanceController.swift"))
+    XCTAssertFalse(project.contains("HermesBridgeAppAcceptanceSupport"))
+    XCTAssertTrue(manifest.contains("targets: [\"HermesBridgeAppExecutable\"]"))
+    XCTAssertTrue(manifest.contains("targets: [\"HermesBridgeAppAcceptanceHarness\"]"))
   }
 
   func testAppTargetConstructsNoConcreteRuntimeGraphTypes() throws {

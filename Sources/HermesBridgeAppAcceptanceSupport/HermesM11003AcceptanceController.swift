@@ -1,9 +1,11 @@
 import AppKit
 import Foundation
+import HermesBridgeApp
 import HermesBridgeXPC
 import HermesRuntimeFoundation
 
-struct HermesM11003AcceptanceController {
+#if HERMES_M11_003_ACCEPTANCE_SUPPORT
+public struct HermesM11003AcceptanceController {
   private enum Mode: String {
     case startAndHold = "start-and-hold"
     case reconnectAndStop = "reconnect-and-stop"
@@ -14,7 +16,7 @@ struct HermesM11003AcceptanceController {
   private let evidenceURL: URL
   private var didStart = false
 
-  static func fromCommandLine(arguments: [String] = CommandLine.arguments)
+  public static func fromCommandLine(arguments: [String] = CommandLine.arguments)
     -> HermesM11003AcceptanceController?
   {
     guard let markerIndex = arguments.firstIndex(of: "--hermes-m11-003-acceptance") else {
@@ -38,7 +40,7 @@ struct HermesM11003AcceptanceController {
   }
 
   @MainActor
-  mutating func startIfNeeded(compositionRoot: HermesAppCompositionRoot) {
+  public mutating func startIfNeeded(compositionRoot: HermesAppCompositionRoot) {
     guard !didStart else { return }
     didStart = true
     let mode = mode
@@ -250,3 +252,6 @@ private struct HermesM11003AcceptanceEvidence {
     value ? "yes" : "no"
   }
 }
+#else
+#error("HermesM11003AcceptanceController must compile only in the acceptance-support target")
+#endif

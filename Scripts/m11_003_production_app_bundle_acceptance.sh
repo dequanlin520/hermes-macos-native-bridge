@@ -7,6 +7,8 @@ APP_NAME="Hermes Bridge.app"
 APP_BUNDLE="$ARTIFACT_DIR/$APP_NAME"
 APP_EXECUTABLE="$APP_BUNDLE/Contents/MacOS/HermesBridgeApp"
 SERVICE_EXECUTABLE="$APP_BUNDLE/Contents/Library/HermesBridge/HermesBridgeService"
+RELEASE_DERIVED_DATA="$ARTIFACT_DIR/release-derived"
+RELEASE_EXECUTABLE="$ROOT_DIR/.build/release/HermesBridgeApp"
 RESULT_FILE="$ARTIFACT_DIR/result.txt"
 RUN_ROOT="$ARTIFACT_DIR/run"
 CONFIG_DIR="$RUN_ROOT/HermesBridge"
@@ -62,6 +64,10 @@ set_default_results() {
     APPLICATIONS_MODIFIED yes
     PERMANENT_INSTALLATION yes
     RESIDUAL_PROCESS yes
+    ACCEPTANCE_SUPPORT_ISOLATED no
+    RELEASE_CONTAINS_ACCEPTANCE_CONTROLLER yes
+    RELEASE_ACCEPTS_TEST_LAUNCH_ARGUMENTS yes
+    RELEASE_CONTAINS_ACCEPTANCE_SENTINELS yes
     M11_003_RESULT FAIL
   )
 }
@@ -91,6 +97,10 @@ write_result() {
     PID_EXPOSED APPLICATIONS_MODIFIED PERMANENT_INSTALLATION RESIDUAL_PROCESS; do
     [[ "${RESULT[$key]}" == "no" ]] || pass="no"
   done
+  [[ "${RESULT[ACCEPTANCE_SUPPORT_ISOLATED]}" == "yes" ]] || pass="no"
+  [[ "${RESULT[RELEASE_CONTAINS_ACCEPTANCE_CONTROLLER]}" == "no" ]] || pass="no"
+  [[ "${RESULT[RELEASE_ACCEPTS_TEST_LAUNCH_ARGUMENTS]}" == "no" ]] || pass="no"
+  [[ "${RESULT[RELEASE_CONTAINS_ACCEPTANCE_SENTINELS]}" == "no" ]] || pass="no"
   [[ "${RESULT[SIGNING_STATE]}" == "valid" || "${RESULT[SIGNING_STATE]}" == "adhoc" || "${RESULT[SIGNING_STATE]}" == "unsigned" ]] || pass="no"
   RESULT[M11_003_RESULT]=$([[ "$pass" == "yes" ]] && print -r -- PASS || print -r -- FAIL)
 
@@ -125,6 +135,10 @@ write_result() {
     print -r -- "APPLICATIONS_MODIFIED=${RESULT[APPLICATIONS_MODIFIED]}"
     print -r -- "PERMANENT_INSTALLATION=${RESULT[PERMANENT_INSTALLATION]}"
     print -r -- "RESIDUAL_PROCESS=${RESULT[RESIDUAL_PROCESS]}"
+    print -r -- "ACCEPTANCE_SUPPORT_ISOLATED=${RESULT[ACCEPTANCE_SUPPORT_ISOLATED]}"
+    print -r -- "RELEASE_CONTAINS_ACCEPTANCE_CONTROLLER=${RESULT[RELEASE_CONTAINS_ACCEPTANCE_CONTROLLER]}"
+    print -r -- "RELEASE_ACCEPTS_TEST_LAUNCH_ARGUMENTS=${RESULT[RELEASE_ACCEPTS_TEST_LAUNCH_ARGUMENTS]}"
+    print -r -- "RELEASE_CONTAINS_ACCEPTANCE_SENTINELS=${RESULT[RELEASE_CONTAINS_ACCEPTANCE_SENTINELS]}"
     print -r -- "M11_003_RESULT=${RESULT[M11_003_RESULT]}"
   } > "$RESULT_FILE"
 }
@@ -393,9 +407,10 @@ build_bundle() {
     -configuration Debug \
     -derivedDataPath "$ARTIFACT_DIR/DerivedData" \
     build >/dev/null || return 1
+  swift build --product HermesBridgeAppAcceptanceHarness >/dev/null || return 1
   swift build --product HermesBridgeService >/dev/null || return 1
 
-  cp "$ROOT_DIR/.build/debug/HermesBridgeApp" "$APP_EXECUTABLE" || return 1
+  cp "$ROOT_DIR/.build/debug/HermesBridgeAppAcceptanceHarness" "$APP_EXECUTABLE" || return 1
   cp "$ROOT_DIR/.build/debug/HermesBridgeService" "$SERVICE_EXECUTABLE" || return 1
   cp "$ROOT_DIR/Packaging/HermesBridgeApp/Info.plist" "$APP_BUNDLE/Contents/Info.plist" || return 1
   cp "$ROOT_DIR/Packaging/LaunchAgent/com.hermes.bridge.plist.template" \
@@ -451,6 +466,47 @@ scan_runtime_ownership() {
     'HermesRuntimeSessionManager\(|HermesRuntimeEventBus\(|HermesRuntimeCommandAPI\(|HermesProcessSupervisor\(|HermesBackendAdapter\(|HermesProtocolClient\(' \
     "$ROOT_DIR/Sources/HermesBridgeApp" >/dev/null; then
     RESULT[APP_OWNS_CONCRETE_RUNTIME]=no
+  fi
+}
+
+validate_acceptance_isolation() {
+  if [[ -f "$ROOT_DIR/Sources/HermesBridgeAppAcceptanceSupport/HermesM11003AcceptanceController.swift" ]] \
+    && [[ ! -f "$ROOT_DIR/Sources/HermesBridgeApp/HermesM11003AcceptanceController.swift" ]] \
+    && ! rg -n 'HermesM11003AcceptanceController|HermesBridgeAppAcceptanceSupport|--hermes-m11-003-acceptance' \
+      "$ROOT_DIR/Sources/HermesBridgeApp" >/dev/null \
+    && rg -n 'name: "HermesBridgeAppAcceptanceSupport"|name: "HermesBridgeAppAcceptanceHarness"|HERMES_M11_003_ACCEPTANCE_SUPPORT' \
+      "$ROOT_DIR/Package.swift" >/dev/null; then
+    RESULT[ACCEPTANCE_SUPPORT_ISOLATED]=yes
+  fi
+}
+
+validate_release_exclusion() {
+  rm -rf "$RELEASE_DERIVED_DATA"
+  xcodebuild \
+    -project Packaging/HermesBridgeApp/HermesBridgeApp.xcodeproj \
+    -scheme HermesBridgeApp \
+    -configuration Release \
+    -derivedDataPath "$RELEASE_DERIVED_DATA" \
+    build >/dev/null || return 1
+
+  [[ -x "$RELEASE_EXECUTABLE" ]] || return 1
+
+  local release_strings="$ARTIFACT_DIR/release-executable.strings"
+  local release_symbols="$ARTIFACT_DIR/release-executable.symbols"
+  /usr/bin/strings "$RELEASE_EXECUTABLE" > "$release_strings"
+  /usr/bin/nm -a "$RELEASE_EXECUTABLE" > "$release_symbols" 2>/dev/null || true
+
+  if ! grep -E 'HermesM11003AcceptanceController|HermesBridgeAppAcceptanceSupport' \
+    "$release_strings" "$release_symbols" >/dev/null 2>&1; then
+    RESULT[RELEASE_CONTAINS_ACCEPTANCE_CONTROLLER]=no
+  fi
+  if ! grep -E -- '--hermes-m11-003-acceptance|start-and-hold|reconnect-and-stop|M11_003' \
+    "$release_strings" "$release_symbols" >/dev/null 2>&1; then
+    RESULT[RELEASE_ACCEPTS_TEST_LAUNCH_ARGUMENTS]=no
+  fi
+  if ! grep -E 'm11-003-token-sentinel|HERMES_M11_003_ACCEPTANCE_SUPPORT|M11_003_ACCEPTANCE|ACCEPTANCE_SUPPORT' \
+    "$release_strings" "$release_symbols" >/dev/null 2>&1; then
+    RESULT[RELEASE_CONTAINS_ACCEPTANCE_SENTINELS]=no
   fi
 }
 
@@ -527,6 +583,8 @@ build_bundle || fail "bundle build failed"
 validate_bundle
 assess_signing
 scan_runtime_ownership
+validate_acceptance_isolation
+validate_release_exclusion || fail "release exclusion validation failed"
 write_fake_backend
 write_service_configuration "$(free_port)"
 write_launch_agent

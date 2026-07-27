@@ -31,9 +31,30 @@ The harness builds the existing Xcode project:
 Packaging/HermesBridgeApp/HermesBridgeApp.xcodeproj
 ```
 
-The project delegates to the SwiftPM `HermesBridgeApp` product. The harness then
-copies the app executable, `Packaging/HermesBridgeApp/Info.plist`, the existing
-`HermesBridgeService` product, and the existing LaunchAgent template into the bundle:
+The project delegates to the SwiftPM `HermesBridgeApp` product. That product is
+owned by the `HermesBridgeAppExecutable` target and depends on the shared
+`HermesBridgeApp` composition module. The normal product has no M11-003 acceptance
+controller, launch-argument parser, test XPC endpoint, sentinel defaults, or
+acceptance-only environment contract.
+
+The Debug acceptance bundle is intentionally different: the harness copies the
+`HermesBridgeAppAcceptanceHarness` executable into `Contents/MacOS/HermesBridgeApp`.
+That acceptance executable depends on:
+
+```text
+HermesBridgeAppAcceptanceHarness
+  -> HermesBridgeAppAcceptanceSupport
+  -> HermesBridgeApp
+```
+
+`HermesBridgeAppAcceptanceSupport` is compiled with
+`HERMES_M11_003_ACCEPTANCE_SUPPORT`; the controller source contains a compile-time
+guard so accidental compilation outside that target fails. The production
+`HermesBridgeAppExecutable` target does not depend on either acceptance target.
+
+The harness then copies the acceptance executable, `Packaging/HermesBridgeApp/Info.plist`,
+the existing `HermesBridgeService` product, and the existing LaunchAgent template
+into the bundle:
 
 ```text
 Contents/MacOS/HermesBridgeApp
@@ -91,18 +112,26 @@ When clear, the harness bootstraps a temporary LaunchAgent directly from
 bundle-embedded `HermesBridgeService` and an artifact-owned configuration file.
 It is removed with `launchctl bootout` during cleanup.
 
-## Runtime Lifecycle Independence
+## Acceptance Lifecycle Hook
 
-The app has a launch-argument-gated M11-003 acceptance hook:
+Only the `HermesBridgeAppAcceptanceHarness` executable has the M11-003 acceptance
+hook:
 
 ```text
 --hermes-m11-003-acceptance start-and-hold <state> <evidence>
 --hermes-m11-003-acceptance reconnect-and-stop <state> <evidence>
 ```
 
-Normal launches do not enable the hook. In acceptance mode the hook reuses the
-already composed `HermesAppCompositionRoot.clientGraph`; it does not create a
-runtime graph.
+The standard `HermesBridgeApp` Release product ignores these arguments because no
+acceptance parser or controller is linked into that executable. Runtime launch
+argument gating alone is insufficient: if the controller ships in the production
+binary, a hidden control path and its sentinel strings still ship even when normal
+launches do not use them. M11-003 therefore requires target-level separation plus
+Release product inspection.
+
+In acceptance mode the hook reuses the already composed
+`HermesAppCompositionRoot.clientGraph`; it does not create a runtime graph or
+duplicate the application composition root.
 
 The lifecycle validation is:
 
@@ -152,6 +181,38 @@ metadata or system SDK paths.
 The artifact-owned service configuration contains temporary paths by design and is
 not embedded as a production default.
 
+## Release Exclusion Evidence
+
+The M11-003 harness also builds the normal Release product with:
+
+```sh
+xcodebuild \
+  -project Packaging/HermesBridgeApp/HermesBridgeApp.xcodeproj \
+  -scheme HermesBridgeApp \
+  -configuration Release \
+  -derivedDataPath artifacts/m11-003/release-derived \
+  build
+```
+
+This repository's Xcode project is a legacy target that delegates to SwiftPM, so
+the generated product inspected for this check is `.build/release/HermesBridgeApp`.
+The inspection is limited to that generated Release executable and uses `strings`
+and `nm`; it does not scan repository source files or documentation.
+
+The Release check proves:
+
+```text
+RELEASE_CONTAINS_ACCEPTANCE_CONTROLLER=no
+RELEASE_ACCEPTS_TEST_LAUNCH_ARGUMENTS=no
+RELEASE_CONTAINS_ACCEPTANCE_SENTINELS=no
+```
+
+`M11_003_RESULT=PASS` also requires:
+
+```text
+ACCEPTANCE_SUPPORT_ISOLATED=yes
+```
+
 ## Cleanup Guarantees
 
 The harness does not use sudo, AppleScript, GUI automation, `/Applications`,
@@ -164,6 +225,12 @@ artifact run root.
 
 ## Limitations
 
-This milestone validates an isolated Debug or unsigned acceptance bundle. It does
-not prove notarization, Developer ID signing, installer behavior, auto-update,
-permanent LaunchAgent installation, or production `/Applications` deployment.
+This milestone validates an isolated Debug or unsigned acceptance bundle. The Debug
+acceptance bundle is not a production app bundle because its main executable is the
+dedicated `HermesBridgeAppAcceptanceHarness` copied under the production executable
+name for bundle-shape validation. It must not be distributed or treated as release
+evidence beyond M11-003.
+
+M11-003 does not prove notarization, Developer ID signing, installer behavior,
+auto-update, permanent LaunchAgent installation, or production `/Applications`
+deployment.
