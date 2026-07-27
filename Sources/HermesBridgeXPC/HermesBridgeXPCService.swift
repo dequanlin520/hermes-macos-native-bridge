@@ -86,6 +86,15 @@ public protocol HermesBridgeRequestHandling: Sendable {
     -> HermesBridgeEventPolicyApprovalPayload
   func eventPolicyApprovalQueueStatus() async throws
     -> HermesBridgeEventPolicyApprovalQueueStatusPayload
+  func executeRuntimeCommand(_ command: HermesRuntimeCommand) async throws
+    -> HermesRuntimeCommandResult
+  func createRuntimeEventSubscription() async throws -> HermesBridgeRuntimeEventSubscriptionPayload
+  func pollRuntimeEventSubscription(
+    subscriptionID: UUID,
+    timeoutMilliseconds: Int
+  ) async throws -> HermesBridgeRuntimeEventBatchPayload
+  func cancelRuntimeEventSubscription(subscriptionID: UUID) async throws
+    -> HermesBridgeRuntimeEventSubscriptionPayload
   func submit(bindingID: HermesRequestBindingID, prompt: String) async throws -> HermesRequestID
   func status(requestID: HermesRequestID) async throws -> HermesRequestRecord
   func cancel(requestID: HermesRequestID) async throws -> HermesRequestRecord
@@ -305,6 +314,29 @@ extension HermesBridgeRequestHandling {
   {
     throw HermesBridgeXPCError.unsupportedCapability
   }
+
+  public func executeRuntimeCommand(_: HermesRuntimeCommand) async throws
+    -> HermesRuntimeCommandResult
+  {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func createRuntimeEventSubscription() async throws -> HermesBridgeRuntimeEventSubscriptionPayload {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func pollRuntimeEventSubscription(
+    subscriptionID _: UUID,
+    timeoutMilliseconds _: Int
+  ) async throws -> HermesBridgeRuntimeEventBatchPayload {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func cancelRuntimeEventSubscription(subscriptionID _: UUID) async throws
+    -> HermesBridgeRuntimeEventSubscriptionPayload
+  {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
 }
 
 public actor HermesBridgeXPCRequestDispatcher {
@@ -386,6 +418,7 @@ public actor HermesBridgeXPCRequestDispatcher {
         envelope.filePayloadCount == 0
           && envelope.systemEventPayloadCount == 0
           && envelope.eventPolicyPayloadCount == 0
+          && envelope.runtimePayloadCount == 0
       else {
         throw HermesBridgeXPCError.malformedPayload
       }
@@ -401,6 +434,7 @@ public actor HermesBridgeXPCRequestDispatcher {
         envelope.filePayloadCount == 0
           && envelope.systemEventPayloadCount == 0
           && envelope.eventPolicyPayloadCount == 0
+          && envelope.runtimePayloadCount == 0
       else {
         throw HermesBridgeXPCError.malformedPayload
       }
@@ -410,6 +444,7 @@ public actor HermesBridgeXPCRequestDispatcher {
         envelope.filePayloadCount == 0
           && envelope.systemEventPayloadCount == 0
           && envelope.eventPolicyPayloadCount == 0
+          && envelope.runtimePayloadCount == 0
       else {
         throw HermesBridgeXPCError.malformedPayload
       }
@@ -419,6 +454,7 @@ public actor HermesBridgeXPCRequestDispatcher {
         envelope.filePayloadCount == 0
           && envelope.systemEventPayloadCount == 0
           && envelope.eventPolicyPayloadCount == 0
+          && envelope.runtimePayloadCount == 0
       else {
         throw HermesBridgeXPCError.malformedPayload
       }
@@ -428,6 +464,7 @@ public actor HermesBridgeXPCRequestDispatcher {
         envelope.filePayloadCount == 0
           && envelope.systemEventPayloadCount == 0
           && envelope.eventPolicyPayloadCount == 0
+          && envelope.runtimePayloadCount == 0
       else {
         throw HermesBridgeXPCError.malformedPayload
       }
@@ -552,6 +589,29 @@ public actor HermesBridgeXPCRequestDispatcher {
       guard envelope.eventPolicyApprovalID != nil else {
         throw HermesBridgeXPCError.malformedPayload
       }
+    case .runtimeCommand:
+      try validateOnlyRuntimePayload(envelope, expected: 1)
+      guard let payload = envelope.runtimeCommand else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+      switch payload.kind {
+      case .createSession, .listSessions:
+        guard payload.sessionID == nil else { throw HermesBridgeXPCError.malformedPayload }
+      case .startSession, .stopSession, .getSessionStatus:
+        guard payload.sessionID != nil else { throw HermesBridgeXPCError.malformedPayload }
+      }
+    case .createRuntimeEventSubscription:
+      try validateOnlyRuntimePayload(envelope, expected: 0)
+    case .pollRuntimeEventSubscription:
+      try validateOnlyRuntimePayload(envelope, expected: 1)
+      guard envelope.pollRuntimeEventSubscription != nil else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+    case .cancelRuntimeEventSubscription:
+      try validateOnlyRuntimePayload(envelope, expected: 1)
+      guard envelope.cancelRuntimeEventSubscription != nil else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
     }
   }
 
@@ -563,6 +623,7 @@ public actor HermesBridgeXPCRequestDispatcher {
       envelope.approvalResponse == nil, envelope.filePayloadCount == expected,
       envelope.systemEventPayloadCount == 0,
       envelope.eventPolicyPayloadCount == 0
+      && envelope.runtimePayloadCount == 0
     else {
       throw HermesBridgeXPCError.malformedPayload
     }
@@ -576,6 +637,7 @@ public actor HermesBridgeXPCRequestDispatcher {
       envelope.approvalResponse == nil, envelope.filePayloadCount == 0,
       envelope.systemEventPayloadCount == expected,
       envelope.eventPolicyPayloadCount == 0
+      && envelope.runtimePayloadCount == 0
     else {
       throw HermesBridgeXPCError.malformedPayload
     }
@@ -589,6 +651,21 @@ public actor HermesBridgeXPCRequestDispatcher {
       envelope.approvalResponse == nil, envelope.filePayloadCount == 0,
       envelope.systemEventPayloadCount == 0,
       envelope.eventPolicyPayloadCount == expected
+      && envelope.runtimePayloadCount == 0
+    else {
+      throw HermesBridgeXPCError.malformedPayload
+    }
+  }
+
+  private func validateOnlyRuntimePayload(
+    _ envelope: HermesBridgeRequestEnvelope,
+    expected: Int
+  ) throws {
+    guard envelope.submit == nil, envelope.status == nil, envelope.cancel == nil,
+      envelope.approvalResponse == nil, envelope.filePayloadCount == 0,
+      envelope.systemEventPayloadCount == 0,
+      envelope.eventPolicyPayloadCount == 0,
+      envelope.runtimePayloadCount == expected
     else {
       throw HermesBridgeXPCError.malformedPayload
     }
@@ -605,6 +682,33 @@ public actor HermesBridgeXPCRequestDispatcher {
     case .listEnabledBindings:
       return .listEnabledBindings(
         try HermesBridgeBindingListPayload(bindings: try await handler.listEnabledBindings()))
+    case .runtimeCommand:
+      guard let payload = envelope.runtimeCommand else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+      return .runtimeCommand(
+        try HermesBridgeRuntimeCommandResultPayload(
+          result: try await mapRuntimeError {
+            try await handler.executeRuntimeCommand(Self.runtimeCommand(from: payload))
+          }
+        ))
+    case .createRuntimeEventSubscription:
+      return .createRuntimeEventSubscription(try await handler.createRuntimeEventSubscription())
+    case .pollRuntimeEventSubscription:
+      guard let payload = envelope.pollRuntimeEventSubscription else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+      return .pollRuntimeEventSubscription(
+        try await handler.pollRuntimeEventSubscription(
+          subscriptionID: payload.subscriptionID,
+          timeoutMilliseconds: payload.timeoutMilliseconds
+        ))
+    case .cancelRuntimeEventSubscription:
+      guard let payload = envelope.cancelRuntimeEventSubscription else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+      return .cancelRuntimeEventSubscription(
+        try await handler.cancelRuntimeEventSubscription(subscriptionID: payload.subscriptionID))
     case .listAuthorizedRoots:
       return .listAuthorizedRoots(
         try await mapFileIntegrationError {
@@ -965,6 +1069,26 @@ public actor HermesBridgeXPCRequestDispatcher {
     }
   }
 
+  private static func runtimeCommand(from payload: HermesBridgeRuntimeCommandPayload) throws
+    -> HermesRuntimeCommand
+  {
+    switch payload.kind {
+    case .createSession:
+      return .createSession
+    case .startSession:
+      guard let sessionID = payload.sessionID else { throw HermesBridgeXPCError.malformedPayload }
+      return .startSession(sessionID)
+    case .stopSession:
+      guard let sessionID = payload.sessionID else { throw HermesBridgeXPCError.malformedPayload }
+      return .stopSession(sessionID, reason: payload.shutdownReason ?? .requested)
+    case .getSessionStatus:
+      guard let sessionID = payload.sessionID else { throw HermesBridgeXPCError.malformedPayload }
+      return .getSessionStatus(sessionID)
+    case .listSessions:
+      return .listSessions
+    }
+  }
+
   private func mapOrchestratorError<T: Sendable>(
     _ body: () async throws -> T
   ) async throws -> T {
@@ -1011,6 +1135,27 @@ public actor HermesBridgeXPCRequestDispatcher {
       }
     } catch is HermesFileEventError {
       throw HermesBridgeXPCError.oversizedPayload
+    } catch {
+      throw HermesBridgeXPCError.internalFailure
+    }
+  }
+
+  private func mapRuntimeError<T: Sendable>(_ body: () async throws -> T) async throws -> T {
+    do {
+      return try await body()
+    } catch let error as HermesBridgeXPCError {
+      throw error
+    } catch let error as HermesRuntimeCommandAPIError {
+      switch error {
+      case .sessionManager(.sessionNotFound(_)):
+        throw HermesBridgeXPCError.sessionNotFound
+      case .sessionManager, .session:
+        throw HermesBridgeXPCError.invalidState
+      case .backendAdapter:
+        throw HermesBridgeXPCError.serviceUnavailable
+      case .operationFailed:
+        throw HermesBridgeXPCError.internalFailure
+      }
     } catch {
       throw HermesBridgeXPCError.internalFailure
     }
@@ -1128,6 +1273,8 @@ public actor HermesBridgeXPCRequestDispatcher {
       return "File-event buffer overflow requires rescan."
     case .rescanRequired:
       return "File-event rescan is required."
+    case .sessionNotFound:
+      return "Runtime session was not found."
     }
   }
 
@@ -1325,7 +1472,9 @@ public actor HermesBridgeXPCRequestDispatcher {
       .disableEventPolicy, .removeEventPolicy, .evaluateEventPolicyDryRun,
       .eventPolicyEngineStatus, .pauseEventPolicies, .resumeEventPolicies,
       .listEventPolicyApprovals, .eventPolicyApprovalStatus, .approveEventPolicyExecution,
-      .denyEventPolicyExecution, .cancelEventPolicyApproval, .eventPolicyApprovalQueueStatus:
+      .denyEventPolicyExecution, .cancelEventPolicyApproval, .eventPolicyApprovalQueueStatus,
+      .runtimeCommand, .createRuntimeEventSubscription, .pollRuntimeEventSubscription,
+      .cancelRuntimeEventSubscription:
       return
     }
   }
@@ -1364,7 +1513,9 @@ public actor HermesBridgeXPCRequestDispatcher {
       .removeEventPolicy, .evaluateEventPolicyDryRun, .eventPolicyEngineStatus,
       .pauseEventPolicies, .resumeEventPolicies, .listEventPolicyApprovals,
       .eventPolicyApprovalStatus, .approveEventPolicyExecution, .denyEventPolicyExecution,
-      .cancelEventPolicyApproval, .eventPolicyApprovalQueueStatus:
+      .cancelEventPolicyApproval, .eventPolicyApprovalQueueStatus, .runtimeCommand,
+      .createRuntimeEventSubscription, .pollRuntimeEventSubscription,
+      .cancelRuntimeEventSubscription:
       return
     }
     try await auditStore.append(
@@ -1439,6 +1590,14 @@ extension HermesBridgeRequestEnvelope {
     if eventPolicyID != nil { count += 1 }
     if eventPolicyEvaluation != nil { count += 1 }
     if eventPolicyApprovalID != nil { count += 1 }
+    return count
+  }
+
+  fileprivate var runtimePayloadCount: Int {
+    var count = 0
+    if runtimeCommand != nil { count += 1 }
+    if pollRuntimeEventSubscription != nil { count += 1 }
+    if cancelRuntimeEventSubscription != nil { count += 1 }
     return count
   }
 }

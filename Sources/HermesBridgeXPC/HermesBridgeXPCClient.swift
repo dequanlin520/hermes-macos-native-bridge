@@ -758,6 +758,81 @@ public actor HermesBridgeXPCClient {
     return payload
   }
 
+  public func executeRuntimeCommand(_ command: HermesRuntimeCommand) async throws
+    -> HermesRuntimeCommandResult
+  {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .runtimeCommand,
+        runtimeCommand: try Self.runtimeCommandPayload(from: command)
+      ))
+    guard case .success(.runtimeCommand(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    if let session = payload.session {
+      return .sessionStatus(session.commandStatus)
+    }
+    if let sessions = payload.sessions {
+      return .sessionList(sessions.map(\.commandStatus))
+    }
+    throw HermesBridgeXPCClientError.responseDecodingFailure
+  }
+
+  public func createRuntimeEventSubscription() async throws
+    -> HermesBridgeRuntimeEventSubscriptionPayload
+  {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .createRuntimeEventSubscription
+      ))
+    guard case .success(.createRuntimeEventSubscription(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
+  public func pollRuntimeEventSubscription(
+    subscriptionID: UUID,
+    timeoutMilliseconds: Int = 0
+  ) async throws -> HermesBridgeRuntimeEventBatchPayload {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .pollRuntimeEventSubscription,
+        pollRuntimeEventSubscription: HermesBridgePollRuntimeEventSubscriptionPayload(
+          subscriptionID: subscriptionID,
+          timeoutMilliseconds: timeoutMilliseconds
+        )
+      ))
+    guard case .success(.pollRuntimeEventSubscription(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
+  public func cancelRuntimeEventSubscription(subscriptionID: UUID) async throws
+    -> HermesBridgeRuntimeEventSubscriptionPayload
+  {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .cancelRuntimeEventSubscription,
+        cancelRuntimeEventSubscription: HermesBridgeCancelRuntimeEventSubscriptionPayload(
+          subscriptionID: subscriptionID
+        )
+      ))
+    guard case .success(.cancelRuntimeEventSubscription(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
   public func close() {
     if closed {
       return
@@ -815,6 +890,88 @@ public actor HermesBridgeXPCClient {
 
   private static func correlationID() -> HermesBridgeCorrelationID {
     try! HermesBridgeCorrelationID(rawValue: UUID().uuidString)
+  }
+
+  private static func runtimeCommandPayload(from command: HermesRuntimeCommand) throws
+    -> HermesBridgeRuntimeCommandPayload
+  {
+    switch command {
+    case .createSession:
+      return HermesBridgeRuntimeCommandPayload(kind: .createSession)
+    case .startSession(let sessionID):
+      return HermesBridgeRuntimeCommandPayload(kind: .startSession, sessionID: sessionID)
+    case .stopSession(let sessionID, let reason):
+      return HermesBridgeRuntimeCommandPayload(
+        kind: .stopSession,
+        sessionID: sessionID,
+        shutdownReason: reason
+      )
+    case .getSessionStatus(let sessionID):
+      return HermesBridgeRuntimeCommandPayload(kind: .getSessionStatus, sessionID: sessionID)
+    case .listSessions:
+      return HermesBridgeRuntimeCommandPayload(kind: .listSessions)
+    case .subscribeEvents:
+      throw HermesBridgeXPCClientError.responseDecodingFailure
+    }
+  }
+}
+
+public protocol HermesBridgeRuntimeEventSubscribing: Sendable {
+  func subscribeRuntimeEvents() async throws -> HermesRuntimeCommandEventSubscription
+}
+
+public struct HermesBridgeRuntimeClientAdapter: Sendable {
+  private let client: HermesBridgeXPCClient
+  private let pollTimeoutMilliseconds: Int
+
+  public init(client: HermesBridgeXPCClient, pollTimeoutMilliseconds: Int = 500) {
+    self.client = client
+    self.pollTimeoutMilliseconds = pollTimeoutMilliseconds
+  }
+
+  @discardableResult
+  public func execute(_ command: HermesRuntimeCommand) async throws -> HermesRuntimeCommandResult {
+    if command == .subscribeEvents {
+      return .eventSubscription(try await subscribeRuntimeEvents())
+    }
+    return try await client.executeRuntimeCommand(command)
+  }
+
+  public func subscribeRuntimeEvents() async throws -> HermesRuntimeCommandEventSubscription {
+    let subscription = try await client.createRuntimeEventSubscription()
+    let client = client
+    let pollTimeoutMilliseconds = pollTimeoutMilliseconds
+    let stream = AsyncStream<HermesRuntimeCommandEvent> { continuation in
+      let task = Task {
+        while !Task.isCancelled {
+          do {
+            let batch = try await client.pollRuntimeEventSubscription(
+              subscriptionID: subscription.subscriptionID,
+              timeoutMilliseconds: pollTimeoutMilliseconds
+            )
+            for event in batch.events {
+              continuation.yield(event.commandEvent)
+            }
+          } catch {
+            break
+          }
+        }
+        continuation.finish()
+      }
+      continuation.onTermination = { _ in
+        task.cancel()
+        Task {
+          _ = try? await client.cancelRuntimeEventSubscription(
+            subscriptionID: subscription.subscriptionID
+          )
+        }
+      }
+    }
+    return HermesRuntimeCommandEventSubscription(id: subscription.subscriptionID, events: stream)
+  }
+
+  public func invalidate() async {
+    await client.close()
   }
 }
 

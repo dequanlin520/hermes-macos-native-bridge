@@ -1,0 +1,43 @@
+#!/bin/zsh
+set -u
+
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd -P)"
+ARTIFACT_DIR="$ROOT_DIR/artifacts/m11-002"
+RESULT_FILE="$ARTIFACT_DIR/result.txt"
+
+mkdir -p "$ARTIFACT_DIR"
+rm -f "$RESULT_FILE"
+
+cd "$ROOT_DIR" || exit 1
+
+swift test --filter HermesNativeUIEndToEndTests/testM11002NativeUIEndToEndAcceptance \
+  > "$ARTIFACT_DIR/acceptance.stdout.log" \
+  2> "$ARTIFACT_DIR/acceptance.stderr.log"
+run_status=$?
+
+if [[ ! -f "$RESULT_FILE" ]]; then
+  cat > "$RESULT_FILE" <<'EOF'
+XPC_PROTOCOL_1_7=no
+APP_OWNS_CONCRETE_RUNTIME=yes
+SERVICE_OWNS_RUNTIME=no
+DASHBOARD_ROUTE=no
+LOGS_ROUTE=no
+SETTINGS_ROUTE=no
+DIAGNOSTICS_ROUTE=no
+REPEATED_OPEN_FOCUSES=no
+COMMAND_CROSSED_XPC=no
+EVENT_CROSSED_XPC=no
+SESSION_STARTED=no
+RUNTIME_SURVIVED_UI_EXIT=no
+CLIENT_RECONNECTED=no
+EXPLICIT_STOP_FORWARDED_ONCE=no
+SESSION_STOPPED=no
+TOKEN_EXPOSED=no
+PRIVATE_PATH_EXPOSED=no
+PID_EXPOSED=no
+RESIDUAL_PROCESS=yes
+M11_002_RESULT=FAIL
+EOF
+fi
+
+exit "$run_status"

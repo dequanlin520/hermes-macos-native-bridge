@@ -78,6 +78,24 @@ public struct HermesRuntimeCommandSessionStatus: Equatable, Sendable, CustomStri
   public let lastErrorMessage: String?
   public let shutdownReason: HermesRuntimeSessionShutdownReason?
 
+  public init(
+    sessionID: UUID,
+    currentStatus: HermesRuntimeSessionStatus,
+    backendVersion: String?,
+    startTime: Date?,
+    capabilities: HermesRuntimeCapabilities?,
+    lastErrorMessage: String?,
+    shutdownReason: HermesRuntimeSessionShutdownReason?
+  ) {
+    self.sessionID = sessionID
+    self.currentStatus = currentStatus
+    self.backendVersion = backendVersion
+    self.startTime = startTime
+    self.capabilities = capabilities
+    self.lastErrorMessage = lastErrorMessage
+    self.shutdownReason = shutdownReason
+  }
+
   public init(snapshot: HermesRuntimeSessionSnapshot) {
     sessionID = snapshot.sessionID
     currentStatus = snapshot.currentStatus
@@ -136,6 +154,24 @@ public struct HermesRuntimeCommandEventSession: Equatable, Sendable, CustomStrin
   public let lastErrorMessage: String?
   public let shutdownReason: HermesRuntimeSessionShutdownReason?
 
+  public init(
+    sessionID: UUID,
+    currentStatus: HermesRuntimeSessionStatus,
+    backendVersion: String?,
+    startTime: Date?,
+    capabilities: HermesRuntimeCapabilities?,
+    lastErrorMessage: String?,
+    shutdownReason: HermesRuntimeSessionShutdownReason?
+  ) {
+    self.sessionID = sessionID
+    self.currentStatus = currentStatus
+    self.backendVersion = backendVersion
+    self.startTime = startTime
+    self.capabilities = capabilities
+    self.lastErrorMessage = lastErrorMessage
+    self.shutdownReason = shutdownReason
+  }
+
   public init(eventSession: HermesRuntimeEventSessionSummary) {
     sessionID = eventSession.sessionID
     currentStatus = eventSession.currentStatus
@@ -162,6 +198,25 @@ public struct HermesRuntimeCommandEventSession: Equatable, Sendable, CustomStrin
 public struct HermesRuntimeCommandEventSubscription: Sendable {
   public let id: UUID
   public let events: AsyncStream<HermesRuntimeCommandEvent>
+
+  public init(id: UUID, events: AsyncStream<HermesRuntimeCommandEvent>) {
+    self.id = id
+    self.events = events
+  }
+}
+
+extension HermesRuntimeCommandEvent {
+  public init(
+    sequenceNumber: UInt64,
+    kind: HermesRuntimeEventKind,
+    session: HermesRuntimeCommandEventSession,
+    occurredAt: Date
+  ) {
+    self.sequenceNumber = sequenceNumber
+    self.kind = kind
+    self.session = session
+    self.occurredAt = occurredAt
+  }
 }
 
 public enum HermesRuntimeCommandResult: Sendable {

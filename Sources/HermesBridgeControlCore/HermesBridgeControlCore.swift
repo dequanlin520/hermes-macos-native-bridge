@@ -861,7 +861,7 @@ public struct HermesBridgeControlMappedError: Error, Sendable {
     case .unsupportedProtocolVersion:
       self.init(
         exitCode: .protocolIncompatible, code: error.rawValue, message: "protocol incompatible")
-    case .requestNotFound:
+    case .requestNotFound, .sessionNotFound:
       self.init(exitCode: .requestNotFound, code: error.rawValue, message: "request not found")
     case .invalidState, .invalidBinding:
       self.init(exitCode: .operationRejected, code: error.rawValue, message: "operation rejected")

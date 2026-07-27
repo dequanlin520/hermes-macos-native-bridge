@@ -1,4 +1,5 @@
 import AppKit
+import HermesMenuBar
 import HermesRuntimeFoundation
 import SwiftUI
 
