@@ -226,8 +226,9 @@ let package = Package(
     .testTarget(
       name: "HermesBridgeAppTests",
       dependencies: [
-        "HermesBridgeApp", "HermesDashboard", "HermesDiagnostics", "HermesLogsViewer",
-        "HermesMenuBar", "HermesRuntimeFoundation", "HermesSettings",
+        "HermesBridgeApp", "HermesBridgeService", "HermesBridgeXPC", "HermesDashboard",
+        "HermesDiagnostics", "HermesLogsViewer", "HermesMenuBar", "HermesRuntimeFoundation",
+        "HermesSettings",
       ]
     ),
     .testTarget(
