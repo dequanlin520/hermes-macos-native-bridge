@@ -178,6 +178,11 @@ private final class RecordingDashboardCommandAPI: HermesDashboardRuntimeCommandE
       let status = lock.withLock { sessionStatus }
       return .sessionStatus(makeStatus(sessionID: sessionID, status: status))
 
+    case .listSessions:
+      let status = lock.withLock { sessionStatus }
+      let sessionID = lock.withLock { activeSessionID ?? primarySessionID }
+      return .sessionList([makeStatus(sessionID: sessionID, status: status)])
+
     case .subscribeEvents:
       let stream = AsyncStream<HermesRuntimeCommandEvent> { continuation in
         self.lock.withLock {

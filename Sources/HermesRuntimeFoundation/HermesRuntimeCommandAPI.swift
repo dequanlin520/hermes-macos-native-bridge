@@ -11,6 +11,8 @@ public protocol HermesRuntimeSessionManaging: Sendable {
 
   func getSession(_ sessionID: UUID) throws -> HermesRuntimeSessionSnapshot
 
+  func listSessions() -> [HermesRuntimeSessionSnapshot]
+
   @discardableResult
   func stopSession(
     _ sessionID: UUID,
@@ -25,6 +27,7 @@ public enum HermesRuntimeCommand: Equatable, Sendable {
   case startSession(UUID)
   case stopSession(UUID, reason: HermesRuntimeSessionShutdownReason = .requested)
   case getSessionStatus(UUID)
+  case listSessions
   case subscribeEvents
 }
 
@@ -163,6 +166,7 @@ public struct HermesRuntimeCommandEventSubscription: Sendable {
 
 public enum HermesRuntimeCommandResult: Sendable {
   case sessionStatus(HermesRuntimeCommandSessionStatus)
+  case sessionList([HermesRuntimeCommandSessionStatus])
   case eventSubscription(HermesRuntimeCommandEventSubscription)
 }
 
@@ -184,6 +188,8 @@ public final class HermesRuntimeCommandAPI: @unchecked Sendable {
       return .sessionStatus(try await stopSession(sessionID, reason: reason))
     case .getSessionStatus(let sessionID):
       return .sessionStatus(try getSessionStatus(sessionID))
+    case .listSessions:
+      return .sessionList(listSessions())
     case .subscribeEvents:
       return .eventSubscription(subscribeEvents())
     }
@@ -223,6 +229,10 @@ public final class HermesRuntimeCommandAPI: @unchecked Sendable {
     } catch {
       throw HermesRuntimeCommandAPIError.wrapping(error)
     }
+  }
+
+  public func listSessions() -> [HermesRuntimeCommandSessionStatus] {
+    sessionManager.listSessions().map(HermesRuntimeCommandSessionStatus.init(snapshot:))
   }
 
   public func subscribeEvents(
