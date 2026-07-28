@@ -2,29 +2,26 @@ import Foundation
 import SwiftUI
 
 @MainActor
-public final class HermesOperationsViewModel: ObservableObject {
-  @Published public private(set) var snapshot: HermesOperationsSnapshot
+public final class HermesAnalyticsViewModel: ObservableObject {
+  @Published public private(set) var snapshot: HermesAnalyticsSnapshot
   @Published public private(set) var isRefreshing = false
   @Published public private(set) var lastErrorMessage: String?
 
-  private let center: HermesOperationsCenter
+  private let center: HermesAnalyticsCenter
   private let openSettingsAction: @MainActor () -> Void
-  private let openDiagnosticsAction: @MainActor () -> Void
   private let openAdministrationCenterAction: @MainActor () -> Void
-  private let openAnalyticsCenterAction: @MainActor () -> Void
+  private let openOperationsCenterAction: @MainActor () -> Void
 
   public init(
-    center: HermesOperationsCenter,
+    center: HermesAnalyticsCenter,
     openSettings: @escaping @MainActor () -> Void = {},
-    openDiagnostics: @escaping @MainActor () -> Void = {},
     openAdministrationCenter: @escaping @MainActor () -> Void = {},
-    openAnalyticsCenter: @escaping @MainActor () -> Void = {}
+    openOperationsCenter: @escaping @MainActor () -> Void = {}
   ) {
     self.center = center
     self.openSettingsAction = openSettings
-    self.openDiagnosticsAction = openDiagnostics
     self.openAdministrationCenterAction = openAdministrationCenter
-    self.openAnalyticsCenterAction = openAnalyticsCenter
+    self.openOperationsCenterAction = openOperationsCenter
     self.snapshot = .empty
   }
 
@@ -42,16 +39,12 @@ public final class HermesOperationsViewModel: ObservableObject {
     openSettingsAction()
   }
 
-  public func openDiagnostics() {
-    openDiagnosticsAction()
-  }
-
   public func openAdministrationCenter() {
     openAdministrationCenterAction()
   }
 
-  public func openAnalyticsCenter() {
-    openAnalyticsCenterAction()
+  public func openOperationsCenter() {
+    openOperationsCenterAction()
   }
 
   public var boundarySummary: String {
@@ -62,7 +55,6 @@ public final class HermesOperationsViewModel: ObservableObject {
       "shell: \(snapshot.shellAvailable ? "yes" : "no")",
       "upload: \(snapshot.uploadAvailable ? "yes" : "no")",
       "filesystem scan: \(snapshot.filesystemScanAvailable ? "yes" : "no")",
-      "sensitive persistence: \(snapshot.sensitiveDataPersistenceAvailable ? "yes" : "no")",
     ].joined(separator: " | ")
   }
 }

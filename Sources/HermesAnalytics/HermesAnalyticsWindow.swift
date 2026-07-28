@@ -1,15 +1,15 @@
 import AppKit
 import SwiftUI
 
-public final class HermesOperationsWindowController: NSWindowController {
+public final class HermesAnalyticsWindowController: NSWindowController {
   @MainActor
-  public init(viewModel: HermesOperationsViewModel) {
-    let rootView = HermesOperationsWindow(viewModel: viewModel)
+  public init(viewModel: HermesAnalyticsViewModel) {
+    let rootView = HermesAnalyticsWindow(viewModel: viewModel)
     let hostingController = NSHostingController(rootView: rootView)
     let window = NSWindow(contentViewController: hostingController)
-    window.title = "Hermes Enterprise Operations Center"
-    window.setContentSize(NSSize(width: 880, height: 700))
-    window.minSize = NSSize(width: 740, height: 560)
+    window.title = "Hermes Enterprise Analytics Center"
+    window.setContentSize(NSSize(width: 880, height: 680))
+    window.minSize = NSSize(width: 740, height: 540)
     window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
     super.init(window: window)
   }
@@ -20,10 +20,10 @@ public final class HermesOperationsWindowController: NSWindowController {
   }
 }
 
-public struct HermesOperationsWindow: View {
-  @ObservedObject private var viewModel: HermesOperationsViewModel
+public struct HermesAnalyticsWindow: View {
+  @ObservedObject private var viewModel: HermesAnalyticsViewModel
 
-  public init(viewModel: HermesOperationsViewModel) {
+  public init(viewModel: HermesAnalyticsViewModel) {
     self.viewModel = viewModel
   }
 
@@ -38,16 +38,15 @@ public struct HermesOperationsWindow: View {
               .foregroundStyle(.red)
               .lineLimit(3)
           }
-          operationsGrid
+          analyticsGrid
           boundarySection
-          eventSection
         }
         .padding(18)
       }
       Divider()
       controls
     }
-    .frame(minWidth: 740, minHeight: 560)
+    .frame(minWidth: 740, minHeight: 540)
     .task {
       viewModel.refresh()
     }
@@ -55,11 +54,11 @@ public struct HermesOperationsWindow: View {
 
   private var header: some View {
     HStack(spacing: 12) {
-      Image(systemName: "command.circle")
+      Image(systemName: "chart.xyaxis.line")
         .font(.title2)
         .foregroundStyle(color(for: viewModel.snapshot.overallState))
       VStack(alignment: .leading, spacing: 2) {
-        Text("Hermes Enterprise Operations Center")
+        Text("Hermes Enterprise Analytics Center")
           .font(.title2)
         Text(viewModel.snapshot.overallState.rawValue)
           .font(.subheadline)
@@ -75,49 +74,37 @@ public struct HermesOperationsWindow: View {
     .padding(.vertical, 14)
   }
 
-  private var operationsGrid: some View {
-    Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 10) {
+  private var analyticsGrid: some View {
+    Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 12) {
       sectionRow(
-        title: "Runtime Operations",
-        image: "cpu",
+        title: "Runtime Analytics",
+        image: "timer",
         state: viewModel.snapshot.runtime.state,
         rows: [
-          ("Runtime", viewModel.snapshot.runtime.runtimeStatus),
-          ("Sessions", viewModel.snapshot.runtime.sessionStatus),
-          ("Backend", viewModel.snapshot.runtime.backendStatus),
-          ("Active", "\(viewModel.snapshot.runtime.activeOperationCount)"),
+          ("Uptime", viewModel.snapshot.runtime.uptimeSummary),
+          ("Sessions", viewModel.snapshot.runtime.sessionStabilitySummary),
+          ("Service", viewModel.snapshot.runtime.serviceAvailabilitySummary),
         ]
       )
       sectionRow(
-        title: "Event Operations",
-        image: "dot.radiowaves.left.and.right",
-        state: viewModel.snapshot.events.state,
+        title: "Operations Analytics",
+        image: "waveform.path.ecg",
+        state: viewModel.snapshot.operations.state,
         rows: [
-          ("Pipeline", viewModel.snapshot.events.eventPipelineStatus),
-          ("Events", "\(viewModel.snapshot.events.recentEventCount)"),
-          ("Notify", viewModel.snapshot.events.notificationStatus),
+          ("Errors", viewModel.snapshot.operations.errorTrendSummary),
+          ("Recovery", viewModel.snapshot.operations.recoveryTrendSummary),
+          ("Notify", viewModel.snapshot.operations.notificationTrendSummary),
+          ("Updates", viewModel.snapshot.operations.updateReliabilitySummary),
         ]
       )
       sectionRow(
-        title: "Release Operations",
-        image: "arrow.up.circle",
-        state: viewModel.snapshot.release.state,
-        rows: [
-          ("Status", viewModel.snapshot.release.releaseStatus),
-          ("Current", viewModel.snapshot.release.currentVersion),
-          ("Available", viewModel.snapshot.release.availableVersion ?? "none"),
-          ("Readiness", viewModel.snapshot.release.releaseReadiness),
-        ]
-      )
-      sectionRow(
-        title: "Governance Operations",
-        image: "building.columns",
+        title: "Governance Analytics",
+        image: "checkmark.shield",
         state: viewModel.snapshot.governance.state,
         rows: [
-          ("Policy", viewModel.snapshot.governance.policyStatus),
-          ("Privacy", viewModel.snapshot.governance.privacyStatus),
-          ("Audit", viewModel.snapshot.governance.auditStatus),
-          ("Compliance", viewModel.snapshot.governance.complianceStatus),
+          ("Policy", viewModel.snapshot.governance.policyComplianceSummary),
+          ("Privacy", viewModel.snapshot.governance.privacyPostureTrend),
+          ("Audit", viewModel.snapshot.governance.auditCoverageSummary),
         ]
       )
     }
@@ -126,7 +113,7 @@ public struct HermesOperationsWindow: View {
   private func sectionRow(
     title: String,
     image: String,
-    state: HermesOperationsState,
+    state: HermesAnalyticsState,
     rows: [(String, String)]
   ) -> some View {
     GridRow {
@@ -157,23 +144,6 @@ public struct HermesOperationsWindow: View {
     }
   }
 
-  private var eventSection: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      Text("Recent Event Summaries")
-        .font(.headline)
-      if viewModel.snapshot.events.recentEventSummaries.isEmpty {
-        Text("No recent event summaries")
-          .foregroundStyle(.secondary)
-      } else {
-        ForEach(viewModel.snapshot.events.recentEventSummaries, id: \.self) { event in
-          Label(event, systemImage: "circle.dotted")
-            .foregroundStyle(.secondary)
-            .lineLimit(2)
-        }
-      }
-    }
-  }
-
   private var controls: some View {
     HStack(spacing: 10) {
       Button {
@@ -182,19 +152,14 @@ public struct HermesOperationsWindow: View {
         Label("Settings", systemImage: "gearshape.2")
       }
       Button {
-        viewModel.openDiagnostics()
-      } label: {
-        Label("Diagnostics", systemImage: "stethoscope")
-      }
-      Button {
         viewModel.openAdministrationCenter()
       } label: {
         Label("Administration", systemImage: "building.columns")
       }
       Button {
-        viewModel.openAnalyticsCenter()
+        viewModel.openOperationsCenter()
       } label: {
-        Label("Analytics", systemImage: "chart.xyaxis.line")
+        Label("Operations", systemImage: "command.circle")
       }
       Spacer()
       Button {
@@ -208,13 +173,13 @@ public struct HermesOperationsWindow: View {
     .padding(18)
   }
 
-  private func color(for state: HermesOperationsState) -> Color {
+  private func color(for state: HermesAnalyticsState) -> Color {
     switch state {
-    case .nominal:
+    case .stable:
       return .green
     case .attentionRequired:
       return .orange
-    case .unavailable:
+    case .unreliable:
       return .red
     case .unknown:
       return .secondary

@@ -131,6 +131,7 @@ final class HermesNativeUICompositionTests: XCTestCase {
     root.router.openComplianceCenter()
     root.router.openHealthCenter()
     root.router.openOperationsCenter()
+    root.router.openAnalyticsCenter()
 
     XCTAssertEqual(Set(factory.clientGraphIDs).count, 1)
     XCTAssertEqual(factory.clientGraphIDs.first, ObjectIdentifier(root.clientGraph))
@@ -225,6 +226,16 @@ final class HermesNativeUICompositionTests: XCTestCase {
 
     XCTAssertEqual(factory.createdIdentifiers, [.operations])
     XCTAssertEqual(factory.window(for: .operations)?.showCount, 1)
+  }
+
+  func testAnalyticsRouting() {
+    let factory = RecordingWindowFactory()
+    let root = makeRoot(factory: factory)
+
+    root.router.openAnalyticsCenter()
+
+    XCTAssertEqual(factory.createdIdentifiers, [.analytics])
+    XCTAssertEqual(factory.window(for: .analytics)?.showCount, 1)
   }
 
   private func makeRoot(

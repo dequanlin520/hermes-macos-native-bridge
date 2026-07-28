@@ -150,6 +150,14 @@ public struct HermesSettingsWindow: View {
             Label("Open Operations Center", systemImage: "command.circle")
           }
         }
+
+        Section("Enterprise Analytics") {
+          Button {
+            viewModel.openAnalyticsCenter()
+          } label: {
+            Label("Open Analytics Center", systemImage: "chart.xyaxis.line")
+          }
+        }
       }
       .formStyle(.grouped)
 

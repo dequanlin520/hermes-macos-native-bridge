@@ -15,6 +15,7 @@ public final class HermesSettingsViewModel: ObservableObject {
   private let openComplianceCenterAction: @MainActor () -> Void
   private let openHealthCenterAction: @MainActor () -> Void
   private let openOperationsCenterAction: @MainActor () -> Void
+  private let openAnalyticsCenterAction: @MainActor () -> Void
 
   public init(
     controller: HermesSettingsController,
@@ -25,7 +26,8 @@ public final class HermesSettingsViewModel: ObservableObject {
     openAdministrationCenter: @escaping @MainActor () -> Void = {},
     openComplianceCenter: @escaping @MainActor () -> Void = {},
     openHealthCenter: @escaping @MainActor () -> Void = {},
-    openOperationsCenter: @escaping @MainActor () -> Void = {}
+    openOperationsCenter: @escaping @MainActor () -> Void = {},
+    openAnalyticsCenter: @escaping @MainActor () -> Void = {}
   ) {
     self.controller = controller
     self.reopenOnboardingAction = reopenOnboarding
@@ -36,6 +38,7 @@ public final class HermesSettingsViewModel: ObservableObject {
     self.openComplianceCenterAction = openComplianceCenter
     self.openHealthCenterAction = openHealthCenter
     self.openOperationsCenterAction = openOperationsCenter
+    self.openAnalyticsCenterAction = openAnalyticsCenter
     self.state = HermesSettingsState()
     self.draftSettings = .defaults
   }
@@ -49,7 +52,8 @@ public final class HermesSettingsViewModel: ObservableObject {
     openAdministrationCenter: @escaping @MainActor () -> Void = {},
     openComplianceCenter: @escaping @MainActor () -> Void = {},
     openHealthCenter: @escaping @MainActor () -> Void = {},
-    openOperationsCenter: @escaping @MainActor () -> Void = {}
+    openOperationsCenter: @escaping @MainActor () -> Void = {},
+    openAnalyticsCenter: @escaping @MainActor () -> Void = {}
   ) {
     self.init(
       controller: HermesSettingsController(store: store),
@@ -60,7 +64,8 @@ public final class HermesSettingsViewModel: ObservableObject {
       openAdministrationCenter: openAdministrationCenter,
       openComplianceCenter: openComplianceCenter,
       openHealthCenter: openHealthCenter,
-      openOperationsCenter: openOperationsCenter
+      openOperationsCenter: openOperationsCenter,
+      openAnalyticsCenter: openAnalyticsCenter
     )
   }
 
@@ -118,5 +123,9 @@ public final class HermesSettingsViewModel: ObservableObject {
 
   public func openOperationsCenter() {
     openOperationsCenterAction()
+  }
+
+  public func openAnalyticsCenter() {
+    openAnalyticsCenterAction()
   }
 }

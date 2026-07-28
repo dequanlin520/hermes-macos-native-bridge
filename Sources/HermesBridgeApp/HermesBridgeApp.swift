@@ -93,6 +93,9 @@ public struct HermesBridgeMenuBarContent: View {
       Button("Operations Center") {
         compositionRoot.router.openOperationsCenter()
       }
+      Button("Analytics Center") {
+        compositionRoot.router.openAnalyticsCenter()
+      }
       Button("Settings") {
         compositionRoot.router.openSettings()
       }
