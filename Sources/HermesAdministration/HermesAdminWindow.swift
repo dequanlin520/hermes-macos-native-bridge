@@ -215,6 +215,11 @@ public struct HermesAdministrationWindow: View {
       } label: {
         Label("Health", systemImage: "heart.text.square")
       }
+      Button {
+        viewModel.openOperationsCenter()
+      } label: {
+        Label("Operations", systemImage: "command.circle")
+      }
       Spacer()
       Button {
         viewModel.refresh()
