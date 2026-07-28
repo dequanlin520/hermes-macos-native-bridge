@@ -11,17 +11,20 @@ public final class HermesAnalyticsViewModel: ObservableObject {
   private let openSettingsAction: @MainActor () -> Void
   private let openAdministrationCenterAction: @MainActor () -> Void
   private let openOperationsCenterAction: @MainActor () -> Void
+  private let openReportingCenterAction: @MainActor () -> Void
 
   public init(
     center: HermesAnalyticsCenter,
     openSettings: @escaping @MainActor () -> Void = {},
     openAdministrationCenter: @escaping @MainActor () -> Void = {},
-    openOperationsCenter: @escaping @MainActor () -> Void = {}
+    openOperationsCenter: @escaping @MainActor () -> Void = {},
+    openReportingCenter: @escaping @MainActor () -> Void = {}
   ) {
     self.center = center
     self.openSettingsAction = openSettings
     self.openAdministrationCenterAction = openAdministrationCenter
     self.openOperationsCenterAction = openOperationsCenter
+    self.openReportingCenterAction = openReportingCenter
     self.snapshot = .empty
   }
 
@@ -45,6 +48,10 @@ public final class HermesAnalyticsViewModel: ObservableObject {
 
   public func openOperationsCenter() {
     openOperationsCenterAction()
+  }
+
+  public func openReportingCenter() {
+    openReportingCenterAction()
   }
 
   public var boundarySummary: String {

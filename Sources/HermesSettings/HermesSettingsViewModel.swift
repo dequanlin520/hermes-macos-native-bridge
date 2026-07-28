@@ -16,6 +16,7 @@ public final class HermesSettingsViewModel: ObservableObject {
   private let openHealthCenterAction: @MainActor () -> Void
   private let openOperationsCenterAction: @MainActor () -> Void
   private let openAnalyticsCenterAction: @MainActor () -> Void
+  private let openReportingCenterAction: @MainActor () -> Void
 
   public init(
     controller: HermesSettingsController,
@@ -27,7 +28,8 @@ public final class HermesSettingsViewModel: ObservableObject {
     openComplianceCenter: @escaping @MainActor () -> Void = {},
     openHealthCenter: @escaping @MainActor () -> Void = {},
     openOperationsCenter: @escaping @MainActor () -> Void = {},
-    openAnalyticsCenter: @escaping @MainActor () -> Void = {}
+    openAnalyticsCenter: @escaping @MainActor () -> Void = {},
+    openReportingCenter: @escaping @MainActor () -> Void = {}
   ) {
     self.controller = controller
     self.reopenOnboardingAction = reopenOnboarding
@@ -39,6 +41,7 @@ public final class HermesSettingsViewModel: ObservableObject {
     self.openHealthCenterAction = openHealthCenter
     self.openOperationsCenterAction = openOperationsCenter
     self.openAnalyticsCenterAction = openAnalyticsCenter
+    self.openReportingCenterAction = openReportingCenter
     self.state = HermesSettingsState()
     self.draftSettings = .defaults
   }
@@ -53,7 +56,8 @@ public final class HermesSettingsViewModel: ObservableObject {
     openComplianceCenter: @escaping @MainActor () -> Void = {},
     openHealthCenter: @escaping @MainActor () -> Void = {},
     openOperationsCenter: @escaping @MainActor () -> Void = {},
-    openAnalyticsCenter: @escaping @MainActor () -> Void = {}
+    openAnalyticsCenter: @escaping @MainActor () -> Void = {},
+    openReportingCenter: @escaping @MainActor () -> Void = {}
   ) {
     self.init(
       controller: HermesSettingsController(store: store),
@@ -65,7 +69,8 @@ public final class HermesSettingsViewModel: ObservableObject {
       openComplianceCenter: openComplianceCenter,
       openHealthCenter: openHealthCenter,
       openOperationsCenter: openOperationsCenter,
-      openAnalyticsCenter: openAnalyticsCenter
+      openAnalyticsCenter: openAnalyticsCenter,
+      openReportingCenter: openReportingCenter
     )
   }
 
@@ -127,5 +132,9 @@ public final class HermesSettingsViewModel: ObservableObject {
 
   public func openAnalyticsCenter() {
     openAnalyticsCenterAction()
+  }
+
+  public func openReportingCenter() {
+    openReportingCenterAction()
   }
 }
