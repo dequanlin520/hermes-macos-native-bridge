@@ -25,15 +25,27 @@ public struct HermesRuntimeSettings: Codable, Equatable, Sendable {
 public struct HermesUISettings: Codable, Equatable, Sendable {
   public var showMenuBarIcon: Bool
   public var enableNotifications: Bool
+  public var runtimeAlerts: Bool
+  public var updateAlerts: Bool
+  public var recoveryAlerts: Bool
+  public var permissionAlerts: Bool
   public var dashboardRefreshIntervalSeconds: Int
 
   public init(
     showMenuBarIcon: Bool = true,
     enableNotifications: Bool = true,
+    runtimeAlerts: Bool = true,
+    updateAlerts: Bool = true,
+    recoveryAlerts: Bool = true,
+    permissionAlerts: Bool = true,
     dashboardRefreshIntervalSeconds: Int = 5
   ) {
     self.showMenuBarIcon = showMenuBarIcon
     self.enableNotifications = enableNotifications
+    self.runtimeAlerts = runtimeAlerts
+    self.updateAlerts = updateAlerts
+    self.recoveryAlerts = recoveryAlerts
+    self.permissionAlerts = permissionAlerts
     self.dashboardRefreshIntervalSeconds = dashboardRefreshIntervalSeconds
   }
 }

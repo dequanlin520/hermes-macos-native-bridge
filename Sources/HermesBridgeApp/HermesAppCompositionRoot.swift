@@ -5,6 +5,7 @@ import HermesDashboard
 import HermesDiagnostics
 import HermesLogsViewer
 import HermesMenuBar
+import HermesNotifications
 import HermesOnboarding
 import HermesRecovery
 import HermesSettings
@@ -31,6 +32,7 @@ public final class HermesAppClientGraph: @unchecked Sendable {
   public let onboardingCoordinator: HermesOnboardingCoordinator
   public let recoveryCoordinator: HermesRecoveryCoordinator
   public let updateCoordinator: HermesUpdateCoordinator
+  public let notificationCenter: HermesNotificationCenter
   public let navigationActions = HermesAppNavigationActions()
 
   private let shutdownHandler: @Sendable () async -> Void
@@ -41,6 +43,7 @@ public final class HermesAppClientGraph: @unchecked Sendable {
     onboardingCoordinator: HermesOnboardingCoordinator? = nil,
     recoveryCoordinator: HermesRecoveryCoordinator? = nil,
     updateCoordinator: HermesUpdateCoordinator? = nil,
+    notificationCenter: HermesNotificationCenter = HermesNotificationCenter(),
     shutdownHandler: (@Sendable () async -> Void)? = nil
   ) {
     self.runtimeClient = runtimeClient
@@ -82,6 +85,7 @@ public final class HermesAppClientGraph: @unchecked Sendable {
     } else {
       self.updateCoordinator = HermesUpdateCoordinator(provider: HermesUpdateUnavailableProvider())
     }
+    self.notificationCenter = notificationCenter
     self.shutdownHandler = shutdownHandler ?? {
       await runtimeClient.invalidate()
     }
@@ -128,6 +132,9 @@ public final class HermesAppCompositionRoot: ObservableObject {
     }
     clientGraph.navigationActions.openUpdateCenter = { [weak windowCoordinator] in
       windowCoordinator?.open(.update)
+    }
+    clientGraph.navigationActions.openNotifications = { [weak windowCoordinator] in
+      windowCoordinator?.open(.notifications)
     }
     clientGraph.navigationActions.openRecovery = { [weak clientGraph, weak windowCoordinator] issue in
       Task { @MainActor in
@@ -229,6 +236,10 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
           }
         )
       )
+    case .notifications:
+      controller = HermesNotificationWindowController(
+        viewModel: HermesNotificationViewModel(center: clientGraph.notificationCenter)
+      )
     case .recovery:
       controller = HermesRecoveryWindowController(
         viewModel: HermesRecoveryViewModel(
@@ -261,6 +272,7 @@ public final class HermesAppNavigationActions {
   public var reopenOnboarding: () -> Void = {}
   public var openDiagnostics: () -> Void = {}
   public var openUpdateCenter: () -> Void = {}
+  public var openNotifications: () -> Void = {}
   public var openRecovery: (HermesRecoveryIssueCategory) -> Void = { _ in }
 
   public init() {}

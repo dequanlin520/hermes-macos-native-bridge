@@ -105,6 +105,7 @@ final class HermesNativeUIEndToEndTests: XCTestCase {
     root.router.openSettings()
     root.router.openDiagnostics()
     root.router.openUpdateCenter()
+    root.router.openNotifications()
     root.windowCoordinator.open(.recovery)
     root.router.openDashboard()
     root.windowCoordinator.close(.logs)
@@ -117,7 +118,7 @@ final class HermesNativeUIEndToEndTests: XCTestCase {
       HermesNativeUIWindowIdentifier.allCases.map(\.rawValue).filter {
         $0.hasPrefix("com.hermes.bridge.window.")
       }.count,
-      7
+      8
     )
   }
 
