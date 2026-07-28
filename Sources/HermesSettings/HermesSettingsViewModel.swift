@@ -11,19 +11,22 @@ public final class HermesSettingsViewModel: ObservableObject {
   private let openUpdateCenterAction: @MainActor () -> Void
   private let openPrivacyCenterAction: @MainActor () -> Void
   private let openPolicyCenterAction: @MainActor () -> Void
+  private let openAdministrationCenterAction: @MainActor () -> Void
 
   public init(
     controller: HermesSettingsController,
     reopenOnboarding: @escaping @MainActor () -> Void = {},
     openUpdateCenter: @escaping @MainActor () -> Void = {},
     openPrivacyCenter: @escaping @MainActor () -> Void = {},
-    openPolicyCenter: @escaping @MainActor () -> Void = {}
+    openPolicyCenter: @escaping @MainActor () -> Void = {},
+    openAdministrationCenter: @escaping @MainActor () -> Void = {}
   ) {
     self.controller = controller
     self.reopenOnboardingAction = reopenOnboarding
     self.openUpdateCenterAction = openUpdateCenter
     self.openPrivacyCenterAction = openPrivacyCenter
     self.openPolicyCenterAction = openPolicyCenter
+    self.openAdministrationCenterAction = openAdministrationCenter
     self.state = HermesSettingsState()
     self.draftSettings = .defaults
   }
@@ -33,14 +36,16 @@ public final class HermesSettingsViewModel: ObservableObject {
     reopenOnboarding: @escaping @MainActor () -> Void = {},
     openUpdateCenter: @escaping @MainActor () -> Void = {},
     openPrivacyCenter: @escaping @MainActor () -> Void = {},
-    openPolicyCenter: @escaping @MainActor () -> Void = {}
+    openPolicyCenter: @escaping @MainActor () -> Void = {},
+    openAdministrationCenter: @escaping @MainActor () -> Void = {}
   ) {
     self.init(
       controller: HermesSettingsController(store: store),
       reopenOnboarding: reopenOnboarding,
       openUpdateCenter: openUpdateCenter,
       openPrivacyCenter: openPrivacyCenter,
-      openPolicyCenter: openPolicyCenter
+      openPolicyCenter: openPolicyCenter,
+      openAdministrationCenter: openAdministrationCenter
     )
   }
 
@@ -82,5 +87,9 @@ public final class HermesSettingsViewModel: ObservableObject {
 
   public func openPolicyCenter() {
     openPolicyCenterAction()
+  }
+
+  public func openAdministrationCenter() {
+    openAdministrationCenterAction()
   }
 }
