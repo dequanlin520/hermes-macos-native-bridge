@@ -210,6 +210,11 @@ public struct HermesAdministrationWindow: View {
       } label: {
         Label("Compliance", systemImage: "checkmark.seal")
       }
+      Button {
+        viewModel.openHealthCenter()
+      } label: {
+        Label("Health", systemImage: "heart.text.square")
+      }
       Spacer()
       Button {
         viewModel.refresh()

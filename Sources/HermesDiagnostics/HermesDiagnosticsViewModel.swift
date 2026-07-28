@@ -14,6 +14,7 @@ public final class HermesDiagnosticsViewModel: ObservableObject {
   private let openPrivacyCenterAction: @MainActor () -> Void
   private let openPolicyCenterAction: @MainActor () -> Void
   private let openAdministrationCenterAction: @MainActor () -> Void
+  private let openHealthCenterAction: @MainActor () -> Void
 
   public init(
     controller: HermesDiagnosticsController,
@@ -23,7 +24,8 @@ public final class HermesDiagnosticsViewModel: ObservableObject {
     openFeedbackCenter: @escaping @MainActor () -> Void = {},
     openPrivacyCenter: @escaping @MainActor () -> Void = {},
     openPolicyCenter: @escaping @MainActor () -> Void = {},
-    openAdministrationCenter: @escaping @MainActor () -> Void = {}
+    openAdministrationCenter: @escaping @MainActor () -> Void = {},
+    openHealthCenter: @escaping @MainActor () -> Void = {}
   ) {
     self.controller = controller
     self.reopenOnboardingAction = reopenOnboarding
@@ -33,6 +35,7 @@ public final class HermesDiagnosticsViewModel: ObservableObject {
     self.openPrivacyCenterAction = openPrivacyCenter
     self.openPolicyCenterAction = openPolicyCenter
     self.openAdministrationCenterAction = openAdministrationCenter
+    self.openHealthCenterAction = openHealthCenter
     self.state = HermesDiagnosticsState()
   }
 
@@ -44,7 +47,8 @@ public final class HermesDiagnosticsViewModel: ObservableObject {
     openFeedbackCenter: @escaping @MainActor () -> Void = {},
     openPrivacyCenter: @escaping @MainActor () -> Void = {},
     openPolicyCenter: @escaping @MainActor () -> Void = {},
-    openAdministrationCenter: @escaping @MainActor () -> Void = {}
+    openAdministrationCenter: @escaping @MainActor () -> Void = {},
+    openHealthCenter: @escaping @MainActor () -> Void = {}
   ) {
     self.init(
       controller: HermesDiagnosticsController(provider: provider),
@@ -54,7 +58,8 @@ public final class HermesDiagnosticsViewModel: ObservableObject {
       openFeedbackCenter: openFeedbackCenter,
       openPrivacyCenter: openPrivacyCenter,
       openPolicyCenter: openPolicyCenter,
-      openAdministrationCenter: openAdministrationCenter
+      openAdministrationCenter: openAdministrationCenter,
+      openHealthCenter: openHealthCenter
     )
   }
 
@@ -96,6 +101,10 @@ public final class HermesDiagnosticsViewModel: ObservableObject {
 
   public func openAdministrationCenter() {
     openAdministrationCenterAction()
+  }
+
+  public func openHealthCenter() {
+    openHealthCenterAction()
   }
 
   public var recoveryIssue: HermesRecoveryIssueCategory {

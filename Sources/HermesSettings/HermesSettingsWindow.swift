@@ -134,6 +134,14 @@ public struct HermesSettingsWindow: View {
             Label("Open Compliance Center", systemImage: "checkmark.seal")
           }
         }
+
+        Section("Enterprise Health") {
+          Button {
+            viewModel.openHealthCenter()
+          } label: {
+            Label("Open Health Center", systemImage: "heart.text.square")
+          }
+        }
       }
       .formStyle(.grouped)
 
