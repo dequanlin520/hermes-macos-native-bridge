@@ -239,6 +239,13 @@ public struct HermesDiagnosticsWindow: View {
       .disabled(viewModel.state.isRefreshing || viewModel.state.isRunningDiagnostics)
 
       Button {
+        viewModel.openHealthCenter()
+      } label: {
+        Label("Health", systemImage: "heart.text.square")
+      }
+      .disabled(viewModel.state.isRefreshing || viewModel.state.isRunningDiagnostics)
+
+      Button {
         viewModel.refresh()
       } label: {
         Label("Refresh", systemImage: "arrow.clockwise")

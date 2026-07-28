@@ -6,6 +6,7 @@ import HermesCompliance
 import HermesDashboard
 import HermesDiagnostics
 import HermesFeedback
+import HermesHealth
 import HermesLogsViewer
 import HermesMenuBar
 import HermesNotifications
@@ -48,6 +49,7 @@ public final class HermesAppClientGraph: @unchecked Sendable {
   public let privacyCenter: HermesPrivacyCenter
   public let adminCenter: HermesAdminCenter
   public let complianceCenter: HermesComplianceCenter
+  public let healthCenter: HermesHealthCenter
   public let navigationActions = HermesAppNavigationActions()
 
   private let shutdownHandler: @Sendable () async -> Void
@@ -67,6 +69,7 @@ public final class HermesAppClientGraph: @unchecked Sendable {
     privacyCenter: HermesPrivacyCenter = HermesPrivacyCenter(),
     adminCenter: HermesAdminCenter? = nil,
     complianceCenter: HermesComplianceCenter? = nil,
+    healthCenter: HermesHealthCenter? = nil,
     shutdownHandler: (@Sendable () async -> Void)? = nil
   ) {
     self.runtimeClient = runtimeClient
@@ -124,6 +127,14 @@ public final class HermesAppClientGraph: @unchecked Sendable {
       policyCenter: policyCenter,
       privacyCenter: privacyCenter,
       updateCoordinator: self.updateCoordinator
+    )
+    self.healthCenter = healthCenter ?? Self.makeHealthCenter(
+      policyCenter: policyCenter,
+      privacyCenter: privacyCenter,
+      updateCoordinator: self.updateCoordinator,
+      notificationCenter: notificationCenter,
+      recoveryCoordinator: self.recoveryCoordinator,
+      complianceCenter: self.complianceCenter
     )
     self.shutdownHandler = shutdownHandler ?? {
       await runtimeClient.invalidate()
@@ -215,6 +226,71 @@ public final class HermesAppClientGraph: @unchecked Sendable {
       )
     )
   }
+
+  private static func makeHealthCenter(
+    policyCenter: HermesPolicyCenter,
+    privacyCenter: HermesPrivacyCenter,
+    updateCoordinator: HermesUpdateCoordinator,
+    notificationCenter: HermesNotificationCenter,
+    recoveryCoordinator: HermesRecoveryCoordinator,
+    complianceCenter: HermesComplianceCenter
+  ) -> HermesHealthCenter {
+    HermesHealthCenter(
+      inputs: HermesHealthCenterInputs(
+        systemHealth: {
+          let snapshot = await updateCoordinator.currentSnapshot
+          let serviceAvailability: HermesHealthAvailability = snapshot.current.serviceVersion == "unknown"
+            ? .unknown
+            : .available
+          let xpcConnectivity: HermesHealthConnectivity = snapshot.current.xpcProtocolVersion == "unknown"
+            ? .unknown
+            : .connected
+          return HermesHealthSystemProviderSnapshot(
+            applicationAvailability: .available,
+            serviceAvailability: serviceAvailability,
+            xpcConnectivity: xpcConnectivity,
+            applicationVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0",
+            protocolVersion: snapshot.current.xpcProtocolVersion
+          )
+        },
+        runtimeHealth: {
+          let snapshot = await updateCoordinator.currentSnapshot
+          let serviceKnown = snapshot.current.serviceVersion != "unknown"
+          return HermesHealthRuntimeProviderSnapshot(
+            runtimeStatusSummary: serviceKnown ? "runtime visible through service-owned provider" : "runtime unknown",
+            sessionAvailabilitySummary: "session availability owned by Bridge Service",
+            backendAvailabilitySummary: serviceKnown ? "backend available" : "backend unknown"
+          )
+        },
+        operationalHealth: {
+          let update = await updateCoordinator.currentSnapshot
+          let recovery = recoveryCoordinator.currentSnapshot
+          let notifications = await notificationCenter.currentNotifications()
+          var failures = notifications.filter { $0.severity == .critical || $0.category == .updateFailed }
+            .map { "\($0.category.rawValue) \($0.title)" }
+          if let failure = update.failure {
+            failures.append("\(failure.category.rawValue) \(failure.safeMessage)")
+          }
+          return HermesHealthOperationalProviderSnapshot(
+            recentFailures: failures,
+            recoveryStatus: recovery.state.rawValue,
+            updateStatus: update.state.rawValue,
+            notificationStatus: "\(notifications.count) notifications"
+          )
+        },
+        complianceHealth: {
+          let compliance = await complianceCenter.snapshot()
+          let policyCount = (try? policyCenter.listPolicies().count) ?? 0
+          let privacyCount = (try? privacyCenter.listConsentRecords().count) ?? 0
+          return HermesHealthComplianceProviderSnapshot(
+            policyStatus: "\(compliance.policy.state.rawValue) \(policyCount) policies",
+            privacyStatus: "\(compliance.privacy.state.rawValue) \(privacyCount) records",
+            auditStatus: "\(compliance.auditEvidence.recentEventCount) audit events"
+          )
+        }
+      )
+    )
+  }
 }
 
 @MainActor
@@ -272,6 +348,9 @@ public final class HermesAppCompositionRoot: ObservableObject {
     }
     clientGraph.navigationActions.openComplianceCenter = { [weak windowCoordinator] in
       windowCoordinator?.open(.compliance)
+    }
+    clientGraph.navigationActions.openHealthCenter = { [weak windowCoordinator] in
+      windowCoordinator?.open(.health)
     }
     clientGraph.navigationActions.openRecovery = { [weak clientGraph, weak windowCoordinator] issue in
       Task { @MainActor in
@@ -365,6 +444,9 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
           },
           openComplianceCenter: {
             clientGraph.navigationActions.openComplianceCenter()
+          },
+          openHealthCenter: {
+            clientGraph.navigationActions.openHealthCenter()
           }
         )
       )
@@ -395,6 +477,9 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
           },
           openAdministrationCenter: {
             clientGraph.navigationActions.openAdministrationCenter()
+          },
+          openHealthCenter: {
+            clientGraph.navigationActions.openHealthCenter()
           }
         )
       )
@@ -478,6 +563,9 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
           },
           openComplianceCenter: {
             clientGraph.navigationActions.openComplianceCenter()
+          },
+          openHealthCenter: {
+            clientGraph.navigationActions.openHealthCenter()
           }
         )
       )
@@ -487,6 +575,21 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
           center: clientGraph.complianceCenter,
           openSettings: {
             clientGraph.navigationActions.openSettings()
+          },
+          openAdministrationCenter: {
+            clientGraph.navigationActions.openAdministrationCenter()
+          }
+        )
+      )
+    case .health:
+      controller = HermesHealthWindowController(
+        viewModel: HermesHealthViewModel(
+          center: clientGraph.healthCenter,
+          openSettings: {
+            clientGraph.navigationActions.openSettings()
+          },
+          openDiagnostics: {
+            clientGraph.navigationActions.openDiagnostics()
           },
           openAdministrationCenter: {
             clientGraph.navigationActions.openAdministrationCenter()
@@ -537,6 +640,7 @@ public final class HermesAppNavigationActions {
   public var openSettings: () -> Void = {}
   public var openAdministrationCenter: () -> Void = {}
   public var openComplianceCenter: () -> Void = {}
+  public var openHealthCenter: () -> Void = {}
   public var openRecovery: (HermesRecoveryIssueCategory) -> Void = { _ in }
 
   public init() {}
