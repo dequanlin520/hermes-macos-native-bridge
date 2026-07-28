@@ -215,6 +215,13 @@ public struct HermesUpdateWindow: View {
       }
 
       Button {
+        viewModel.reportUpdateFeedback()
+      } label: {
+        Label("Feedback", systemImage: "bubble.left.and.text.bubble.right")
+      }
+      .disabled(viewModel.isWorking)
+
+      Button {
         if viewModel.snapshot.confirmation?.operation == .rollback {
           viewModel.rollbackConfirmed()
         } else {

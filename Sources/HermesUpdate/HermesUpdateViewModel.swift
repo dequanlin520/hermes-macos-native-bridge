@@ -9,15 +9,18 @@ public final class HermesUpdateViewModel: ObservableObject {
   private let coordinator: HermesUpdateCoordinator
   private let openDiagnostics: @MainActor () -> Void
   private let openRecovery: @MainActor () -> Void
+  private let openFeedbackCenter: @MainActor () -> Void
 
   public init(
     coordinator: HermesUpdateCoordinator,
     openDiagnostics: @escaping @MainActor () -> Void = {},
-    openRecovery: @escaping @MainActor () -> Void = {}
+    openRecovery: @escaping @MainActor () -> Void = {},
+    openFeedbackCenter: @escaping @MainActor () -> Void = {}
   ) {
     self.coordinator = coordinator
     self.openDiagnostics = openDiagnostics
     self.openRecovery = openRecovery
+    self.openFeedbackCenter = openFeedbackCenter
     self.snapshot = HermesUpdateSnapshot()
     Task {
       snapshot = await coordinator.currentSnapshot
@@ -66,6 +69,10 @@ public final class HermesUpdateViewModel: ObservableObject {
 
   public func showRecovery() {
     openRecovery()
+  }
+
+  public func reportUpdateFeedback() {
+    openFeedbackCenter()
   }
 
   private func run(_ action: @escaping @Sendable () async -> HermesUpdateSnapshot) {

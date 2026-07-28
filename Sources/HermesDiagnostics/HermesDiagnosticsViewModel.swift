@@ -10,17 +10,20 @@ public final class HermesDiagnosticsViewModel: ObservableObject {
   private let reopenOnboardingAction: @MainActor () -> Void
   private let openRecoveryAction: @MainActor (HermesRecoveryIssueCategory) -> Void
   private let openUpdateCenterAction: @MainActor () -> Void
+  private let openFeedbackCenterAction: @MainActor () -> Void
 
   public init(
     controller: HermesDiagnosticsController,
     reopenOnboarding: @escaping @MainActor () -> Void = {},
     openRecovery: @escaping @MainActor (HermesRecoveryIssueCategory) -> Void = { _ in },
-    openUpdateCenter: @escaping @MainActor () -> Void = {}
+    openUpdateCenter: @escaping @MainActor () -> Void = {},
+    openFeedbackCenter: @escaping @MainActor () -> Void = {}
   ) {
     self.controller = controller
     self.reopenOnboardingAction = reopenOnboarding
     self.openRecoveryAction = openRecovery
     self.openUpdateCenterAction = openUpdateCenter
+    self.openFeedbackCenterAction = openFeedbackCenter
     self.state = HermesDiagnosticsState()
   }
 
@@ -28,13 +31,15 @@ public final class HermesDiagnosticsViewModel: ObservableObject {
     provider: HermesDiagnosticProviding,
     reopenOnboarding: @escaping @MainActor () -> Void = {},
     openRecovery: @escaping @MainActor (HermesRecoveryIssueCategory) -> Void = { _ in },
-    openUpdateCenter: @escaping @MainActor () -> Void = {}
+    openUpdateCenter: @escaping @MainActor () -> Void = {},
+    openFeedbackCenter: @escaping @MainActor () -> Void = {}
   ) {
     self.init(
       controller: HermesDiagnosticsController(provider: provider),
       reopenOnboarding: reopenOnboarding,
       openRecovery: openRecovery,
-      openUpdateCenter: openUpdateCenter
+      openUpdateCenter: openUpdateCenter,
+      openFeedbackCenter: openFeedbackCenter
     )
   }
 
@@ -60,6 +65,10 @@ public final class HermesDiagnosticsViewModel: ObservableObject {
 
   public func openUpdateCenter() {
     openUpdateCenterAction()
+  }
+
+  public func openFeedbackCenter() {
+    openFeedbackCenterAction()
   }
 
   public var recoveryIssue: HermesRecoveryIssueCategory {

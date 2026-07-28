@@ -9,6 +9,7 @@ public final class HermesRecoveryViewModel: ObservableObject {
   private let coordinator: HermesRecoveryCoordinator
   private let openDiagnostics: @MainActor () -> Void
   private let openUpdateCenter: @MainActor () -> Void
+  private let openFeedbackCenter: @MainActor () -> Void
   private let rerunReadiness: @MainActor () -> Void
   private let dismiss: @MainActor () -> Void
 
@@ -16,12 +17,14 @@ public final class HermesRecoveryViewModel: ObservableObject {
     coordinator: HermesRecoveryCoordinator,
     openDiagnostics: @escaping @MainActor () -> Void = {},
     openUpdateCenter: @escaping @MainActor () -> Void = {},
+    openFeedbackCenter: @escaping @MainActor () -> Void = {},
     rerunReadiness: @escaping @MainActor () -> Void = {},
     dismiss: @escaping @MainActor () -> Void = {}
   ) {
     self.coordinator = coordinator
     self.openDiagnostics = openDiagnostics
     self.openUpdateCenter = openUpdateCenter
+    self.openFeedbackCenter = openFeedbackCenter
     self.rerunReadiness = rerunReadiness
     self.dismiss = dismiss
     self.snapshot = coordinator.currentSnapshot
@@ -59,5 +62,9 @@ public final class HermesRecoveryViewModel: ObservableObject {
       }
       isWorking = false
     }
+  }
+
+  public func reportRecoveryFeedback() {
+    openFeedbackCenter()
   }
 }

@@ -122,6 +122,11 @@ public struct HermesRecoveryWindow: View {
           .padding(.vertical, 4)
         }
       }
+      Button {
+        viewModel.reportRecoveryFeedback()
+      } label: {
+        Label("Feedback", systemImage: "bubble.left.and.text.bubble.right")
+      }
     }
   }
 
