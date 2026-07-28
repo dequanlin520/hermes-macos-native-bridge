@@ -8,6 +8,7 @@ import HermesMenuBar
 import HermesNotifications
 import HermesOnboarding
 import HermesRecovery
+import HermesSearch
 import HermesSettings
 import HermesTimeline
 import HermesUpdate
@@ -35,6 +36,8 @@ public final class HermesAppClientGraph: @unchecked Sendable {
   public let updateCoordinator: HermesUpdateCoordinator
   public let notificationCenter: HermesNotificationCenter
   public let timelineStore: HermesTimelineStore
+  public let searchStore: HermesSearchStore
+  public let searchIndexer: HermesSearchIndexer
   public let navigationActions = HermesAppNavigationActions()
 
   private let shutdownHandler: @Sendable () async -> Void
@@ -47,6 +50,8 @@ public final class HermesAppClientGraph: @unchecked Sendable {
     updateCoordinator: HermesUpdateCoordinator? = nil,
     notificationCenter: HermesNotificationCenter = HermesNotificationCenter(),
     timelineStore: HermesTimelineStore = HermesTimelineStore(),
+    searchStore: HermesSearchStore = HermesSearchStore(),
+    searchIndexer: HermesSearchIndexer? = nil,
     shutdownHandler: (@Sendable () async -> Void)? = nil
   ) {
     self.runtimeClient = runtimeClient
@@ -90,6 +95,8 @@ public final class HermesAppClientGraph: @unchecked Sendable {
     }
     self.notificationCenter = notificationCenter
     self.timelineStore = timelineStore
+    self.searchStore = searchStore
+    self.searchIndexer = searchIndexer ?? HermesSearchIndexer(store: searchStore)
     self.shutdownHandler = shutdownHandler ?? {
       await runtimeClient.invalidate()
     }
@@ -142,6 +149,9 @@ public final class HermesAppCompositionRoot: ObservableObject {
     }
     clientGraph.navigationActions.openTimeline = { [weak windowCoordinator] in
       windowCoordinator?.open(.timeline)
+    }
+    clientGraph.navigationActions.openSearchCenter = { [weak windowCoordinator] in
+      windowCoordinator?.open(.search)
     }
     clientGraph.navigationActions.openRecovery = { [weak clientGraph, weak windowCoordinator] issue in
       Task { @MainActor in
@@ -197,7 +207,10 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
       controller = HermesDashboardWindowController(
         viewModel: HermesDashboardViewModel(
           commandAPI: clientGraph.runtimeClient,
-          timelineReader: clientGraph.timelineStore
+          timelineReader: clientGraph.timelineStore,
+          openSearchCenter: {
+            clientGraph.navigationActions.openSearchCenter()
+          }
         )
       )
     case .logs:
@@ -254,6 +267,10 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
       controller = HermesActivityTimelineWindowController(
         viewModel: HermesTimelineViewModel(store: clientGraph.timelineStore)
       )
+    case .search:
+      controller = HermesSearchCenterWindowController(
+        viewModel: HermesSearchViewModel(store: clientGraph.searchStore)
+      )
     case .recovery:
       controller = HermesRecoveryWindowController(
         viewModel: HermesRecoveryViewModel(
@@ -288,6 +305,7 @@ public final class HermesAppNavigationActions {
   public var openUpdateCenter: () -> Void = {}
   public var openNotifications: () -> Void = {}
   public var openTimeline: () -> Void = {}
+  public var openSearchCenter: () -> Void = {}
   public var openRecovery: (HermesRecoveryIssueCategory) -> Void = { _ in }
 
   public init() {}

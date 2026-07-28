@@ -75,6 +75,9 @@ public struct HermesBridgeMenuBarContent: View {
       Button("Activity Timeline") {
         compositionRoot.router.openTimeline()
       }
+      Button("Search Center") {
+        compositionRoot.router.openSearchCenter()
+      }
       Button("Settings") {
         compositionRoot.router.openSettings()
       }
