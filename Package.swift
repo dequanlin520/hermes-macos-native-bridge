@@ -56,6 +56,10 @@ let package = Package(
       name: "HermesUpdate",
       targets: ["HermesUpdate"]
     ),
+    .library(
+      name: "HermesNotifications",
+      targets: ["HermesNotifications"]
+    ),
     .executable(
       name: "HermesBridgeService",
       targets: ["HermesBridgeServiceExecutable"]
@@ -155,6 +159,10 @@ let package = Package(
       name: "HermesUpdate",
       dependencies: ["HermesBridgeXPC", "HermesRuntimeFoundation"]
     ),
+    .target(
+      name: "HermesNotifications",
+      dependencies: ["HermesRuntimeFoundation"]
+    ),
     .executableTarget(
       name: "HermesBridgeControl",
       dependencies: ["HermesBridgeControlCore"]
@@ -168,7 +176,7 @@ let package = Package(
       dependencies: [
         "HermesBridgeXPC",
         "HermesDashboard", "HermesDiagnostics", "HermesLogsViewer", "HermesMenuBar",
-        "HermesOnboarding", "HermesRecovery", "HermesSettings", "HermesUpdate",
+        "HermesNotifications", "HermesOnboarding", "HermesRecovery", "HermesSettings", "HermesUpdate",
       ]
     ),
     .executableTarget(
@@ -277,9 +285,13 @@ let package = Package(
       dependencies: [
         "HermesBridgeApp", "HermesBridgeAppAcceptanceSupport", "HermesBridgeService",
         "HermesBridgeXPC", "HermesDashboard", "HermesDiagnostics", "HermesLogsViewer",
-        "HermesMenuBar", "HermesRecovery", "HermesRuntimeFoundation", "HermesSettings",
+        "HermesMenuBar", "HermesNotifications", "HermesRecovery", "HermesRuntimeFoundation", "HermesSettings",
         "HermesUpdate",
       ]
+    ),
+    .testTarget(
+      name: "HermesNotificationsTests",
+      dependencies: ["HermesNotifications", "HermesRuntimeFoundation"]
     ),
     .testTarget(
       name: "HermesUpdateTests",

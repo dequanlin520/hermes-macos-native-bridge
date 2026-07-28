@@ -71,6 +71,13 @@ public struct HermesSettingsWindow: View {
           }
         }
 
+        Section("Alerts") {
+          Toggle("Runtime alerts", isOn: $viewModel.draftSettings.ui.runtimeAlerts)
+          Toggle("Update alerts", isOn: $viewModel.draftSettings.ui.updateAlerts)
+          Toggle("Recovery alerts", isOn: $viewModel.draftSettings.ui.recoveryAlerts)
+          Toggle("Permission alerts", isOn: $viewModel.draftSettings.ui.permissionAlerts)
+        }
+
         Section("Logging") {
           Picker("Log level", selection: $viewModel.draftSettings.logLevel) {
             ForEach(HermesSettingsLogLevel.allCases, id: \.self) { level in

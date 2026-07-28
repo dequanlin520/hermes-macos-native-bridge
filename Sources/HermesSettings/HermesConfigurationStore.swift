@@ -24,6 +24,10 @@ public final class HermesConfigurationStore: HermesConfigurationStoring, @unchec
     static let startupTimeoutSeconds = prefix + "runtime.startupTimeoutSeconds"
     static let showMenuBarIcon = prefix + "ui.showMenuBarIcon"
     static let enableNotifications = prefix + "ui.enableNotifications"
+    static let runtimeAlerts = prefix + "ui.runtimeAlerts"
+    static let updateAlerts = prefix + "ui.updateAlerts"
+    static let recoveryAlerts = prefix + "ui.recoveryAlerts"
+    static let permissionAlerts = prefix + "ui.permissionAlerts"
     static let dashboardRefreshIntervalSeconds = prefix + "ui.dashboardRefreshIntervalSeconds"
     static let logLevel = prefix + "logging.level"
 
@@ -33,6 +37,10 @@ public final class HermesConfigurationStore: HermesConfigurationStoring, @unchec
       startupTimeoutSeconds,
       showMenuBarIcon,
       enableNotifications,
+      runtimeAlerts,
+      updateAlerts,
+      recoveryAlerts,
+      permissionAlerts,
       dashboardRefreshIntervalSeconds,
       logLevel,
     ]
@@ -67,6 +75,10 @@ public final class HermesConfigurationStore: HermesConfigurationStoring, @unchec
             for: Keys.enableNotifications,
             defaultValue: defaults.ui.enableNotifications
           ),
+          runtimeAlerts: bool(for: Keys.runtimeAlerts, defaultValue: defaults.ui.runtimeAlerts),
+          updateAlerts: bool(for: Keys.updateAlerts, defaultValue: defaults.ui.updateAlerts),
+          recoveryAlerts: bool(for: Keys.recoveryAlerts, defaultValue: defaults.ui.recoveryAlerts),
+          permissionAlerts: bool(for: Keys.permissionAlerts, defaultValue: defaults.ui.permissionAlerts),
           dashboardRefreshIntervalSeconds: int(
             for: Keys.dashboardRefreshIntervalSeconds,
             defaultValue: defaults.ui.dashboardRefreshIntervalSeconds
@@ -90,6 +102,10 @@ public final class HermesConfigurationStore: HermesConfigurationStoring, @unchec
       userDefaults.set(settings.runtime.startupTimeoutSeconds, forKey: Keys.startupTimeoutSeconds)
       userDefaults.set(settings.ui.showMenuBarIcon, forKey: Keys.showMenuBarIcon)
       userDefaults.set(settings.ui.enableNotifications, forKey: Keys.enableNotifications)
+      userDefaults.set(settings.ui.runtimeAlerts, forKey: Keys.runtimeAlerts)
+      userDefaults.set(settings.ui.updateAlerts, forKey: Keys.updateAlerts)
+      userDefaults.set(settings.ui.recoveryAlerts, forKey: Keys.recoveryAlerts)
+      userDefaults.set(settings.ui.permissionAlerts, forKey: Keys.permissionAlerts)
       userDefaults.set(settings.ui.dashboardRefreshIntervalSeconds, forKey: Keys.dashboardRefreshIntervalSeconds)
       userDefaults.set(settings.logLevel.rawValue, forKey: Keys.logLevel)
     }
