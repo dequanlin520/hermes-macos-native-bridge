@@ -8,28 +8,33 @@ public final class HermesDashboardViewModel: ObservableObject {
 
   private let controller: HermesDashboardController
   private let openSearchCenterAction: @MainActor () -> Void
+  private let openFeedbackCenterAction: @MainActor () -> Void
   private var subscriptionStarted = false
 
   public init(
     controller: HermesDashboardController,
-    openSearchCenter: @escaping @MainActor () -> Void = {}
+    openSearchCenter: @escaping @MainActor () -> Void = {},
+    openFeedbackCenter: @escaping @MainActor () -> Void = {}
   ) {
     self.controller = controller
     self.openSearchCenterAction = openSearchCenter
+    self.openFeedbackCenterAction = openFeedbackCenter
     self.state = HermesDashboardState()
   }
 
   public convenience init(
     commandAPI: HermesDashboardRuntimeCommandExecuting,
     timelineReader: (any HermesTimelineReadable)? = nil,
-    openSearchCenter: @escaping @MainActor () -> Void = {}
+    openSearchCenter: @escaping @MainActor () -> Void = {},
+    openFeedbackCenter: @escaping @MainActor () -> Void = {}
   ) {
     self.init(
       controller: HermesDashboardController(
         commandAPI: commandAPI,
         timelineReader: timelineReader
       ),
-      openSearchCenter: openSearchCenter
+      openSearchCenter: openSearchCenter,
+      openFeedbackCenter: openFeedbackCenter
     )
   }
 
@@ -83,6 +88,10 @@ public final class HermesDashboardViewModel: ObservableObject {
 
   public func openSearchCenter() {
     openSearchCenterAction()
+  }
+
+  public func openFeedbackCenter() {
+    openFeedbackCenterAction()
   }
 
   public func cancel() {

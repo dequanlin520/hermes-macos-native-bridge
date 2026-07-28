@@ -247,6 +247,12 @@ public struct HermesDashboardWindow: View {
       } label: {
         Label("Search Hermes History", systemImage: "magnifyingglass")
       }
+
+      Button {
+        viewModel.openFeedbackCenter()
+      } label: {
+        Label("Feedback", systemImage: "bubble.left.and.text.bubble.right")
+      }
     }
     .padding(18)
   }

@@ -3,6 +3,7 @@ import AppKit
 import HermesBridgeXPC
 import HermesDashboard
 import HermesDiagnostics
+import HermesFeedback
 import HermesLogsViewer
 import HermesMenuBar
 import HermesNotifications
@@ -38,6 +39,7 @@ public final class HermesAppClientGraph: @unchecked Sendable {
   public let timelineStore: HermesTimelineStore
   public let searchStore: HermesSearchStore
   public let searchIndexer: HermesSearchIndexer
+  public let feedbackCenter: HermesFeedbackCenter
   public let navigationActions = HermesAppNavigationActions()
 
   private let shutdownHandler: @Sendable () async -> Void
@@ -52,6 +54,7 @@ public final class HermesAppClientGraph: @unchecked Sendable {
     timelineStore: HermesTimelineStore = HermesTimelineStore(),
     searchStore: HermesSearchStore = HermesSearchStore(),
     searchIndexer: HermesSearchIndexer? = nil,
+    feedbackCenter: HermesFeedbackCenter = HermesFeedbackCenter(),
     shutdownHandler: (@Sendable () async -> Void)? = nil
   ) {
     self.runtimeClient = runtimeClient
@@ -97,6 +100,7 @@ public final class HermesAppClientGraph: @unchecked Sendable {
     self.timelineStore = timelineStore
     self.searchStore = searchStore
     self.searchIndexer = searchIndexer ?? HermesSearchIndexer(store: searchStore)
+    self.feedbackCenter = feedbackCenter
     self.shutdownHandler = shutdownHandler ?? {
       await runtimeClient.invalidate()
     }
@@ -152,6 +156,9 @@ public final class HermesAppCompositionRoot: ObservableObject {
     }
     clientGraph.navigationActions.openSearchCenter = { [weak windowCoordinator] in
       windowCoordinator?.open(.search)
+    }
+    clientGraph.navigationActions.openFeedbackCenter = { [weak windowCoordinator] in
+      windowCoordinator?.open(.feedback)
     }
     clientGraph.navigationActions.openRecovery = { [weak clientGraph, weak windowCoordinator] issue in
       Task { @MainActor in
@@ -210,6 +217,9 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
           timelineReader: clientGraph.timelineStore,
           openSearchCenter: {
             clientGraph.navigationActions.openSearchCenter()
+          },
+          openFeedbackCenter: {
+            clientGraph.navigationActions.openFeedbackCenter()
           }
         )
       )
@@ -256,6 +266,9 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
           },
           openRecovery: {
             clientGraph.navigationActions.openRecovery(.unknownReadinessFailure)
+          },
+          openFeedbackCenter: {
+            clientGraph.navigationActions.openFeedbackCenter()
           }
         )
       )
@@ -271,6 +284,20 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
       controller = HermesSearchCenterWindowController(
         viewModel: HermesSearchViewModel(store: clientGraph.searchStore)
       )
+    case .feedback:
+      controller = HermesFeedbackWindowController(
+        viewModel: HermesFeedbackViewModel(
+          center: clientGraph.feedbackCenter,
+          contextProvider: {
+            HermesFeedbackSafeRuntimeContext(
+              applicationVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+              runtimeStatusSummary: "app-managed-runtime=no",
+              protocolVersion: "feedback.v1",
+              featureName: "Feedback Center"
+            )
+          }
+        )
+      )
     case .recovery:
       controller = HermesRecoveryWindowController(
         viewModel: HermesRecoveryViewModel(
@@ -280,6 +307,9 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
           },
           openUpdateCenter: {
             clientGraph.navigationActions.openUpdateCenter()
+          },
+          openFeedbackCenter: {
+            clientGraph.navigationActions.openFeedbackCenter()
           },
           rerunReadiness: {
             Task {
@@ -306,6 +336,7 @@ public final class HermesAppNavigationActions {
   public var openNotifications: () -> Void = {}
   public var openTimeline: () -> Void = {}
   public var openSearchCenter: () -> Void = {}
+  public var openFeedbackCenter: () -> Void = {}
   public var openRecovery: (HermesRecoveryIssueCategory) -> Void = { _ in }
 
   public init() {}
