@@ -60,6 +60,10 @@ let package = Package(
       name: "HermesNotifications",
       targets: ["HermesNotifications"]
     ),
+    .library(
+      name: "HermesTimeline",
+      targets: ["HermesTimeline"]
+    ),
     .executable(
       name: "HermesBridgeService",
       targets: ["HermesBridgeServiceExecutable"]
@@ -103,7 +107,7 @@ let package = Package(
     ),
     .target(
       name: "HermesBridgeService",
-      dependencies: ["HermesBridgeXPC", "HermesRuntimeFoundation"]
+      dependencies: ["HermesBridgeXPC", "HermesRuntimeFoundation", "HermesTimeline"]
     ),
     .target(
       name: "HermesBridgeServiceManager",
@@ -134,7 +138,7 @@ let package = Package(
     ),
     .target(
       name: "HermesDashboard",
-      dependencies: ["HermesRuntimeFoundation"]
+      dependencies: ["HermesRuntimeFoundation", "HermesTimeline"]
     ),
     .target(
       name: "HermesLogsViewer",
@@ -163,6 +167,10 @@ let package = Package(
       name: "HermesNotifications",
       dependencies: ["HermesRuntimeFoundation"]
     ),
+    .target(
+      name: "HermesTimeline",
+      dependencies: ["HermesRuntimeFoundation"]
+    ),
     .executableTarget(
       name: "HermesBridgeControl",
       dependencies: ["HermesBridgeControlCore"]
@@ -176,7 +184,8 @@ let package = Package(
       dependencies: [
         "HermesBridgeXPC",
         "HermesDashboard", "HermesDiagnostics", "HermesLogsViewer", "HermesMenuBar",
-        "HermesNotifications", "HermesOnboarding", "HermesRecovery", "HermesSettings", "HermesUpdate",
+        "HermesNotifications", "HermesOnboarding", "HermesRecovery", "HermesSettings", "HermesTimeline",
+        "HermesUpdate",
       ]
     ),
     .executableTarget(
@@ -262,7 +271,7 @@ let package = Package(
     ),
     .testTarget(
       name: "HermesDashboardTests",
-      dependencies: ["HermesDashboard", "HermesRuntimeFoundation"]
+      dependencies: ["HermesDashboard", "HermesRuntimeFoundation", "HermesTimeline"]
     ),
     .testTarget(
       name: "HermesLogsViewerTests",
@@ -292,6 +301,10 @@ let package = Package(
     .testTarget(
       name: "HermesNotificationsTests",
       dependencies: ["HermesNotifications", "HermesRuntimeFoundation"]
+    ),
+    .testTarget(
+      name: "HermesTimelineTests",
+      dependencies: ["HermesBridgeApp", "HermesDashboard", "HermesNotifications", "HermesTimeline"]
     ),
     .testTarget(
       name: "HermesUpdateTests",

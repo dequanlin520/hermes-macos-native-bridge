@@ -1,5 +1,6 @@
 import AppKit
 import HermesRuntimeFoundation
+import HermesTimeline
 import SwiftUI
 
 public final class HermesDashboardWindowController: NSWindowController {
@@ -35,6 +36,7 @@ public struct HermesDashboardWindow: View {
       ScrollView {
         VStack(alignment: .leading, spacing: 18) {
           summaryGrid
+          latestActivitiesSummary
           if let message = viewModel.state.lastErrorMessage {
             errorBanner(message)
           }
@@ -129,6 +131,40 @@ public struct HermesDashboardWindow: View {
       }
     }
     .frame(maxWidth: .infinity, alignment: .topLeading)
+  }
+
+  private var latestActivitiesSummary: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      Text("Latest Activities")
+        .font(.headline)
+      if viewModel.state.latestActivities.isEmpty {
+        Text("No timeline activity")
+          .foregroundStyle(.secondary)
+      } else {
+        ForEach(viewModel.state.latestActivities) { item in
+          HStack(alignment: .top, spacing: 10) {
+            Image(systemName: activityIcon(for: item.category))
+              .foregroundStyle(.secondary)
+              .frame(width: 18)
+            VStack(alignment: .leading, spacing: 3) {
+              HStack {
+                Text(item.title)
+                Spacer()
+                Text(item.status.rawValue)
+                  .foregroundStyle(.secondary)
+              }
+              Text(item.timestamp.formatted(date: .abbreviated, time: .standard))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+              Text(item.summary)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+            }
+          }
+          .padding(.vertical, 2)
+        }
+      }
+    }
   }
 
   private func errorBanner(_ message: String) -> some View {
@@ -266,6 +302,29 @@ public struct HermesDashboardWindow: View {
       return "pause.circle"
     case .sessionStopped:
       return "stop.circle"
+    }
+  }
+
+  private func activityIcon(for category: HermesTimelineCategory) -> String {
+    switch category {
+    case .runtimeStarted:
+      return "play.circle"
+    case .runtimeStopped:
+      return "stop.circle"
+    case .connectionEstablished:
+      return "link.circle"
+    case .connectionLost:
+      return "link.badge.plus"
+    case .runtimeDegraded:
+      return "exclamationmark.triangle"
+    case .runtimeRecovered:
+      return "checkmark.circle"
+    case .notificationCreated:
+      return "bell"
+    case .recoveryStarted, .recoveryCompleted:
+      return "cross.case"
+    case .updateAvailable, .updateStarted, .updateCompleted, .updateRolledBack:
+      return "arrow.down.circle"
     }
   }
 }

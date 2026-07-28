@@ -1,5 +1,6 @@
 import Foundation
 import HermesRuntimeFoundation
+import HermesTimeline
 
 public protocol HermesDashboardRuntimeCommandExecuting: Sendable {
   @discardableResult
@@ -117,6 +118,7 @@ public struct HermesDashboardState: Equatable, Sendable {
   public var sessionSummary: HermesDashboardSessionSummary?
   public var backendHealthSummary: HermesDashboardBackendHealthSummary?
   public var recentEvents: [HermesDashboardRuntimeEventViewState]
+  public var latestActivities: [HermesTimelineItem]
   public var lastErrorMessage: String?
   public var isLoading: Bool
   public var actionInFlight: Bool
@@ -126,6 +128,7 @@ public struct HermesDashboardState: Equatable, Sendable {
     sessionSummary: HermesDashboardSessionSummary? = nil,
     backendHealthSummary: HermesDashboardBackendHealthSummary? = nil,
     recentEvents: [HermesDashboardRuntimeEventViewState] = [],
+    latestActivities: [HermesTimelineItem] = [],
     lastErrorMessage: String? = nil,
     isLoading: Bool = false,
     actionInFlight: Bool = false
@@ -134,6 +137,7 @@ public struct HermesDashboardState: Equatable, Sendable {
     self.sessionSummary = sessionSummary
     self.backendHealthSummary = backendHealthSummary
     self.recentEvents = Array(recentEvents.prefix(20))
+    self.latestActivities = Array(latestActivities.prefix(5))
     self.lastErrorMessage = lastErrorMessage
     self.isLoading = isLoading
     self.actionInFlight = actionInFlight
@@ -142,12 +146,17 @@ public struct HermesDashboardState: Equatable, Sendable {
 
 public actor HermesDashboardController {
   private let commandAPI: HermesDashboardRuntimeCommandExecuting
+  private let timelineReader: (any HermesTimelineReadable)?
   private var state: HermesDashboardState
   private var currentSessionID: UUID?
   private var eventTask: Task<Void, Never>?
 
-  public init(commandAPI: HermesDashboardRuntimeCommandExecuting) {
+  public init(
+    commandAPI: HermesDashboardRuntimeCommandExecuting,
+    timelineReader: (any HermesTimelineReadable)? = nil
+  ) {
     self.commandAPI = commandAPI
+    self.timelineReader = timelineReader
     self.state = HermesDashboardState()
   }
 
@@ -185,6 +194,7 @@ public actor HermesDashboardController {
   public func load() async -> HermesDashboardState {
     state.isLoading = true
     _ = await refreshStatus()
+    refreshTimelineSummary()
     state.isLoading = false
     return state
   }
@@ -246,10 +256,12 @@ public actor HermesDashboardController {
         let created = try await sessionStatus(from: commandAPI.execute(.createSession))
         currentSessionID = created.sessionID
         apply(status: created)
+        refreshTimelineSummary()
         return
       }
       let refreshed = try await sessionStatus(from: commandAPI.execute(.getSessionStatus(sessionID)))
       apply(status: refreshed)
+      refreshTimelineSummary()
     }
   }
 
@@ -296,6 +308,15 @@ public actor HermesDashboardController {
     state.lastErrorMessage = Self.safeErrorMessage(message)
     state.backendHealthSummary = state.backendHealthSummary?.failed()
       ?? HermesDashboardBackendHealthSummary.failedUnavailable()
+  }
+
+  private func refreshTimelineSummary() {
+    guard let timelineReader else { return }
+    do {
+      state.latestActivities = Array(try timelineReader.latest(limit: 5).prefix(5))
+    } catch {
+      state.latestActivities = []
+    }
   }
 
   private func sessionStatus(

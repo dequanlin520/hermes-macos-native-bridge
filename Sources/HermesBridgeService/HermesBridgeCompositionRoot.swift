@@ -1,6 +1,7 @@
 import Foundation
 import HermesBridgeXPC
 import HermesRuntimeFoundation
+import HermesTimeline
 
 public enum HermesBridgeCompositionRootError: Error, Equatable, Sendable {
   case missingExecutableCandidate
@@ -20,6 +21,7 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
   public let supervisor: HermesProcessSupervisor
   public let protocolFactory: HermesProtocolClientFactory
   public let runtimeEventBus: HermesRuntimeEventBus
+  public let timelineCollector: HermesTimelineCollector
   public let runtimeSessionManager: HermesRuntimeSessionManager
   public let runtimeCommandAPI: HermesRuntimeCommandAPI
   public let stateStore: FileBackedHermesRequestStateStore
@@ -57,6 +59,7 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
     self.supervisor = HermesProcessSupervisor()
     self.protocolFactory = HermesProtocolClientFactory()
     self.runtimeEventBus = HermesRuntimeEventBus()
+    self.timelineCollector = HermesTimelineCollector()
 
     do {
       self.stateStore = try FileBackedHermesRequestStateStore(
@@ -142,6 +145,7 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
       eventBus: runtimeEventBus
     )
     self.runtimeCommandAPI = HermesRuntimeCommandAPI(sessionManager: runtimeSessionManager)
+    timelineCollector.start(eventBus: runtimeEventBus)
 
     self.orchestrator = HermesRequestOrchestrator(
       bindingRegistry: bindingRegistry,
@@ -210,6 +214,7 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
       return
     }
     logger.log(.stopping)
+    timelineCollector.stop()
     xpcService.invalidate()
     await fileIntegration.shutdown()
     await systemEventIntegration.shutdown()
