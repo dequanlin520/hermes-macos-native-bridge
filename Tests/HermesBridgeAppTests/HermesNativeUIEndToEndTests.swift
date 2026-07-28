@@ -98,6 +98,7 @@ final class HermesNativeUIEndToEndTests: XCTestCase {
     )
 
     root.router.openDashboard()
+    root.router.openOnboarding()
     root.router.openLogs()
     root.router.openSettings()
     root.router.openDiagnostics()
@@ -108,7 +109,12 @@ final class HermesNativeUIEndToEndTests: XCTestCase {
     XCTAssertEqual(Set(factory.createdIdentifiers), Set(HermesNativeUIWindowIdentifier.allCases))
     XCTAssertEqual(factory.window(for: .dashboard)?.focusCount, 1)
     XCTAssertEqual(factory.window(for: .logs)?.showCount, 2)
-    XCTAssertEqual(HermesNativeUIWindowIdentifier.allCases.map(\.rawValue).filter { $0.hasPrefix("com.hermes.bridge.window.") }.count, 4)
+    XCTAssertEqual(
+      HermesNativeUIWindowIdentifier.allCases.map(\.rawValue).filter {
+        $0.hasPrefix("com.hermes.bridge.window.")
+      }.count,
+      5
+    )
   }
 
   func testRedactionResultDoesNotExposeSentinels() throws {

@@ -1,6 +1,7 @@
 import Foundation
 
 public enum HermesNativeUIRoute: CaseIterable, Equatable, Sendable {
+  case onboarding
   case dashboard
   case logs
   case settings
@@ -8,6 +9,8 @@ public enum HermesNativeUIRoute: CaseIterable, Equatable, Sendable {
 
   public var windowIdentifier: HermesNativeUIWindowIdentifier {
     switch self {
+    case .onboarding:
+      return .onboarding
     case .dashboard:
       return .dashboard
     case .logs:
@@ -30,6 +33,10 @@ public final class HermesNativeUIRouter {
 
   public func openDashboard() {
     open(.dashboard)
+  }
+
+  public func openOnboarding() {
+    open(.onboarding)
   }
 
   public func openLogs() {

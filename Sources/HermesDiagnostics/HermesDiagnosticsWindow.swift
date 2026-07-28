@@ -190,6 +190,13 @@ public struct HermesDiagnosticsWindow: View {
       Spacer()
 
       Button {
+        viewModel.reopenOnboarding()
+      } label: {
+        Label("Onboarding", systemImage: "checklist")
+      }
+      .disabled(viewModel.state.isRefreshing || viewModel.state.isRunningDiagnostics)
+
+      Button {
         viewModel.refresh()
       } label: {
         Label("Refresh", systemImage: "arrow.clockwise")

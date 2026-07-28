@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 
 public enum HermesNativeUIWindowIdentifier: String, CaseIterable, Equatable, Hashable, Sendable {
+  case onboarding = "com.hermes.bridge.window.onboarding"
   case dashboard = "com.hermes.bridge.window.dashboard"
   case logs = "com.hermes.bridge.window.logs"
   case settings = "com.hermes.bridge.window.settings"

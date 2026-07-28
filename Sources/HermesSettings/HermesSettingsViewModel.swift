@@ -7,15 +7,26 @@ public final class HermesSettingsViewModel: ObservableObject {
   @Published public var draftSettings: HermesSettings
 
   private let controller: HermesSettingsController
+  private let reopenOnboardingAction: @MainActor () -> Void
 
-  public init(controller: HermesSettingsController) {
+  public init(
+    controller: HermesSettingsController,
+    reopenOnboarding: @escaping @MainActor () -> Void = {}
+  ) {
     self.controller = controller
+    self.reopenOnboardingAction = reopenOnboarding
     self.state = HermesSettingsState()
     self.draftSettings = .defaults
   }
 
-  public convenience init(store: HermesConfigurationStoring = HermesConfigurationStore()) {
-    self.init(controller: HermesSettingsController(store: store))
+  public convenience init(
+    store: HermesConfigurationStoring = HermesConfigurationStore(),
+    reopenOnboarding: @escaping @MainActor () -> Void = {}
+  ) {
+    self.init(
+      controller: HermesSettingsController(store: store),
+      reopenOnboarding: reopenOnboarding
+    )
   }
 
   public func load() {
@@ -40,5 +51,9 @@ public final class HermesSettingsViewModel: ObservableObject {
 
   public func resetDraft() {
     draftSettings = state.settings
+  }
+
+  public func reopenOnboarding() {
+    reopenOnboardingAction()
   }
 }

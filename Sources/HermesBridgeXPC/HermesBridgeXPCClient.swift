@@ -970,6 +970,19 @@ public struct HermesBridgeRuntimeClientAdapter: Sendable {
     return HermesRuntimeCommandEventSubscription(id: subscription.subscriptionID, events: stream)
   }
 
+  @discardableResult
+  public func connect() async throws -> HermesBridgeCapabilitiesPayload {
+    try await client.connect()
+  }
+
+  public func protocolVersion() async throws -> HermesBridgeProtocolVersionPayload {
+    try await client.protocolVersion()
+  }
+
+  public func capabilities() async throws -> HermesBridgeCapabilitiesPayload {
+    try await client.capabilities()
+  }
+
   public func invalidate() async {
     await client.close()
   }
