@@ -81,6 +81,9 @@ public struct HermesBridgeMenuBarContent: View {
       Button("Feedback Center") {
         compositionRoot.router.openFeedbackCenter()
       }
+      Button("Privacy Center") {
+        compositionRoot.router.openPrivacyCenter()
+      }
       Button("Settings") {
         compositionRoot.router.openSettings()
       }

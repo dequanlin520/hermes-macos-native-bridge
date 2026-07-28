@@ -218,6 +218,13 @@ public struct HermesDiagnosticsWindow: View {
       .disabled(viewModel.state.isRefreshing || viewModel.state.isRunningDiagnostics)
 
       Button {
+        viewModel.openPrivacyCenter()
+      } label: {
+        Label("Privacy", systemImage: "hand.raised")
+      }
+      .disabled(viewModel.state.isRefreshing || viewModel.state.isRunningDiagnostics)
+
+      Button {
         viewModel.refresh()
       } label: {
         Label("Refresh", systemImage: "arrow.clockwise")

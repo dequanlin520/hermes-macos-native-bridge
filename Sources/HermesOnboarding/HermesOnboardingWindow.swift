@@ -167,6 +167,13 @@ public struct HermesOnboardingWindow: View {
           Label("Diagnostics", systemImage: "stethoscope")
         }
       }
+      if hasAction(.openPrivacyCenter) {
+        Button {
+          viewModel.perform(.openPrivacyCenter)
+        } label: {
+          Label("Privacy", systemImage: "hand.raised")
+        }
+      }
       ForEach(recoveryActions, id: \.self) { action in
         if case .openRecovery = action {
           Button {

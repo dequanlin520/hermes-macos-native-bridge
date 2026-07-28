@@ -11,19 +11,22 @@ public final class HermesDiagnosticsViewModel: ObservableObject {
   private let openRecoveryAction: @MainActor (HermesRecoveryIssueCategory) -> Void
   private let openUpdateCenterAction: @MainActor () -> Void
   private let openFeedbackCenterAction: @MainActor () -> Void
+  private let openPrivacyCenterAction: @MainActor () -> Void
 
   public init(
     controller: HermesDiagnosticsController,
     reopenOnboarding: @escaping @MainActor () -> Void = {},
     openRecovery: @escaping @MainActor (HermesRecoveryIssueCategory) -> Void = { _ in },
     openUpdateCenter: @escaping @MainActor () -> Void = {},
-    openFeedbackCenter: @escaping @MainActor () -> Void = {}
+    openFeedbackCenter: @escaping @MainActor () -> Void = {},
+    openPrivacyCenter: @escaping @MainActor () -> Void = {}
   ) {
     self.controller = controller
     self.reopenOnboardingAction = reopenOnboarding
     self.openRecoveryAction = openRecovery
     self.openUpdateCenterAction = openUpdateCenter
     self.openFeedbackCenterAction = openFeedbackCenter
+    self.openPrivacyCenterAction = openPrivacyCenter
     self.state = HermesDiagnosticsState()
   }
 
@@ -32,14 +35,16 @@ public final class HermesDiagnosticsViewModel: ObservableObject {
     reopenOnboarding: @escaping @MainActor () -> Void = {},
     openRecovery: @escaping @MainActor (HermesRecoveryIssueCategory) -> Void = { _ in },
     openUpdateCenter: @escaping @MainActor () -> Void = {},
-    openFeedbackCenter: @escaping @MainActor () -> Void = {}
+    openFeedbackCenter: @escaping @MainActor () -> Void = {},
+    openPrivacyCenter: @escaping @MainActor () -> Void = {}
   ) {
     self.init(
       controller: HermesDiagnosticsController(provider: provider),
       reopenOnboarding: reopenOnboarding,
       openRecovery: openRecovery,
       openUpdateCenter: openUpdateCenter,
-      openFeedbackCenter: openFeedbackCenter
+      openFeedbackCenter: openFeedbackCenter,
+      openPrivacyCenter: openPrivacyCenter
     )
   }
 
@@ -69,6 +74,10 @@ public final class HermesDiagnosticsViewModel: ObservableObject {
 
   public func openFeedbackCenter() {
     openFeedbackCenterAction()
+  }
+
+  public func openPrivacyCenter() {
+    openPrivacyCenterAction()
   }
 
   public var recoveryIssue: HermesRecoveryIssueCategory {

@@ -8,6 +8,7 @@ import HermesLogsViewer
 import HermesMenuBar
 import HermesNotifications
 import HermesOnboarding
+import HermesPrivacy
 import HermesRecovery
 import HermesSearch
 import HermesSettings
@@ -40,6 +41,7 @@ public final class HermesAppClientGraph: @unchecked Sendable {
   public let searchStore: HermesSearchStore
   public let searchIndexer: HermesSearchIndexer
   public let feedbackCenter: HermesFeedbackCenter
+  public let privacyCenter: HermesPrivacyCenter
   public let navigationActions = HermesAppNavigationActions()
 
   private let shutdownHandler: @Sendable () async -> Void
@@ -55,6 +57,7 @@ public final class HermesAppClientGraph: @unchecked Sendable {
     searchStore: HermesSearchStore = HermesSearchStore(),
     searchIndexer: HermesSearchIndexer? = nil,
     feedbackCenter: HermesFeedbackCenter = HermesFeedbackCenter(),
+    privacyCenter: HermesPrivacyCenter = HermesPrivacyCenter(),
     shutdownHandler: (@Sendable () async -> Void)? = nil
   ) {
     self.runtimeClient = runtimeClient
@@ -101,6 +104,7 @@ public final class HermesAppClientGraph: @unchecked Sendable {
     self.searchStore = searchStore
     self.searchIndexer = searchIndexer ?? HermesSearchIndexer(store: searchStore)
     self.feedbackCenter = feedbackCenter
+    self.privacyCenter = privacyCenter
     self.shutdownHandler = shutdownHandler ?? {
       await runtimeClient.invalidate()
     }
@@ -160,6 +164,9 @@ public final class HermesAppCompositionRoot: ObservableObject {
     clientGraph.navigationActions.openFeedbackCenter = { [weak windowCoordinator] in
       windowCoordinator?.open(.feedback)
     }
+    clientGraph.navigationActions.openPrivacyCenter = { [weak windowCoordinator] in
+      windowCoordinator?.open(.privacy)
+    }
     clientGraph.navigationActions.openRecovery = { [weak clientGraph, weak windowCoordinator] issue in
       Task { @MainActor in
         await clientGraph?.recoveryCoordinator.evaluate(issue: issue)
@@ -202,6 +209,9 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
           openDiagnostics: {
             clientGraph.navigationActions.openDiagnostics()
           },
+          openPrivacyCenter: {
+            clientGraph.navigationActions.openPrivacyCenter()
+          },
           openRecovery: { issue in
             clientGraph.navigationActions.openRecovery(issue)
           },
@@ -236,6 +246,9 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
           },
           openUpdateCenter: {
             clientGraph.navigationActions.openUpdateCenter()
+          },
+          openPrivacyCenter: {
+            clientGraph.navigationActions.openPrivacyCenter()
           }
         )
       )
@@ -254,6 +267,12 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
           },
           openUpdateCenter: {
             clientGraph.navigationActions.openUpdateCenter()
+          },
+          openFeedbackCenter: {
+            clientGraph.navigationActions.openFeedbackCenter()
+          },
+          openPrivacyCenter: {
+            clientGraph.navigationActions.openPrivacyCenter()
           }
         )
       )
@@ -298,6 +317,18 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
           }
         )
       )
+    case .privacy:
+      controller = HermesPrivacyWindowController(
+        viewModel: HermesPrivacyViewModel(
+          center: clientGraph.privacyCenter,
+          metadataProvider: {
+            HermesPrivacySafeApplicationMetadata(
+              applicationVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+              buildVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+            )
+          }
+        )
+      )
     case .recovery:
       controller = HermesRecoveryWindowController(
         viewModel: HermesRecoveryViewModel(
@@ -337,6 +368,7 @@ public final class HermesAppNavigationActions {
   public var openTimeline: () -> Void = {}
   public var openSearchCenter: () -> Void = {}
   public var openFeedbackCenter: () -> Void = {}
+  public var openPrivacyCenter: () -> Void = {}
   public var openRecovery: (HermesRecoveryIssueCategory) -> Void = { _ in }
 
   public init() {}
