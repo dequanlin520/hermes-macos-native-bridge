@@ -6,7 +6,7 @@ import XCTest
 
 final class HermesAuditLogTests: XCTestCase {
   func testEventKindCatalogIsFixedAndComplete() {
-    XCTAssertEqual(HermesAuditEventKind.allCases.count, 49)
+    XCTAssertEqual(HermesAuditEventKind.allCases.count, 60)
     XCTAssertTrue(HermesAuditEventKind.allCases.contains(.doctorExecuted))
     XCTAssertTrue(HermesAuditEventKind.allCases.contains(.auditExported))
     XCTAssertTrue(HermesAuditEventKind.allCases.contains(.auditSigningKeyRotated))
@@ -27,6 +27,17 @@ final class HermesAuditLogTests: XCTestCase {
     XCTAssertTrue(HermesAuditEventKind.allCases.contains(.eventPolicyApprovalExecuted))
     XCTAssertTrue(HermesAuditEventKind.allCases.contains(.eventPolicyApprovalFailed))
     XCTAssertTrue(HermesAuditEventKind.allCases.contains(.eventPolicyApprovalInvalidated))
+    XCTAssertTrue(HermesAuditEventKind.allCases.contains(.updateCheckStarted))
+    XCTAssertTrue(HermesAuditEventKind.allCases.contains(.updateCheckCompleted))
+    XCTAssertTrue(HermesAuditEventKind.allCases.contains(.updateOffered))
+    XCTAssertTrue(HermesAuditEventKind.allCases.contains(.updateValidationPassed))
+    XCTAssertTrue(HermesAuditEventKind.allCases.contains(.updateValidationFailed))
+    XCTAssertTrue(HermesAuditEventKind.allCases.contains(.updateActivationConfirmed))
+    XCTAssertTrue(HermesAuditEventKind.allCases.contains(.updateActivationSucceeded))
+    XCTAssertTrue(HermesAuditEventKind.allCases.contains(.updateActivationFailed))
+    XCTAssertTrue(HermesAuditEventKind.allCases.contains(.updateRollbackConfirmed))
+    XCTAssertTrue(HermesAuditEventKind.allCases.contains(.updateRollbackSucceeded))
+    XCTAssertTrue(HermesAuditEventKind.allCases.contains(.updateRollbackFailed))
   }
 
   func testAuditEventIDValidation() throws {

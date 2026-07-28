@@ -96,6 +96,13 @@ public protocol HermesBridgeRequestHandling: Sendable {
   ) async throws -> HermesBridgeRuntimeEventBatchPayload
   func cancelRuntimeEventSubscription(subscriptionID: UUID) async throws
     -> HermesBridgeRuntimeEventSubscriptionPayload
+  func updateStatus() async throws -> HermesBridgeUpdateStatusPayload
+  func checkForUpdate() async throws -> HermesBridgeUpdateStatusPayload
+  func validateUpdate(releaseID: String) async throws -> HermesBridgeUpdateValidationReportPayload
+  func activateUpdate(confirmation: HermesBridgeUpdateConfirmationPayload) async throws
+    -> HermesBridgeUpdateActivationResultPayload
+  func rollbackUpdate(confirmation: HermesBridgeUpdateConfirmationPayload) async throws
+    -> HermesBridgeUpdateActivationResultPayload
   func submit(bindingID: HermesRequestBindingID, prompt: String) async throws -> HermesRequestID
   func status(requestID: HermesRequestID) async throws -> HermesRequestRecord
   func cancel(requestID: HermesRequestID) async throws -> HermesRequestRecord
@@ -222,6 +229,32 @@ extension HermesBridgeRequestHandling {
   }
 
   public func systemEventMonitorStatus() async throws -> HermesBridgeSystemEventMonitorStatusPayload
+  {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func updateStatus() async throws -> HermesBridgeUpdateStatusPayload {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func checkForUpdate() async throws -> HermesBridgeUpdateStatusPayload {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func validateUpdate(releaseID _: String) async throws
+    -> HermesBridgeUpdateValidationReportPayload
+  {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func activateUpdate(confirmation _: HermesBridgeUpdateConfirmationPayload) async throws
+    -> HermesBridgeUpdateActivationResultPayload
+  {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func rollbackUpdate(confirmation _: HermesBridgeUpdateConfirmationPayload) async throws
+    -> HermesBridgeUpdateActivationResultPayload
   {
     throw HermesBridgeXPCError.unsupportedCapability
   }
@@ -623,6 +656,23 @@ public actor HermesBridgeXPCRequestDispatcher {
       guard envelope.cancelRuntimeEventSubscription != nil else {
         throw HermesBridgeXPCError.malformedPayload
       }
+    case .updateStatus, .checkForUpdate:
+      try validateOnlyUpdatePayload(envelope, expected: 0)
+    case .validateUpdate:
+      try validateOnlyUpdatePayload(envelope, expected: 1)
+      guard envelope.validateUpdate != nil else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+    case .activateUpdate:
+      try validateOnlyUpdatePayload(envelope, expected: 1)
+      guard envelope.activateUpdate?.operation == .activateUpdate else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+    case .rollbackUpdate:
+      try validateOnlyUpdatePayload(envelope, expected: 1)
+      guard envelope.rollbackUpdate?.operation == .rollback else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
     }
   }
 
@@ -682,6 +732,21 @@ public actor HermesBridgeXPCRequestDispatcher {
     }
   }
 
+  private func validateOnlyUpdatePayload(
+    _ envelope: HermesBridgeRequestEnvelope,
+    expected: Int
+  ) throws {
+    guard envelope.submit == nil, envelope.status == nil, envelope.cancel == nil,
+      envelope.approvalResponse == nil, envelope.filePayloadCount == 0,
+      envelope.systemEventPayloadCount == 0,
+      envelope.eventPolicyPayloadCount == 0,
+      envelope.runtimePayloadCount == 0,
+      envelope.updatePayloadCount == expected
+    else {
+      throw HermesBridgeXPCError.malformedPayload
+    }
+  }
+
   private func dispatch(_ envelope: HermesBridgeRequestEnvelope) async throws
     -> HermesBridgeSuccessPayload
   {
@@ -727,6 +792,25 @@ public actor HermesBridgeXPCRequestDispatcher {
       }
       return .cancelRuntimeEventSubscription(
         try await handler.cancelRuntimeEventSubscription(subscriptionID: payload.subscriptionID))
+    case .updateStatus:
+      return .updateStatus(try await handler.updateStatus())
+    case .checkForUpdate:
+      return .checkForUpdate(try await handler.checkForUpdate())
+    case .validateUpdate:
+      guard let payload = envelope.validateUpdate else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+      return .validateUpdate(try await handler.validateUpdate(releaseID: payload.releaseID))
+    case .activateUpdate:
+      guard let payload = envelope.activateUpdate else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+      return .activateUpdate(try await handler.activateUpdate(confirmation: payload))
+    case .rollbackUpdate:
+      guard let payload = envelope.rollbackUpdate else {
+        throw HermesBridgeXPCError.malformedPayload
+      }
+      return .rollbackUpdate(try await handler.rollbackUpdate(confirmation: payload))
     case .listAuthorizedRoots:
       return .listAuthorizedRoots(
         try await mapFileIntegrationError {
@@ -1492,8 +1576,38 @@ public actor HermesBridgeXPCRequestDispatcher {
       .listEventPolicyApprovals, .eventPolicyApprovalStatus, .approveEventPolicyExecution,
       .denyEventPolicyExecution, .cancelEventPolicyApproval, .eventPolicyApprovalQueueStatus,
       .runtimeCommand, .createRuntimeEventSubscription, .pollRuntimeEventSubscription,
-      .cancelRuntimeEventSubscription, .discoverAgent:
+      .cancelRuntimeEventSubscription, .discoverAgent, .updateStatus:
       return
+    case .checkForUpdate:
+      try await appendAudit(
+        .updateCheckCompleted,
+        envelope: envelope,
+        outcome: .succeeded,
+        reasonCode: "check_completed"
+      )
+    case .validateUpdate:
+      try await appendAudit(
+        .updateValidationPassed,
+        envelope: envelope,
+        outcome: .succeeded,
+        reasonCode: "validation_passed"
+      )
+    case .activateUpdate(let payload):
+      try await appendAudit(
+        .updateActivationSucceeded,
+        envelope: envelope,
+        outcome: .succeeded,
+        reasonCode: "activation_succeeded",
+        requestID: payload.activatedVersion
+      )
+    case .rollbackUpdate(let payload):
+      try await appendAudit(
+        .updateRollbackSucceeded,
+        envelope: envelope,
+        outcome: .succeeded,
+        reasonCode: "rollback_succeeded",
+        requestID: payload.activatedVersion
+      )
     }
   }
 
@@ -1533,8 +1647,16 @@ public actor HermesBridgeXPCRequestDispatcher {
       .eventPolicyApprovalStatus, .approveEventPolicyExecution, .denyEventPolicyExecution,
       .cancelEventPolicyApproval, .eventPolicyApprovalQueueStatus, .runtimeCommand,
       .createRuntimeEventSubscription, .pollRuntimeEventSubscription,
-      .cancelRuntimeEventSubscription, .discoverAgent:
+      .cancelRuntimeEventSubscription, .discoverAgent, .updateStatus:
       return
+    case .checkForUpdate:
+      kind = .updateCheckCompleted
+    case .validateUpdate:
+      kind = .updateValidationFailed
+    case .activateUpdate:
+      kind = .updateActivationFailed
+    case .rollbackUpdate:
+      kind = .updateRollbackFailed
     }
     try await auditStore.append(
       HermesAuditEvent.make(
@@ -1616,6 +1738,14 @@ extension HermesBridgeRequestEnvelope {
     if runtimeCommand != nil { count += 1 }
     if pollRuntimeEventSubscription != nil { count += 1 }
     if cancelRuntimeEventSubscription != nil { count += 1 }
+    return count
+  }
+
+  fileprivate var updatePayloadCount: Int {
+    var count = 0
+    if validateUpdate != nil { count += 1 }
+    if activateUpdate != nil { count += 1 }
+    if rollbackUpdate != nil { count += 1 }
     return count
   }
 }

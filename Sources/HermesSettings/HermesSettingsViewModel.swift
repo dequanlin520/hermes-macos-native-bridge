@@ -8,24 +8,29 @@ public final class HermesSettingsViewModel: ObservableObject {
 
   private let controller: HermesSettingsController
   private let reopenOnboardingAction: @MainActor () -> Void
+  private let openUpdateCenterAction: @MainActor () -> Void
 
   public init(
     controller: HermesSettingsController,
-    reopenOnboarding: @escaping @MainActor () -> Void = {}
+    reopenOnboarding: @escaping @MainActor () -> Void = {},
+    openUpdateCenter: @escaping @MainActor () -> Void = {}
   ) {
     self.controller = controller
     self.reopenOnboardingAction = reopenOnboarding
+    self.openUpdateCenterAction = openUpdateCenter
     self.state = HermesSettingsState()
     self.draftSettings = .defaults
   }
 
   public convenience init(
     store: HermesConfigurationStoring = HermesConfigurationStore(),
-    reopenOnboarding: @escaping @MainActor () -> Void = {}
+    reopenOnboarding: @escaping @MainActor () -> Void = {},
+    openUpdateCenter: @escaping @MainActor () -> Void = {}
   ) {
     self.init(
       controller: HermesSettingsController(store: store),
-      reopenOnboarding: reopenOnboarding
+      reopenOnboarding: reopenOnboarding,
+      openUpdateCenter: openUpdateCenter
     )
   }
 
@@ -55,5 +60,9 @@ public final class HermesSettingsViewModel: ObservableObject {
 
   public func reopenOnboarding() {
     reopenOnboardingAction()
+  }
+
+  public func openUpdateCenter() {
+    openUpdateCenterAction()
   }
 }

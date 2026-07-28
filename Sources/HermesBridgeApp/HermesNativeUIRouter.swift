@@ -7,10 +7,11 @@ public enum HermesNativeUIRoute: Equatable, Sendable {
   case logs
   case settings
   case diagnostics
+  case update
   case recovery(HermesRecoveryIssueCategory)
 
   public static let allCases: [HermesNativeUIRoute] = [
-    .onboarding, .dashboard, .logs, .settings, .diagnostics,
+    .onboarding, .dashboard, .logs, .settings, .diagnostics, .update,
   ]
 
   public var windowIdentifier: HermesNativeUIWindowIdentifier {
@@ -25,6 +26,8 @@ public enum HermesNativeUIRoute: Equatable, Sendable {
       return .settings
     case .diagnostics:
       return .diagnostics
+    case .update:
+      return .update
     case .recovery:
       return .recovery
     }
@@ -57,6 +60,10 @@ public final class HermesNativeUIRouter {
 
   public func openDiagnostics() {
     open(.diagnostics)
+  }
+
+  public func openUpdateCenter() {
+    open(.update)
   }
 
   public func openRecovery(issue: HermesRecoveryIssueCategory) {

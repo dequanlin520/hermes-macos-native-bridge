@@ -43,6 +43,7 @@ public enum HermesBridgeCapability: String, Codable, CaseIterable, Equatable, Se
   case runtimeCommand
   case runtimeEventObservation
   case agentDiscovery
+  case updateCenter
 }
 
 public enum HermesBridgeOperation: String, Codable, CaseIterable, Equatable, Sendable {
@@ -92,6 +93,11 @@ public enum HermesBridgeOperation: String, Codable, CaseIterable, Equatable, Sen
   case pollRuntimeEventSubscription
   case cancelRuntimeEventSubscription
   case discoverAgent
+  case updateStatus
+  case checkForUpdate
+  case validateUpdate
+  case activateUpdate
+  case rollbackUpdate
 }
 
 public enum HermesBridgeAgentDiscoveryStatus: String, Codable, Equatable, Sendable {
@@ -933,6 +939,9 @@ public struct HermesBridgeRequestEnvelope: Codable, Equatable, Sendable {
   public let runtimeCommand: HermesBridgeRuntimeCommandPayload?
   public let pollRuntimeEventSubscription: HermesBridgePollRuntimeEventSubscriptionPayload?
   public let cancelRuntimeEventSubscription: HermesBridgeCancelRuntimeEventSubscriptionPayload?
+  public let validateUpdate: HermesBridgeUpdateReleaseIDPayload?
+  public let activateUpdate: HermesBridgeUpdateConfirmationPayload?
+  public let rollbackUpdate: HermesBridgeUpdateConfirmationPayload?
 
   public init(
     protocolVersion: HermesBridgeProtocolVersion = .current,
@@ -963,7 +972,10 @@ public struct HermesBridgeRequestEnvelope: Codable, Equatable, Sendable {
     eventPolicyApprovalID: HermesBridgeEventPolicyApprovalIDPayload? = nil,
     runtimeCommand: HermesBridgeRuntimeCommandPayload? = nil,
     pollRuntimeEventSubscription: HermesBridgePollRuntimeEventSubscriptionPayload? = nil,
-    cancelRuntimeEventSubscription: HermesBridgeCancelRuntimeEventSubscriptionPayload? = nil
+    cancelRuntimeEventSubscription: HermesBridgeCancelRuntimeEventSubscriptionPayload? = nil,
+    validateUpdate: HermesBridgeUpdateReleaseIDPayload? = nil,
+    activateUpdate: HermesBridgeUpdateConfirmationPayload? = nil,
+    rollbackUpdate: HermesBridgeUpdateConfirmationPayload? = nil
   ) {
     self.protocolVersion = protocolVersion
     self.correlationID = correlationID
@@ -994,6 +1006,9 @@ public struct HermesBridgeRequestEnvelope: Codable, Equatable, Sendable {
     self.runtimeCommand = runtimeCommand
     self.pollRuntimeEventSubscription = pollRuntimeEventSubscription
     self.cancelRuntimeEventSubscription = cancelRuntimeEventSubscription
+    self.validateUpdate = validateUpdate
+    self.activateUpdate = activateUpdate
+    self.rollbackUpdate = rollbackUpdate
   }
 }
 
@@ -1233,6 +1248,185 @@ public struct HermesBridgeCapabilitiesPayload: Codable, Equatable, Sendable {
   }
 }
 
+public enum HermesBridgeUpdateCompatibilityState: String, Codable, CaseIterable, Equatable, Sendable {
+  case compatible
+  case incompatible
+  case unknown
+}
+
+public enum HermesBridgeUpdateSigningState: String, Codable, CaseIterable, Equatable, Sendable {
+  case validDeveloperID
+  case validProduction
+  case unsigned
+  case invalid
+  case unknown
+}
+
+public enum HermesBridgeUpdateProvenanceState: String, Codable, CaseIterable, Equatable, Sendable {
+  case verified
+  case unavailable
+  case invalid
+}
+
+public enum HermesBridgeUpdateChecksumState: String, Codable, CaseIterable, Equatable, Sendable {
+  case verified
+  case invalid
+  case unavailable
+}
+
+public enum HermesBridgeUpdateOperation: String, Codable, CaseIterable, Equatable, Sendable {
+  case activateUpdate
+  case rollback
+}
+
+public struct HermesBridgeUpdateReleasePayload: Codable, Equatable, Sendable {
+  public let releaseID: String
+  public let productIdentifier: String
+  public let version: String
+  public let minimumSupportedMacOS: String
+  public let compatibleXPCMajor: Int
+  public let compatibleXPCMinor: Int
+  public let compatibility: HermesBridgeUpdateCompatibilityState
+  public let checksum: HermesBridgeUpdateChecksumState
+  public let signing: HermesBridgeUpdateSigningState
+  public let provenance: HermesBridgeUpdateProvenanceState
+  public let releaseNotesSummary: String
+  public let trustedSourceIdentifier: String
+  public let isProductionPayload: Bool
+  public let containsAcceptanceContent: Bool
+  public let rollbackAvailableAfterActivation: Bool
+
+  public init(
+    releaseID: String,
+    productIdentifier: String,
+    version: String,
+    minimumSupportedMacOS: String,
+    compatibleXPCMajor: Int,
+    compatibleXPCMinor: Int,
+    compatibility: HermesBridgeUpdateCompatibilityState,
+    checksum: HermesBridgeUpdateChecksumState,
+    signing: HermesBridgeUpdateSigningState,
+    provenance: HermesBridgeUpdateProvenanceState,
+    releaseNotesSummary: String,
+    trustedSourceIdentifier: String,
+    isProductionPayload: Bool,
+    containsAcceptanceContent: Bool,
+    rollbackAvailableAfterActivation: Bool
+  ) {
+    self.releaseID = releaseID.prefixString(96)
+    self.productIdentifier = productIdentifier.prefixString(96)
+    self.version = version.prefixString(32)
+    self.minimumSupportedMacOS = minimumSupportedMacOS.prefixString(32)
+    self.compatibleXPCMajor = max(0, compatibleXPCMajor)
+    self.compatibleXPCMinor = max(0, compatibleXPCMinor)
+    self.compatibility = compatibility
+    self.checksum = checksum
+    self.signing = signing
+    self.provenance = provenance
+    self.releaseNotesSummary = releaseNotesSummary.prefixString(240)
+    self.trustedSourceIdentifier = trustedSourceIdentifier.prefixString(96)
+    self.isProductionPayload = isProductionPayload
+    self.containsAcceptanceContent = containsAcceptanceContent
+    self.rollbackAvailableAfterActivation = rollbackAvailableAfterActivation
+  }
+}
+
+public struct HermesBridgeUpdateStatusPayload: Codable, Equatable, Sendable {
+  public let currentServiceVersion: String
+  public let xpcProtocolVersion: String
+  public let rollbackAvailable: Bool
+  public let availableRelease: HermesBridgeUpdateReleasePayload?
+
+  public init(
+    currentServiceVersion: String,
+    xpcProtocolVersion: String = HermesBridgeProtocolVersion.current.description,
+    rollbackAvailable: Bool,
+    availableRelease: HermesBridgeUpdateReleasePayload? = nil
+  ) {
+    self.currentServiceVersion = currentServiceVersion.prefixString(32)
+    self.xpcProtocolVersion = xpcProtocolVersion.prefixString(32)
+    self.rollbackAvailable = rollbackAvailable
+    self.availableRelease = availableRelease
+  }
+}
+
+public struct HermesBridgeUpdateReleaseIDPayload: Codable, Equatable, Sendable {
+  public let releaseID: String
+
+  public init(releaseID: String) {
+    self.releaseID = releaseID.prefixString(96)
+  }
+}
+
+public struct HermesBridgeUpdateValidationReportPayload: Codable, Equatable, Sendable {
+  public let manifestValidated: Bool
+  public let productIdentifierValidated: Bool
+  public let versionOrderingValidated: Bool
+  public let appServiceCompatibilityValidated: Bool
+  public let xpcCompatibilityValidated: Bool
+  public let checksumValidated: Bool
+  public let signingStateValidated: Bool
+  public let provenanceValidated: Bool
+  public let productionPayloadValidated: Bool
+  public let acceptancePayloadRejected: Bool
+
+  public init(
+    manifestValidated: Bool = true,
+    productIdentifierValidated: Bool = true,
+    versionOrderingValidated: Bool = true,
+    appServiceCompatibilityValidated: Bool = true,
+    xpcCompatibilityValidated: Bool = true,
+    checksumValidated: Bool = true,
+    signingStateValidated: Bool = true,
+    provenanceValidated: Bool = true,
+    productionPayloadValidated: Bool = true,
+    acceptancePayloadRejected: Bool = true
+  ) {
+    self.manifestValidated = manifestValidated
+    self.productIdentifierValidated = productIdentifierValidated
+    self.versionOrderingValidated = versionOrderingValidated
+    self.appServiceCompatibilityValidated = appServiceCompatibilityValidated
+    self.xpcCompatibilityValidated = xpcCompatibilityValidated
+    self.checksumValidated = checksumValidated
+    self.signingStateValidated = signingStateValidated
+    self.provenanceValidated = provenanceValidated
+    self.productionPayloadValidated = productionPayloadValidated
+    self.acceptancePayloadRejected = acceptancePayloadRejected
+  }
+}
+
+public struct HermesBridgeUpdateConfirmationPayload: Codable, Equatable, Sendable {
+  public let releaseID: String
+  public let operation: HermesBridgeUpdateOperation
+
+  public init(releaseID: String, operation: HermesBridgeUpdateOperation) {
+    self.releaseID = releaseID.prefixString(96)
+    self.operation = operation
+  }
+}
+
+public struct HermesBridgeUpdateActivationResultPayload: Codable, Equatable, Sendable {
+  public let activatedVersion: String
+  public let reconnected: Bool
+  public let verifiedCompatible: Bool
+  public let rollbackAvailable: Bool
+  public let partialStageCleaned: Bool
+
+  public init(
+    activatedVersion: String,
+    reconnected: Bool = true,
+    verifiedCompatible: Bool = true,
+    rollbackAvailable: Bool = true,
+    partialStageCleaned: Bool = true
+  ) {
+    self.activatedVersion = activatedVersion.prefixString(32)
+    self.reconnected = reconnected
+    self.verifiedCompatible = verifiedCompatible
+    self.rollbackAvailable = rollbackAvailable
+    self.partialStageCleaned = partialStageCleaned
+  }
+}
+
 public enum HermesBridgeSuccessPayload: Codable, Equatable, Sendable {
   case protocolVersion(HermesBridgeProtocolVersionPayload)
   case capabilities(HermesBridgeCapabilitiesPayload)
@@ -1276,6 +1470,11 @@ public enum HermesBridgeSuccessPayload: Codable, Equatable, Sendable {
   case pollRuntimeEventSubscription(HermesBridgeRuntimeEventBatchPayload)
   case cancelRuntimeEventSubscription(HermesBridgeRuntimeEventSubscriptionPayload)
   case discoverAgent(HermesBridgeAgentDiscoveryPayload)
+  case updateStatus(HermesBridgeUpdateStatusPayload)
+  case checkForUpdate(HermesBridgeUpdateStatusPayload)
+  case validateUpdate(HermesBridgeUpdateValidationReportPayload)
+  case activateUpdate(HermesBridgeUpdateActivationResultPayload)
+  case rollbackUpdate(HermesBridgeUpdateActivationResultPayload)
   case submit(HermesBridgeRequestIDPayload)
   case status(HermesBridgeRequestStatusPayload)
   case cancel(HermesBridgeRequestStatusPayload)

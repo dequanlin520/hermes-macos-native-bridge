@@ -87,6 +87,14 @@ public struct HermesSettingsWindow: View {
             Label("Open First Run Onboarding", systemImage: "checklist")
           }
         }
+
+        Section("Updates") {
+          Button {
+            viewModel.openUpdateCenter()
+          } label: {
+            Label("Open Update Center", systemImage: "arrow.up.circle")
+          }
+        }
       }
       .formStyle(.grouped)
 

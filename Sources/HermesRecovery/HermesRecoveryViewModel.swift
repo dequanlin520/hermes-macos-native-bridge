@@ -8,17 +8,20 @@ public final class HermesRecoveryViewModel: ObservableObject {
 
   private let coordinator: HermesRecoveryCoordinator
   private let openDiagnostics: @MainActor () -> Void
+  private let openUpdateCenter: @MainActor () -> Void
   private let rerunReadiness: @MainActor () -> Void
   private let dismiss: @MainActor () -> Void
 
   public init(
     coordinator: HermesRecoveryCoordinator,
     openDiagnostics: @escaping @MainActor () -> Void = {},
+    openUpdateCenter: @escaping @MainActor () -> Void = {},
     rerunReadiness: @escaping @MainActor () -> Void = {},
     dismiss: @escaping @MainActor () -> Void = {}
   ) {
     self.coordinator = coordinator
     self.openDiagnostics = openDiagnostics
+    self.openUpdateCenter = openUpdateCenter
     self.rerunReadiness = rerunReadiness
     self.dismiss = dismiss
     self.snapshot = coordinator.currentSnapshot
@@ -37,6 +40,9 @@ public final class HermesRecoveryViewModel: ObservableObject {
     switch action {
     case .openDiagnostics:
       openDiagnostics()
+      return
+    case .showUpgradeRequired:
+      openUpdateCenter()
       return
     case .dismiss:
       dismiss()
