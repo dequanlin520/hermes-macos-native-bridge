@@ -7,22 +7,29 @@ public final class HermesDashboardViewModel: ObservableObject {
   @Published public private(set) var state: HermesDashboardState
 
   private let controller: HermesDashboardController
+  private let openSearchCenterAction: @MainActor () -> Void
   private var subscriptionStarted = false
 
-  public init(controller: HermesDashboardController) {
+  public init(
+    controller: HermesDashboardController,
+    openSearchCenter: @escaping @MainActor () -> Void = {}
+  ) {
     self.controller = controller
+    self.openSearchCenterAction = openSearchCenter
     self.state = HermesDashboardState()
   }
 
   public convenience init(
     commandAPI: HermesDashboardRuntimeCommandExecuting,
-    timelineReader: (any HermesTimelineReadable)? = nil
+    timelineReader: (any HermesTimelineReadable)? = nil,
+    openSearchCenter: @escaping @MainActor () -> Void = {}
   ) {
     self.init(
       controller: HermesDashboardController(
         commandAPI: commandAPI,
         timelineReader: timelineReader
-      )
+      ),
+      openSearchCenter: openSearchCenter
     )
   }
 
@@ -72,6 +79,10 @@ public final class HermesDashboardViewModel: ObservableObject {
     Task {
       state = await controller.refreshStatus()
     }
+  }
+
+  public func openSearchCenter() {
+    openSearchCenterAction()
   }
 
   public func cancel() {

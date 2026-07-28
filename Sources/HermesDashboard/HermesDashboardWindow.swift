@@ -241,6 +241,12 @@ public struct HermesDashboardWindow: View {
         Label("Refresh", systemImage: "arrow.clockwise")
       }
       .disabled(viewModel.state.actionInFlight)
+
+      Button {
+        viewModel.openSearchCenter()
+      } label: {
+        Label("Search Hermes History", systemImage: "magnifyingglass")
+      }
     }
     .padding(18)
   }
