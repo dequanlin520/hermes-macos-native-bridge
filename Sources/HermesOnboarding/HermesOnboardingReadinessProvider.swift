@@ -13,6 +13,7 @@ public protocol HermesOnboardingXPCReadinessClient: Sendable {
   func connect() async throws -> HermesBridgeCapabilitiesPayload
   func protocolVersion() async throws -> HermesBridgeProtocolVersionPayload
   func capabilities() async throws -> HermesBridgeCapabilitiesPayload
+  func discoverAgent() async throws -> HermesBridgeAgentDiscoveryPayload
   func execute(_ command: HermesRuntimeCommand) async throws -> HermesRuntimeCommandResult
 }
 
@@ -63,17 +64,17 @@ public struct HermesOnboardingProductionReadinessProvider: HermesOnboardingReadi
 
   public func checkAgent() async -> HermesOnboardingAgentReadiness {
     do {
-      let result = try await client.execute(.listSessions)
-      guard case .sessionList(let sessions) = result else {
+      let discovery = try await client.discoverAgent()
+      switch discovery.status {
+      case .available:
+        return HermesOnboardingAgentReadiness(status: .available, safeMessage: "Hermes Agent is available.")
+      case .unavailable:
+        return HermesOnboardingAgentReadiness(status: .unavailable, safeMessage: "Hermes Agent is unavailable.")
+      case .incompatible:
+        return HermesOnboardingAgentReadiness(status: .incompatible, safeMessage: "Hermes Agent is incompatible.")
+      case .unknown:
         return HermesOnboardingAgentReadiness(status: .unknown, safeMessage: "Agent status is unknown.")
       }
-      if sessions.contains(where: { $0.backendVersion != nil }) {
-        return HermesOnboardingAgentReadiness(status: .available, safeMessage: "Hermes Agent is available.")
-      }
-      if sessions.contains(where: { $0.currentStatus == .failed }) {
-        return HermesOnboardingAgentReadiness(status: .incompatible, safeMessage: "Hermes Agent is incompatible.")
-      }
-      return HermesOnboardingAgentReadiness(status: .unavailable, safeMessage: "Hermes Agent is unavailable.")
     } catch {
       return HermesOnboardingAgentReadiness(status: .unknown, safeMessage: "Agent status is unknown.")
     }

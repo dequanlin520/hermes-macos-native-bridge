@@ -45,6 +45,24 @@ final class HermesBridgeXPCTests: XCTestCase {
     }
     XCTAssertEqual(Set(payload.capabilities), Set(HermesBridgeCapability.allCases))
     XCTAssertTrue(payload.capabilities.contains(.bindingDiscovery))
+    XCTAssertTrue(payload.capabilities.contains(.agentDiscovery))
+  }
+
+  func testAgentDiscoveryDispatchReturnsSafePayload() async throws {
+    let harness = try Harness()
+
+    let response = try await harness.send(.discoverAgent)
+
+    guard case .success(.discoverAgent(let payload)) = response.result else {
+      return XCTFail("expected agent discovery")
+    }
+    let encoded = String(data: try JSONEncoder().encode(payload), encoding: .utf8) ?? ""
+    XCTAssertEqual(payload.status, .available)
+    XCTAssertEqual(payload.semanticVersion, "0.18.2")
+    XCTAssertFalse(encoded.contains("/"))
+    XCTAssertFalse(encoded.contains("pid"))
+    let discoverAgentCount = await harness.handler.discoverAgentCountValue()
+    XCTAssertEqual(discoverAgentCount, 1)
   }
 
   func testBindingDiscoveryReturnsEnabledBindingsSorted() async throws {
@@ -490,6 +508,7 @@ private actor FakeBridgeHandler: HermesBridgeRequestHandling {
   var approvalDecisions: [HermesApprovalResponseDecision] = []
   var cancelCount = 0
   var statusCount = 0
+  var discoverAgentCount = 0
   private var prompts: [String] = []
   private var submitError: HermesRequestOrchestratorError?
   private var statusError: HermesRequestOrchestratorError?
@@ -540,6 +559,10 @@ private actor FakeBridgeHandler: HermesBridgeRequestHandling {
 
   func approvalDecisionValues() -> [HermesApprovalResponseDecision] {
     approvalDecisions
+  }
+
+  func discoverAgentCountValue() -> Int {
+    discoverAgentCount
   }
 
   func setDelayBackgroundCompletion(_ enabled: Bool) {
@@ -633,6 +656,15 @@ private actor FakeBridgeHandler: HermesBridgeRequestHandling {
     }
     approvalDecisions.append(decision)
     return try record(state: .running)
+  }
+
+  func discoverAgent() async throws -> HermesBridgeAgentDiscoveryPayload {
+    discoverAgentCount += 1
+    return HermesBridgeAgentDiscoveryPayload(
+      status: .available,
+      semanticVersion: "0.18.2 /tmp/not-exposed",
+      compatibility: .compatible
+    )
   }
 
   private func finishBackground() {

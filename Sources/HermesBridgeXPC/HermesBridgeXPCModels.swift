@@ -42,6 +42,7 @@ public enum HermesBridgeCapability: String, Codable, CaseIterable, Equatable, Se
   case eventPolicyApprovalManagement
   case runtimeCommand
   case runtimeEventObservation
+  case agentDiscovery
 }
 
 public enum HermesBridgeOperation: String, Codable, CaseIterable, Equatable, Sendable {
@@ -90,6 +91,48 @@ public enum HermesBridgeOperation: String, Codable, CaseIterable, Equatable, Sen
   case createRuntimeEventSubscription
   case pollRuntimeEventSubscription
   case cancelRuntimeEventSubscription
+  case discoverAgent
+}
+
+public enum HermesBridgeAgentDiscoveryStatus: String, Codable, Equatable, Sendable {
+  case available
+  case unavailable
+  case incompatible
+  case unknown
+}
+
+public enum HermesBridgeAgentCompatibilityState: String, Codable, Equatable, Sendable {
+  case compatible
+  case incompatible
+  case unknown
+}
+
+public struct HermesBridgeAgentDiscoveryPayload: Codable, Equatable, Sendable {
+  public static let maximumSemanticVersionCharacters = 32
+  public let status: HermesBridgeAgentDiscoveryStatus
+  public let semanticVersion: String?
+  public let compatibility: HermesBridgeAgentCompatibilityState
+
+  public init(
+    status: HermesBridgeAgentDiscoveryStatus,
+    semanticVersion: String? = nil,
+    compatibility: HermesBridgeAgentCompatibilityState = .unknown
+  ) {
+    self.status = status
+    self.semanticVersion = semanticVersion.map(Self.safeSemanticVersion)
+    self.compatibility = compatibility
+  }
+
+  private static func safeSemanticVersion(_ value: String) -> String {
+    var scalars: [Character] = []
+    for character in value {
+      guard character.isASCII && (character.isNumber || character == ".") else {
+        break
+      }
+      scalars.append(character)
+    }
+    return String(String(scalars).prefix(maximumSemanticVersionCharacters))
+  }
 }
 
 public struct HermesBridgeCorrelationID: Codable, Equatable, Hashable, Sendable,
@@ -1232,6 +1275,7 @@ public enum HermesBridgeSuccessPayload: Codable, Equatable, Sendable {
   case createRuntimeEventSubscription(HermesBridgeRuntimeEventSubscriptionPayload)
   case pollRuntimeEventSubscription(HermesBridgeRuntimeEventBatchPayload)
   case cancelRuntimeEventSubscription(HermesBridgeRuntimeEventSubscriptionPayload)
+  case discoverAgent(HermesBridgeAgentDiscoveryPayload)
   case submit(HermesBridgeRequestIDPayload)
   case status(HermesBridgeRequestStatusPayload)
   case cancel(HermesBridgeRequestStatusPayload)

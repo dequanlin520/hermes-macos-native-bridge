@@ -88,6 +88,7 @@ public protocol HermesBridgeRequestHandling: Sendable {
     -> HermesBridgeEventPolicyApprovalQueueStatusPayload
   func executeRuntimeCommand(_ command: HermesRuntimeCommand) async throws
     -> HermesRuntimeCommandResult
+  func discoverAgent() async throws -> HermesBridgeAgentDiscoveryPayload
   func createRuntimeEventSubscription() async throws -> HermesBridgeRuntimeEventSubscriptionPayload
   func pollRuntimeEventSubscription(
     subscriptionID: UUID,
@@ -318,6 +319,10 @@ extension HermesBridgeRequestHandling {
   public func executeRuntimeCommand(_: HermesRuntimeCommand) async throws
     -> HermesRuntimeCommandResult
   {
+    throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func discoverAgent() async throws -> HermesBridgeAgentDiscoveryPayload {
     throw HermesBridgeXPCError.unsupportedCapability
   }
 
@@ -600,7 +605,7 @@ public actor HermesBridgeXPCRequestDispatcher {
       case .startSession, .stopSession, .getSessionStatus:
         guard payload.sessionID != nil else { throw HermesBridgeXPCError.malformedPayload }
       }
-    case .createRuntimeEventSubscription:
+    case .discoverAgent, .createRuntimeEventSubscription:
       try validateOnlyRuntimePayload(envelope, expected: 0)
     case .pollRuntimeEventSubscription:
       try validateOnlyRuntimePayload(envelope, expected: 1)
@@ -692,6 +697,8 @@ public actor HermesBridgeXPCRequestDispatcher {
             try await handler.executeRuntimeCommand(Self.runtimeCommand(from: payload))
           }
         ))
+    case .discoverAgent:
+      return .discoverAgent(try await handler.discoverAgent())
     case .createRuntimeEventSubscription:
       return .createRuntimeEventSubscription(try await handler.createRuntimeEventSubscription())
     case .pollRuntimeEventSubscription:
@@ -1474,7 +1481,7 @@ public actor HermesBridgeXPCRequestDispatcher {
       .listEventPolicyApprovals, .eventPolicyApprovalStatus, .approveEventPolicyExecution,
       .denyEventPolicyExecution, .cancelEventPolicyApproval, .eventPolicyApprovalQueueStatus,
       .runtimeCommand, .createRuntimeEventSubscription, .pollRuntimeEventSubscription,
-      .cancelRuntimeEventSubscription:
+      .cancelRuntimeEventSubscription, .discoverAgent:
       return
     }
   }
@@ -1515,7 +1522,7 @@ public actor HermesBridgeXPCRequestDispatcher {
       .eventPolicyApprovalStatus, .approveEventPolicyExecution, .denyEventPolicyExecution,
       .cancelEventPolicyApproval, .eventPolicyApprovalQueueStatus, .runtimeCommand,
       .createRuntimeEventSubscription, .pollRuntimeEventSubscription,
-      .cancelRuntimeEventSubscription:
+      .cancelRuntimeEventSubscription, .discoverAgent:
       return
     }
     try await auditStore.append(

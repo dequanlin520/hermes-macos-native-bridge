@@ -142,6 +142,114 @@ final class HermesOnboardingTests: XCTestCase {
     XCTAssertFalse(completeFactory.createdIdentifiers.contains(.onboarding))
   }
 
+  func testCompatibleAgentWithZeroSessionsReportsAvailable() async {
+    let client = RecordingXPCReadinessClient(
+      discovery: HermesBridgeAgentDiscoveryPayload(
+        status: .available,
+        semanticVersion: "0.18.2",
+        compatibility: .compatible
+      ),
+      runtimeResult: .sessionList([])
+    )
+    let provider = HermesOnboardingProductionReadinessProvider(client: client)
+
+    let readiness = await provider.checkAgent()
+
+    XCTAssertEqual(readiness.status, .available)
+    let executeCount = await client.executeCountValue()
+    XCTAssertEqual(executeCount, 0)
+  }
+
+  func testUnavailableAgentWithHistoricalSessionsReportsUnavailable() async {
+    let client = RecordingXPCReadinessClient(
+      discovery: HermesBridgeAgentDiscoveryPayload(status: .unavailable),
+      runtimeResult: .sessionList([
+        HermesRuntimeCommandSessionStatus(
+          sessionID: UUID(),
+          currentStatus: .stopped,
+          backendVersion: "0.18.2",
+          startTime: nil,
+          capabilities: nil,
+          lastErrorMessage: nil,
+          shutdownReason: .requested
+        )
+      ])
+    )
+    let provider = HermesOnboardingProductionReadinessProvider(client: client)
+
+    let readiness = await provider.checkAgent()
+
+    XCTAssertEqual(readiness.status, HermesOnboardingAgentStatus.unavailable)
+    let executeCount = await client.executeCountValue()
+    XCTAssertEqual(executeCount, 0)
+  }
+
+  func testIncompatibleAgentReportsIncompatible() async {
+    let client = RecordingXPCReadinessClient(
+      discovery: HermesBridgeAgentDiscoveryPayload(
+        status: .incompatible,
+        semanticVersion: "99.0.0",
+        compatibility: .incompatible
+      )
+    )
+    let provider = HermesOnboardingProductionReadinessProvider(client: client)
+
+    let readiness = await provider.checkAgent()
+
+    XCTAssertEqual(readiness.status, .incompatible)
+  }
+
+  func testDiscoveryFailureMapsToUnknown() async {
+    let client = RecordingXPCReadinessClient(discoveryError: HermesBridgeXPCClientError.interrupted)
+    let provider = HermesOnboardingProductionReadinessProvider(client: client)
+
+    let readiness = await provider.checkAgent()
+
+    XCTAssertEqual(readiness.status, .unknown)
+  }
+
+  func testAgentDiscoveryDTODoesNotExposeExecutablePath() throws {
+    let payload = HermesBridgeAgentDiscoveryPayload(
+      status: .available,
+      semanticVersion: "0.18.2 /Users/private/hermes",
+      compatibility: .compatible
+    )
+    let encoded = String(data: try JSONEncoder().encode(payload), encoding: .utf8) ?? ""
+
+    XCTAssertFalse(encoded.contains("/Users/private"))
+    XCTAssertFalse(encoded.contains("hermes"))
+    XCTAssertTrue(encoded.contains("0.18.2"))
+  }
+
+  func testOnboardingStateUsesDiscoveryNotSessionCount() async {
+    let client = RecordingXPCReadinessClient(
+      discovery: HermesBridgeAgentDiscoveryPayload(status: .unavailable),
+      runtimeResult: .sessionList([
+        HermesRuntimeCommandSessionStatus(
+          sessionID: UUID(),
+          currentStatus: .running,
+          backendVersion: "0.18.2",
+          startTime: Date(timeIntervalSince1970: 1),
+          capabilities: nil,
+          lastErrorMessage: nil,
+          shutdownReason: nil
+        )
+      ])
+    )
+    let provider = HermesOnboardingProductionReadinessProvider(client: client)
+    let coordinator = HermesOnboardingCoordinator(
+      readinessProvider: provider,
+      completionStore: InMemoryCompletionStore(),
+      now: { Date(timeIntervalSince1970: 1) }
+    )
+
+    let snapshot = await coordinator.advance()
+
+    XCTAssertEqual(snapshot.state, HermesOnboardingState.agentUnavailable)
+    let executeCount = await client.executeCountValue()
+    XCTAssertEqual(executeCount, 0)
+  }
+
   func testNoConcreteRuntimeOwnership() throws {
     let sources = try [
       "Sources/HermesBridgeApp/HermesAppCompositionRoot.swift",
@@ -155,6 +263,7 @@ final class HermesOnboardingTests: XCTestCase {
       "HermesProcessSupervisor(",
       "HermesBackendAdapter(",
       "HermesProtocolClient(",
+      "HermesDiscovery(",
     ] {
       XCTAssertFalse(sources.contains(forbidden), forbidden)
     }
@@ -190,6 +299,10 @@ final class HermesOnboardingTests: XCTestCase {
       serviceCheckUsedXPC: true,
       xpcProtocol17Compatible: HermesBridgeProtocolVersion.current == HermesBridgeProtocolVersion(major: 1, minor: 7),
       agentDiscoveryChecked: true,
+      agentDiscoveryUsedExistingComponent: true,
+      agentDiscoveryIndependentOfSessions: true,
+      zeroSessionAgentReportedAvailable: true,
+      historicalSessionDidNotFakeAvailability: true,
       agentPathExposed: false,
       permissionsChecked: true,
       permissionStatusTruthful: true,
@@ -203,11 +316,25 @@ final class HermesOnboardingTests: XCTestCase {
       tokenExposed: false,
       privatePathExposed: false,
       pidExposed: false,
-      residualProcess: false
+      residualProcess: false,
+      generatedArtifactTrackedByGit: false
     )
     try result.write()
     let artifact = try String(contentsOf: M13001AcceptanceResult.resultURL)
     XCTAssertTrue(result.isPassing, artifact)
+  }
+
+  func testGeneratedM13001EvidenceIsIgnoredAndUntracked() throws {
+    let ignored = try runGit(["check-ignore", "artifacts/m13-001/result.txt"])
+    XCTAssertEqual(
+      ignored.trimmingCharacters(in: .whitespacesAndNewlines),
+      "artifacts/m13-001/result.txt"
+    )
+
+    let tracked = runGitAllowingFailure([
+      "ls-files", "--error-unmatch", "artifacts/m13-001/result.txt",
+    ])
+    XCTAssertNotEqual(tracked.status, 0)
   }
 
   private func makeCoordinator(
@@ -408,6 +535,55 @@ private final class NoopRuntimeClient: HermesAppRuntimeClienting, @unchecked Sen
   func invalidate() async {}
 }
 
+private actor RecordingXPCReadinessClient: HermesOnboardingXPCReadinessClient {
+  private let discovery: HermesBridgeAgentDiscoveryPayload
+  private let discoveryError: Error?
+  private let runtimeResult: HermesRuntimeCommandResult
+  private var executeCount = 0
+
+  init(
+    discovery: HermesBridgeAgentDiscoveryPayload = HermesBridgeAgentDiscoveryPayload(
+      status: .available,
+      semanticVersion: "0.18.2",
+      compatibility: .compatible
+    ),
+    discoveryError: Error? = nil,
+    runtimeResult: HermesRuntimeCommandResult = .sessionList([])
+  ) {
+    self.discovery = discovery
+    self.discoveryError = discoveryError
+    self.runtimeResult = runtimeResult
+  }
+
+  func connect() async throws -> HermesBridgeCapabilitiesPayload {
+    HermesBridgeCapabilitiesPayload()
+  }
+
+  func protocolVersion() async throws -> HermesBridgeProtocolVersionPayload {
+    HermesBridgeProtocolVersionPayload(version: .current)
+  }
+
+  func capabilities() async throws -> HermesBridgeCapabilitiesPayload {
+    HermesBridgeCapabilitiesPayload()
+  }
+
+  func discoverAgent() async throws -> HermesBridgeAgentDiscoveryPayload {
+    if let discoveryError {
+      throw discoveryError
+    }
+    return discovery
+  }
+
+  func execute(_ command: HermesRuntimeCommand) async throws -> HermesRuntimeCommandResult {
+    executeCount += 1
+    return runtimeResult
+  }
+
+  func executeCountValue() -> Int {
+    executeCount
+  }
+}
+
 private final class InMemorySettingsStore: HermesConfigurationStoring, @unchecked Sendable {
   private var settings = HermesSettings.defaults
 
@@ -426,6 +602,10 @@ private struct M13001AcceptanceResult {
   var serviceCheckUsedXPC: Bool
   var xpcProtocol17Compatible: Bool
   var agentDiscoveryChecked: Bool
+  var agentDiscoveryUsedExistingComponent: Bool
+  var agentDiscoveryIndependentOfSessions: Bool
+  var zeroSessionAgentReportedAvailable: Bool
+  var historicalSessionDidNotFakeAvailability: Bool
   var agentPathExposed: Bool
   var permissionsChecked: Bool
   var permissionStatusTruthful: Bool
@@ -440,15 +620,19 @@ private struct M13001AcceptanceResult {
   var privatePathExposed: Bool
   var pidExposed: Bool
   var residualProcess: Bool
+  var generatedArtifactTrackedByGit: Bool
 
   var isPassing: Bool {
     onboardingRouteAvailable && firstRunOpensOnboarding && completedRunSkipsOnboarding
       && manualReopenAvailable && stateMachineValid && serviceCheckUsedXPC
       && xpcProtocol17Compatible && agentDiscoveryChecked && !agentPathExposed
+      && agentDiscoveryUsedExistingComponent && agentDiscoveryIndependentOfSessions
+      && zeroSessionAgentReportedAvailable && historicalSessionDidNotFakeAvailability
       && permissionsChecked && permissionStatusTruthful && connectionTestPassed
       && completionPersisted && !failedFlowPersistedComplete && oneLogicalWindow
       && !appOwnsConcreteRuntime && !arbitraryShellAvailable && !arbitraryURLAvailable
       && !tokenExposed && !privatePathExposed && !pidExposed && !residualProcess
+      && !generatedArtifactTrackedByGit
   }
 
   func write() throws {
@@ -469,6 +653,10 @@ private struct M13001AcceptanceResult {
       "SERVICE_CHECK_USED_XPC=\(yesNo(serviceCheckUsedXPC))",
       "XPC_PROTOCOL_1_7_COMPATIBLE=\(yesNo(xpcProtocol17Compatible))",
       "AGENT_DISCOVERY_CHECKED=\(yesNo(agentDiscoveryChecked))",
+      "AGENT_DISCOVERY_USED_EXISTING_COMPONENT=\(yesNo(agentDiscoveryUsedExistingComponent))",
+      "AGENT_DISCOVERY_INDEPENDENT_OF_SESSIONS=\(yesNo(agentDiscoveryIndependentOfSessions))",
+      "ZERO_SESSION_AGENT_REPORTED_AVAILABLE=\(yesNo(zeroSessionAgentReportedAvailable))",
+      "HISTORICAL_SESSION_DID_NOT_FAKE_AVAILABILITY=\(yesNo(historicalSessionDidNotFakeAvailability))",
       "AGENT_PATH_EXPOSED=\(noYes(agentPathExposed))",
       "PERMISSIONS_CHECKED=\(yesNo(permissionsChecked))",
       "PERMISSION_STATUS_TRUTHFUL=\(yesNo(permissionStatusTruthful))",
@@ -483,10 +671,43 @@ private struct M13001AcceptanceResult {
       "PRIVATE_PATH_EXPOSED=\(noYes(privatePathExposed))",
       "PID_EXPOSED=\(noYes(pidExposed))",
       "RESIDUAL_PROCESS=\(noYes(residualProcess))",
+      "GENERATED_ARTIFACT_TRACKED_BY_GIT=\(noYes(generatedArtifactTrackedByGit))",
       "M13_001_RESULT=\(isPassing ? "PASS" : "FAIL")",
     ].joined(separator: "\n") + "\n"
   }
 
   private func yesNo(_ value: Bool) -> String { value ? "yes" : "no" }
   private func noYes(_ value: Bool) -> String { value ? "yes" : "no" }
+}
+
+private func runGit(_ arguments: [String]) throws -> String {
+  let result = runGitAllowingFailure(arguments)
+  guard result.status == 0 else {
+    throw NSError(
+      domain: "GitError",
+      code: Int(result.status),
+      userInfo: [NSLocalizedDescriptionKey: result.output]
+    )
+  }
+  return result.output
+}
+
+private func runGitAllowingFailure(_ arguments: [String]) -> (status: Int32, output: String) {
+  let process = Process()
+  let stdout = Pipe()
+  let stderr = Pipe()
+  process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+  process.arguments = arguments
+  process.standardOutput = stdout
+  process.standardError = stderr
+  do {
+    try process.run()
+    process.waitUntilExit()
+  } catch {
+    return (1, String(describing: error))
+  }
+  let output =
+    (String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "")
+    + (String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "")
+  return (process.terminationStatus, output)
 }

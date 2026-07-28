@@ -178,7 +178,9 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
       fileIntegration: fileIntegration,
       systemEventIntegration: systemEventIntegration,
       eventPolicyEngine: eventPolicyEngine,
-      runtimeCommandAPI: runtimeCommandAPI
+      runtimeCommandAPI: runtimeCommandAPI,
+      agentDiscovery: discovery,
+      agentExecutableURL: backendConfiguration.executableURL
     )
     self.dispatcher = HermesBridgeXPCRequestDispatcher(
       handler: requestHandler,
@@ -262,6 +264,8 @@ public struct HermesBridgeServiceRequestHandler: HermesBridgeRequestHandling {
   private let systemEventIntegration: HermesBridgeSystemEventCoordinator
   private let eventPolicyEngine: HermesEventPolicyEngine
   private let runtimeCommandAPI: HermesRuntimeCommandAPI
+  private let agentDiscovery: any HermesBackendDiscovering
+  private let agentExecutableURL: URL
   private let runtimeEvents: HermesBridgeRuntimeEventSubscriptionCoordinator
 
   public init(
@@ -270,7 +274,9 @@ public struct HermesBridgeServiceRequestHandler: HermesBridgeRequestHandling {
     fileIntegration: HermesBridgeFileIntegrationCoordinator,
     systemEventIntegration: HermesBridgeSystemEventCoordinator,
     eventPolicyEngine: HermesEventPolicyEngine,
-    runtimeCommandAPI: HermesRuntimeCommandAPI
+    runtimeCommandAPI: HermesRuntimeCommandAPI,
+    agentDiscovery: any HermesBackendDiscovering,
+    agentExecutableURL: URL
   ) {
     self.orchestrator = orchestrator
     self.bindingRegistry = bindingRegistry
@@ -278,6 +284,8 @@ public struct HermesBridgeServiceRequestHandler: HermesBridgeRequestHandling {
     self.systemEventIntegration = systemEventIntegration
     self.eventPolicyEngine = eventPolicyEngine
     self.runtimeCommandAPI = runtimeCommandAPI
+    self.agentDiscovery = agentDiscovery
+    self.agentExecutableURL = agentExecutableURL.standardizedFileURL
     self.runtimeEvents = HermesBridgeRuntimeEventSubscriptionCoordinator(commandAPI: runtimeCommandAPI)
   }
 
@@ -540,6 +548,29 @@ public struct HermesBridgeServiceRequestHandler: HermesBridgeRequestHandling {
     try await runtimeCommandAPI.execute(command)
   }
 
+  public func discoverAgent() async throws -> HermesBridgeAgentDiscoveryPayload {
+    do {
+      let result = try agentDiscovery.discover(at: agentExecutableURL)
+      let compatibility = Self.agentCompatibility(for: result.versionInfo.semanticVersion)
+      return HermesBridgeAgentDiscoveryPayload(
+        status: compatibility == .compatible ? .available : .incompatible,
+        semanticVersion: result.versionInfo.semanticVersion,
+        compatibility: compatibility
+      )
+    } catch let error as HermesDiscoveryError {
+      switch error {
+      case .executableNotFound:
+        return HermesBridgeAgentDiscoveryPayload(status: .unavailable)
+      case .malformedVersionOutput, .versionCommandFailed:
+        return HermesBridgeAgentDiscoveryPayload(status: .incompatible, compatibility: .incompatible)
+      case .pathNotAllowlisted, .executableNotRunnable, .timeout:
+        return HermesBridgeAgentDiscoveryPayload(status: .unknown)
+      }
+    } catch {
+      return HermesBridgeAgentDiscoveryPayload(status: .unknown)
+    }
+  }
+
   public func createRuntimeEventSubscription() async throws -> HermesBridgeRuntimeEventSubscriptionPayload {
     try await runtimeEvents.createSubscription()
   }
@@ -579,6 +610,17 @@ public struct HermesBridgeServiceRequestHandler: HermesBridgeRequestHandling {
     decision: HermesApprovalResponseDecision
   ) async throws -> HermesRequestRecord {
     try await orchestrator.respondToApproval(requestID: requestID, decision: decision)
+  }
+
+  private static func agentCompatibility(
+    for semanticVersion: String
+  ) -> HermesBridgeAgentCompatibilityState {
+    guard let majorText = semanticVersion.split(separator: ".").first,
+      let major = Int(majorText)
+    else {
+      return .unknown
+    }
+    return major == 0 ? .compatible : .incompatible
   }
 }
 

@@ -780,6 +780,19 @@ public actor HermesBridgeXPCClient {
     throw HermesBridgeXPCClientError.responseDecodingFailure
   }
 
+  public func discoverAgent() async throws -> HermesBridgeAgentDiscoveryPayload {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .discoverAgent
+      ))
+    guard case .success(.discoverAgent(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
   public func createRuntimeEventSubscription() async throws
     -> HermesBridgeRuntimeEventSubscriptionPayload
   {
@@ -981,6 +994,10 @@ public struct HermesBridgeRuntimeClientAdapter: Sendable {
 
   public func capabilities() async throws -> HermesBridgeCapabilitiesPayload {
     try await client.capabilities()
+  }
+
+  public func discoverAgent() async throws -> HermesBridgeAgentDiscoveryPayload {
+    try await client.discoverAgent()
   }
 
   public func invalidate() async {

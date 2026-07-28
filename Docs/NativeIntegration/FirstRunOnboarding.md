@@ -44,7 +44,13 @@ The connection test uses `connect` plus non-destructive `listSessions`. It does 
 
 ## Agent discovery
 
-Agent readiness uses service-reported session summaries through the XPC client. The UI reports only safe states: available, unavailable, incompatible, or unknown. It does not display executable paths and does not download or install Hermes Agent.
+Agent readiness is independent from Runtime sessions. Session summaries, active session counts, and persisted Runtime session records are not evidence of Hermes Agent installation or compatibility.
+
+Production discovery flows through the client-safe onboarding adapter to `HermesBridgeRuntimeClientAdapter`, `HermesBridgeXPCClient`, the HermesBridgeXPC 1.7 `discoverAgent` operation, `HermesBridgeService`, and the service-owned `HermesDiscovery` component. The app does not instantiate the concrete discovery implementation and does not inspect the filesystem directly.
+
+The UI receives only a sanitized discovery DTO. Public states are available, unavailable, incompatible, and unknown. Safe compatibility metadata may include a sanitized semantic version and compatibility state. The DTO does not expose executable paths, filesystem paths, PIDs, command lines, tokens, environment variables, raw discovery errors, or stack traces.
+
+Generated M13-001 acceptance evidence is written at execution time under `artifacts/m13-001/result.txt`. `artifacts/` is ignored by Git, and generated acceptance evidence is not committed.
 
 ## Permission behavior
 
