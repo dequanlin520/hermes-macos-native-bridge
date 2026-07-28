@@ -15,6 +15,7 @@ public final class HermesAdminViewModel: ObservableObject {
   private let openComplianceCenterAction: @MainActor () -> Void
   private let openHealthCenterAction: @MainActor () -> Void
   private let openOperationsCenterAction: @MainActor () -> Void
+  private let openAnalyticsCenterAction: @MainActor () -> Void
 
   public init(
     center: HermesAdminCenter,
@@ -23,7 +24,8 @@ public final class HermesAdminViewModel: ObservableObject {
     openPolicyCenter: @escaping @MainActor () -> Void = {},
     openComplianceCenter: @escaping @MainActor () -> Void = {},
     openHealthCenter: @escaping @MainActor () -> Void = {},
-    openOperationsCenter: @escaping @MainActor () -> Void = {}
+    openOperationsCenter: @escaping @MainActor () -> Void = {},
+    openAnalyticsCenter: @escaping @MainActor () -> Void = {}
   ) {
     self.center = center
     self.openSettingsAction = openSettings
@@ -32,6 +34,7 @@ public final class HermesAdminViewModel: ObservableObject {
     self.openComplianceCenterAction = openComplianceCenter
     self.openHealthCenterAction = openHealthCenter
     self.openOperationsCenterAction = openOperationsCenter
+    self.openAnalyticsCenterAction = openAnalyticsCenter
     self.snapshot = .empty
     self.preferences = (try? center.loadPreferences()) ?? HermesAdminPreferences()
   }
@@ -80,6 +83,10 @@ public final class HermesAdminViewModel: ObservableObject {
 
   public func openOperationsCenter() {
     openOperationsCenterAction()
+  }
+
+  public func openAnalyticsCenter() {
+    openAnalyticsCenterAction()
   }
 
   public var boundarySummary: String {

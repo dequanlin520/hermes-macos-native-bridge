@@ -220,6 +220,11 @@ public struct HermesAdministrationWindow: View {
       } label: {
         Label("Operations", systemImage: "command.circle")
       }
+      Button {
+        viewModel.openAnalyticsCenter()
+      } label: {
+        Label("Analytics", systemImage: "chart.xyaxis.line")
+      }
       Spacer()
       Button {
         viewModel.refresh()

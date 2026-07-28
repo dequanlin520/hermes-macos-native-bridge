@@ -96,6 +96,10 @@ let package = Package(
       name: "HermesOperations",
       targets: ["HermesOperations"]
     ),
+    .library(
+      name: "HermesAnalytics",
+      targets: ["HermesAnalytics"]
+    ),
     .executable(
       name: "HermesBridgeService",
       targets: ["HermesBridgeServiceExecutable"]
@@ -233,6 +237,9 @@ let package = Package(
     .target(
       name: "HermesOperations"
     ),
+    .target(
+      name: "HermesAnalytics"
+    ),
     .executableTarget(
       name: "HermesBridgeControl",
       dependencies: ["HermesBridgeControlCore"]
@@ -245,7 +252,7 @@ let package = Package(
       name: "HermesBridgeApp",
       dependencies: [
         "HermesBridgeXPC",
-        "HermesAdministration", "HermesCompliance", "HermesDashboard", "HermesDiagnostics", "HermesFeedback", "HermesHealth",
+        "HermesAdministration", "HermesAnalytics", "HermesCompliance", "HermesDashboard", "HermesDiagnostics", "HermesFeedback", "HermesHealth",
         "HermesOperations",
         "HermesLogsViewer", "HermesMenuBar", "HermesNotifications", "HermesOnboarding", "HermesRecovery", "HermesSearch",
         "HermesPolicy", "HermesPrivacy", "HermesSettings", "HermesTimeline", "HermesUpdate",
@@ -356,7 +363,7 @@ let package = Package(
       name: "HermesBridgeAppTests",
       dependencies: [
         "HermesBridgeApp", "HermesBridgeAppAcceptanceSupport", "HermesBridgeService",
-        "HermesAdministration", "HermesBridgeXPC", "HermesCompliance", "HermesDashboard", "HermesDiagnostics", "HermesFeedback", "HermesHealth", "HermesLogsViewer",
+        "HermesAdministration", "HermesAnalytics", "HermesBridgeXPC", "HermesCompliance", "HermesDashboard", "HermesDiagnostics", "HermesFeedback", "HermesHealth", "HermesLogsViewer",
         "HermesOperations",
         "HermesMenuBar", "HermesNotifications", "HermesPolicy", "HermesRecovery",
         "HermesRuntimeFoundation", "HermesPrivacy", "HermesSearch", "HermesSettings", "HermesUpdate",
@@ -408,6 +415,10 @@ let package = Package(
     .testTarget(
       name: "HermesOperationsTests",
       dependencies: ["HermesBridgeApp", "HermesOperations", "HermesRuntimeFoundation"]
+    ),
+    .testTarget(
+      name: "HermesAnalyticsTests",
+      dependencies: ["HermesAnalytics", "HermesBridgeApp", "HermesRuntimeFoundation"]
     ),
     .testTarget(
       name: "HermesRecoveryTests",
