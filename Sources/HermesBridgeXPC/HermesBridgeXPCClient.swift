@@ -850,6 +850,80 @@ public actor HermesBridgeXPCClient {
     return payload
   }
 
+  public func updateStatus() async throws -> HermesBridgeUpdateStatusPayload {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .updateStatus
+      ))
+    guard case .success(.updateStatus(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
+  public func checkForUpdate() async throws -> HermesBridgeUpdateStatusPayload {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .checkForUpdate
+      ))
+    guard case .success(.checkForUpdate(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
+  public func validateUpdate(releaseID: String) async throws
+    -> HermesBridgeUpdateValidationReportPayload
+  {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .validateUpdate,
+        validateUpdate: HermesBridgeUpdateReleaseIDPayload(releaseID: releaseID)
+      ))
+    guard case .success(.validateUpdate(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
+  public func activateUpdate(confirmation: HermesBridgeUpdateConfirmationPayload) async throws
+    -> HermesBridgeUpdateActivationResultPayload
+  {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .activateUpdate,
+        activateUpdate: confirmation
+      ))
+    guard case .success(.activateUpdate(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
+  public func rollbackUpdate(confirmation: HermesBridgeUpdateConfirmationPayload) async throws
+    -> HermesBridgeUpdateActivationResultPayload
+  {
+    try ensureOpen()
+    let response = try await send(
+      HermesBridgeRequestEnvelope(
+        correlationID: Self.correlationID(),
+        operation: .rollbackUpdate,
+        rollbackUpdate: confirmation
+      ))
+    guard case .success(.rollbackUpdate(let payload)) = response.result else {
+      throw clientError(from: response)
+    }
+    return payload
+  }
+
   public func close() {
     if closed {
       return
@@ -938,7 +1012,7 @@ public protocol HermesBridgeRuntimeEventSubscribing: Sendable {
 }
 
 public struct HermesBridgeRuntimeClientAdapter: Sendable {
-  private let client: HermesBridgeXPCClient
+  public let client: HermesBridgeXPCClient
   private let pollTimeoutMilliseconds: Int
 
   public init(client: HermesBridgeXPCClient, pollTimeoutMilliseconds: Int = 500) {

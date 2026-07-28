@@ -204,6 +204,13 @@ public struct HermesDiagnosticsWindow: View {
       .disabled(viewModel.state.isRefreshing || viewModel.state.isRunningDiagnostics)
 
       Button {
+        viewModel.openUpdateCenter()
+      } label: {
+        Label("Updates", systemImage: "arrow.up.circle")
+      }
+      .disabled(viewModel.state.isRefreshing || viewModel.state.isRunningDiagnostics)
+
+      Button {
         viewModel.refresh()
       } label: {
         Label("Refresh", systemImage: "arrow.clockwise")

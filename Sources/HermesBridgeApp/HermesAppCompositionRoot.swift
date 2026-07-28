@@ -8,6 +8,7 @@ import HermesMenuBar
 import HermesOnboarding
 import HermesRecovery
 import HermesSettings
+import HermesUpdate
 import SwiftUI
 
 extension HermesBridgeRuntimeClientAdapter: HermesRuntimeCommandExecuting,
@@ -29,6 +30,7 @@ public final class HermesAppClientGraph: @unchecked Sendable {
   public let settingsStore: HermesConfigurationStoring
   public let onboardingCoordinator: HermesOnboardingCoordinator
   public let recoveryCoordinator: HermesRecoveryCoordinator
+  public let updateCoordinator: HermesUpdateCoordinator
   public let navigationActions = HermesAppNavigationActions()
 
   private let shutdownHandler: @Sendable () async -> Void
@@ -38,6 +40,7 @@ public final class HermesAppClientGraph: @unchecked Sendable {
     settingsStore: HermesConfigurationStoring = HermesConfigurationStore(),
     onboardingCoordinator: HermesOnboardingCoordinator? = nil,
     recoveryCoordinator: HermesRecoveryCoordinator? = nil,
+    updateCoordinator: HermesUpdateCoordinator? = nil,
     shutdownHandler: (@Sendable () async -> Void)? = nil
   ) {
     self.runtimeClient = runtimeClient
@@ -69,6 +72,15 @@ public final class HermesAppClientGraph: @unchecked Sendable {
           readiness: HermesAppOnboardingReadinessRerunner(coordinator: self.onboardingCoordinator)
         )
       )
+    }
+    if let updateCoordinator {
+      self.updateCoordinator = updateCoordinator
+    } else if let updateClient = runtimeClient as? HermesBridgeRuntimeClientAdapter {
+      self.updateCoordinator = HermesUpdateCoordinator(
+        provider: HermesUpdateProductionProvider(client: updateClient.client)
+      )
+    } else {
+      self.updateCoordinator = HermesUpdateCoordinator(provider: HermesUpdateUnavailableProvider())
     }
     self.shutdownHandler = shutdownHandler ?? {
       await runtimeClient.invalidate()
@@ -113,6 +125,9 @@ public final class HermesAppCompositionRoot: ObservableObject {
     }
     clientGraph.navigationActions.openDiagnostics = { [weak windowCoordinator] in
       windowCoordinator?.open(.diagnostics)
+    }
+    clientGraph.navigationActions.openUpdateCenter = { [weak windowCoordinator] in
+      windowCoordinator?.open(.update)
     }
     clientGraph.navigationActions.openRecovery = { [weak clientGraph, weak windowCoordinator] issue in
       Task { @MainActor in
@@ -178,6 +193,9 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
           store: clientGraph.settingsStore,
           reopenOnboarding: {
             clientGraph.navigationActions.reopenOnboarding()
+          },
+          openUpdateCenter: {
+            clientGraph.navigationActions.openUpdateCenter()
           }
         )
       )
@@ -193,6 +211,21 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
           },
           openRecovery: { issue in
             clientGraph.navigationActions.openRecovery(issue)
+          },
+          openUpdateCenter: {
+            clientGraph.navigationActions.openUpdateCenter()
+          }
+        )
+      )
+    case .update:
+      controller = HermesUpdateWindowController(
+        viewModel: HermesUpdateViewModel(
+          coordinator: clientGraph.updateCoordinator,
+          openDiagnostics: {
+            clientGraph.navigationActions.openDiagnostics()
+          },
+          openRecovery: {
+            clientGraph.navigationActions.openRecovery(.unknownReadinessFailure)
           }
         )
       )
@@ -202,6 +235,9 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
           coordinator: clientGraph.recoveryCoordinator,
           openDiagnostics: {
             clientGraph.navigationActions.openDiagnostics()
+          },
+          openUpdateCenter: {
+            clientGraph.navigationActions.openUpdateCenter()
           },
           rerunReadiness: {
             Task {
@@ -224,6 +260,7 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
 public final class HermesAppNavigationActions {
   public var reopenOnboarding: () -> Void = {}
   public var openDiagnostics: () -> Void = {}
+  public var openUpdateCenter: () -> Void = {}
   public var openRecovery: (HermesRecoveryIssueCategory) -> Void = { _ in }
 
   public init() {}

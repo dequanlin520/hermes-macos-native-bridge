@@ -9,27 +9,32 @@ public final class HermesDiagnosticsViewModel: ObservableObject {
   private let controller: HermesDiagnosticsController
   private let reopenOnboardingAction: @MainActor () -> Void
   private let openRecoveryAction: @MainActor (HermesRecoveryIssueCategory) -> Void
+  private let openUpdateCenterAction: @MainActor () -> Void
 
   public init(
     controller: HermesDiagnosticsController,
     reopenOnboarding: @escaping @MainActor () -> Void = {},
-    openRecovery: @escaping @MainActor (HermesRecoveryIssueCategory) -> Void = { _ in }
+    openRecovery: @escaping @MainActor (HermesRecoveryIssueCategory) -> Void = { _ in },
+    openUpdateCenter: @escaping @MainActor () -> Void = {}
   ) {
     self.controller = controller
     self.reopenOnboardingAction = reopenOnboarding
     self.openRecoveryAction = openRecovery
+    self.openUpdateCenterAction = openUpdateCenter
     self.state = HermesDiagnosticsState()
   }
 
   public convenience init(
     provider: HermesDiagnosticProviding,
     reopenOnboarding: @escaping @MainActor () -> Void = {},
-    openRecovery: @escaping @MainActor (HermesRecoveryIssueCategory) -> Void = { _ in }
+    openRecovery: @escaping @MainActor (HermesRecoveryIssueCategory) -> Void = { _ in },
+    openUpdateCenter: @escaping @MainActor () -> Void = {}
   ) {
     self.init(
       controller: HermesDiagnosticsController(provider: provider),
       reopenOnboarding: reopenOnboarding,
-      openRecovery: openRecovery
+      openRecovery: openRecovery,
+      openUpdateCenter: openUpdateCenter
     )
   }
 
@@ -51,6 +56,10 @@ public final class HermesDiagnosticsViewModel: ObservableObject {
 
   public func openRecovery() {
     openRecoveryAction(recoveryIssue)
+  }
+
+  public func openUpdateCenter() {
+    openUpdateCenterAction()
   }
 
   public var recoveryIssue: HermesRecoveryIssueCategory {
