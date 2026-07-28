@@ -52,6 +52,16 @@ final class HermesNativeUICompositionTests: XCTestCase {
     XCTAssertEqual(factory.window(for: .dashboard)?.showCount, 1)
   }
 
+  func testOnboardingRouting() {
+    let factory = RecordingWindowFactory()
+    let root = makeRoot(factory: factory)
+
+    root.router.openOnboarding()
+
+    XCTAssertEqual(factory.createdIdentifiers, [.onboarding])
+    XCTAssertEqual(factory.window(for: .onboarding)?.showCount, 1)
+  }
+
   func testLogsRouting() {
     let factory = RecordingWindowFactory()
     let root = makeRoot(factory: factory)
@@ -114,6 +124,7 @@ final class HermesNativeUICompositionTests: XCTestCase {
     let root = makeRoot(factory: factory)
 
     root.router.openDashboard()
+    root.router.openOnboarding()
     root.router.openLogs()
     root.router.openSettings()
     root.router.openDiagnostics()

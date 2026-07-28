@@ -79,6 +79,14 @@ public struct HermesSettingsWindow: View {
           }
           .pickerStyle(.segmented)
         }
+
+        Section("Onboarding") {
+          Button {
+            viewModel.reopenOnboarding()
+          } label: {
+            Label("Open First Run Onboarding", systemImage: "checklist")
+          }
+        }
       }
       .formStyle(.grouped)
 

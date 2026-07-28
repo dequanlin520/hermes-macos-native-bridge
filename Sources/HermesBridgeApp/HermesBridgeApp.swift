@@ -78,6 +78,9 @@ public struct HermesBridgeMenuBarContent: View {
       Button("Diagnostics") {
         compositionRoot.router.openDiagnostics()
       }
+      Button("First Run Onboarding") {
+        compositionRoot.router.openOnboarding()
+      }
     }
   }
 

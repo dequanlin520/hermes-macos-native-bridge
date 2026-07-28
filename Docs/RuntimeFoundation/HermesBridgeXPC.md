@@ -36,13 +36,19 @@ The current protocol version is:
 
 ```text
 major: 1
-minor: 6
+minor: 8
 ```
 
 The service rejects unsupported major versions before operation dispatch.
 Clients with the same major version and a higher minor version are accepted for
 forward-compatible minor additions. A client performs a handshake with the
 `protocolVersion` operation, then queries `capabilities`.
+
+Protocol 1.8 introduces the `agentDiscovery` capability and `discoverAgent`
+operation. A 1.8 client must gate discovery on the advertised capability.
+Protocol 1.7 clients and services remain compatible for pre-existing
+operations; discovery is treated as unavailable unless `agentDiscovery` is
+advertised.
 
 ## Capabilities
 
@@ -59,6 +65,9 @@ The confirmed capability set is:
 - `systemEventObservation`
 - `systemEventPolicyManagement`
 - `eventPolicyApprovalManagement`
+- `runtimeCommand`
+- `runtimeEventObservation`
+- `agentDiscovery` (protocol 1.8 and newer)
 
 The service does not advertise or accept generic execution, generic JSON-RPC,
 generic HTTP, filesystem path, process, browser, GUI, AppleScript, JXA, or shell
@@ -115,6 +124,11 @@ Supported operations are:
 - `denyEventPolicyExecution`: approval ID.
 - `cancelEventPolicyApproval`: approval ID.
 - `eventPolicyApprovalQueueStatus`: no payload.
+- `runtimeCommand`: typed runtime command payload.
+- `createRuntimeEventSubscription`: no payload.
+- `pollRuntimeEventSubscription`: subscription ID and bounded timeout.
+- `cancelRuntimeEventSubscription`: subscription ID.
+- `discoverAgent`: no payload, protocol 1.8 and `agentDiscovery` capability.
 
 The envelope contains no arbitrary dictionaries and no generic JSON blob field.
 Payloads are Swift `Codable` types with fixed fields. Unknown operation strings
@@ -144,6 +158,9 @@ Success payloads are limited to:
 - system-event subscription status.
 - bounded system-event batches.
 - system-event acknowledgement summaries.
+- runtime command result summaries.
+- bounded runtime-event batches.
+- agent discovery status.
 
 Status summaries include request ID, binding ID, lifecycle state, cancellation
 flag, result availability, and redacted failure code/retryability. They do not
@@ -282,6 +299,11 @@ performs protocol-version negotiation, queries capabilities, and exposes only:
 - `acknowledgeSystemEventBatch(subscriptionID:acknowledgedEventOrdinal:)`
 - `cancelSystemEventSubscription(subscriptionID:)`
 - `systemEventMonitorStatus()`
+- `executeRuntimeCommand(_:)`
+- `createRuntimeEventSubscription()`
+- `pollRuntimeEventSubscription(subscriptionID:timeoutMilliseconds:)`
+- `cancelRuntimeEventSubscription(subscriptionID:)`
+- `discoverAgent()`
 - `close()`
 
 The public client API does not expose raw `Data`, arbitrary operation names, or

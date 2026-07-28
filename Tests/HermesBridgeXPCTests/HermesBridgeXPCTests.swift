@@ -35,6 +35,10 @@ final class HermesBridgeXPCTests: XCTestCase {
     XCTAssertEqual(payload.protocolVersion.major, 1)
   }
 
+  func testCurrentProtocolVersionIs18() {
+    XCTAssertEqual(HermesBridgeProtocolVersion.current, HermesBridgeProtocolVersion(major: 1, minor: 8))
+  }
+
   func testCapabilityResponse() async throws {
     let harness = try Harness()
 
@@ -45,6 +49,101 @@ final class HermesBridgeXPCTests: XCTestCase {
     }
     XCTAssertEqual(Set(payload.capabilities), Set(HermesBridgeCapability.allCases))
     XCTAssertTrue(payload.capabilities.contains(.bindingDiscovery))
+    XCTAssertTrue(payload.capabilities.contains(.agentDiscovery))
+    XCTAssertEqual(payload.protocolVersion, HermesBridgeProtocolVersion(major: 1, minor: 8))
+  }
+
+  func testProtocol17CapabilityResponseOmitsAgentDiscovery() async throws {
+    let harness = try Harness()
+
+    let response = try await harness.send(
+      .capabilities,
+      version: HermesBridgeProtocolVersion(major: 1, minor: 7)
+    )
+
+    guard case .success(.capabilities(let payload)) = response.result else {
+      return XCTFail("expected capabilities")
+    }
+    XCTAssertEqual(payload.protocolVersion, HermesBridgeProtocolVersion(major: 1, minor: 8))
+    XCTAssertFalse(payload.capabilities.contains(.agentDiscovery))
+    XCTAssertTrue(payload.capabilities.contains(.runtimeCommand))
+  }
+
+  func testAgentDiscoveryDispatchReturnsSafePayload() async throws {
+    let harness = try Harness()
+
+    let response = try await harness.send(.discoverAgent)
+
+    guard case .success(.discoverAgent(let payload)) = response.result else {
+      return XCTFail("expected agent discovery")
+    }
+    let encoded = String(data: try JSONEncoder().encode(payload), encoding: .utf8) ?? ""
+    XCTAssertEqual(payload.status, .available)
+    XCTAssertEqual(payload.semanticVersion, "0.18.2")
+    XCTAssertFalse(encoded.contains("/"))
+    XCTAssertFalse(encoded.contains("pid"))
+    let discoverAgentCount = await harness.handler.discoverAgentCountValue()
+    XCTAssertEqual(discoverAgentCount, 1)
+  }
+
+  func testClientCallsDiscoverAgentOnlyWhenCapabilityIsAdvertised() async throws {
+    let transport = RecordingDiscoveryTransport(
+      capabilities: HermesBridgeCapabilitiesPayload(capabilities: HermesBridgeCapability.allCases)
+    )
+    let client = HermesBridgeXPCClient(transport: transport, timeout: 1)
+
+    let payload = try await client.discoverAgent()
+
+    XCTAssertEqual(payload.status, .available)
+    let operations = transport.operations()
+    XCTAssertEqual(operations, [.capabilities, .discoverAgent])
+    XCTAssertFalse(operations.contains(.runtimeCommand))
+  }
+
+  func testClientDiscoveryWithoutCapabilityReturnsUnknownWithoutCallingDiscoverAgent() async throws {
+    let transport = RecordingDiscoveryTransport(
+      capabilities: HermesBridgeCapabilitiesPayload(
+        protocolVersion: HermesBridgeProtocolVersion(major: 1, minor: 7),
+        capabilities: HermesBridgeCapability.allCases.filter { $0 != .agentDiscovery }
+      )
+    )
+    let client = HermesBridgeXPCClient(transport: transport, timeout: 1)
+
+    let payload = try await client.discoverAgent()
+
+    XCTAssertEqual(payload.status, .unknown)
+    let operations = transport.operations()
+    XCTAssertEqual(operations, [.capabilities])
+    XCTAssertFalse(operations.contains(.discoverAgent))
+    XCTAssertFalse(operations.contains(.runtimeCommand))
+  }
+
+  func testProtocol17ClientCanUseExistingOperations() async throws {
+    let harness = try Harness()
+
+    let response = try await harness.send(
+      .listEnabledBindings,
+      version: HermesBridgeProtocolVersion(major: 1, minor: 7)
+    )
+
+    guard case .success(.listEnabledBindings(let payload)) = response.result else {
+      return XCTFail("expected binding discovery")
+    }
+    XCTAssertEqual(payload.protocolVersion, .current)
+    XCTAssertEqual(payload.bindings.map(\.bindingID), ["binding:v1:alpha", "binding:v1:test.binding"])
+  }
+
+  func testProtocol17DiscoverAgentIsUnsupportedSafely() async throws {
+    let harness = try Harness()
+
+    let response = try await harness.send(
+      .discoverAgent,
+      version: HermesBridgeProtocolVersion(major: 1, minor: 7)
+    )
+
+    XCTAssertFailure(response, .unsupportedOperation)
+    let discoverAgentCount = await harness.handler.discoverAgentCountValue()
+    XCTAssertEqual(discoverAgentCount, 0)
   }
 
   func testBindingDiscoveryReturnsEnabledBindingsSorted() async throws {
@@ -490,6 +589,7 @@ private actor FakeBridgeHandler: HermesBridgeRequestHandling {
   var approvalDecisions: [HermesApprovalResponseDecision] = []
   var cancelCount = 0
   var statusCount = 0
+  var discoverAgentCount = 0
   private var prompts: [String] = []
   private var submitError: HermesRequestOrchestratorError?
   private var statusError: HermesRequestOrchestratorError?
@@ -540,6 +640,10 @@ private actor FakeBridgeHandler: HermesBridgeRequestHandling {
 
   func approvalDecisionValues() -> [HermesApprovalResponseDecision] {
     approvalDecisions
+  }
+
+  func discoverAgentCountValue() -> Int {
+    discoverAgentCount
   }
 
   func setDelayBackgroundCompletion(_ enabled: Bool) {
@@ -633,6 +737,15 @@ private actor FakeBridgeHandler: HermesBridgeRequestHandling {
     }
     approvalDecisions.append(decision)
     return try record(state: .running)
+  }
+
+  func discoverAgent() async throws -> HermesBridgeAgentDiscoveryPayload {
+    discoverAgentCount += 1
+    return HermesBridgeAgentDiscoveryPayload(
+      status: .available,
+      semanticVersion: "0.18.2 /tmp/not-exposed",
+      compatibility: .compatible
+    )
   }
 
   private func finishBackground() {
@@ -776,6 +889,68 @@ private struct StaticTransport: HermesBridgeXPCTransport {
 
   func send(_: Data) async throws -> Data {
     response
+  }
+
+  func close() {}
+}
+
+private final class RecordingDiscoveryTransport: HermesBridgeXPCTransport, @unchecked Sendable {
+  private let lock = NSLock()
+  private let capabilitiesPayload: HermesBridgeCapabilitiesPayload
+  private let encoder = JSONEncoder()
+  private let decoder = JSONDecoder()
+  private var recordedOperations: [HermesBridgeOperation] = []
+
+  init(capabilities: HermesBridgeCapabilitiesPayload) {
+    self.capabilitiesPayload = capabilities
+  }
+
+  func send(_ requestData: Data) async throws -> Data {
+    let envelope = try decoder.decode(HermesBridgeRequestEnvelope.self, from: requestData)
+    lock.withLock {
+      recordedOperations.append(envelope.operation)
+    }
+
+    let payload: HermesBridgeSuccessPayload
+    switch envelope.operation {
+    case .capabilities:
+      payload = .capabilities(capabilitiesPayload)
+    case .protocolVersion:
+      payload = .protocolVersion(
+        HermesBridgeProtocolVersionPayload(version: capabilitiesPayload.protocolVersion)
+      )
+    case .discoverAgent:
+      payload = .discoverAgent(
+        HermesBridgeAgentDiscoveryPayload(
+          status: .available,
+          semanticVersion: "0.18.2",
+          compatibility: .compatible
+        )
+      )
+    case .runtimeCommand:
+      payload = .runtimeCommand(try HermesBridgeRuntimeCommandResultPayload(result: .sessionList([])))
+    default:
+      return try encoder.encode(
+        HermesBridgeResponseEnvelope(
+          correlationID: envelope.correlationID,
+          result: .failure(
+            HermesBridgeErrorPayload(
+              code: .unsupportedOperation,
+              safeMessage: "Unsupported operation."
+            )
+          )
+        ))
+    }
+
+    return try encoder.encode(
+      HermesBridgeResponseEnvelope(
+        correlationID: envelope.correlationID,
+        result: .success(payload)
+      ))
+  }
+
+  func operations() -> [HermesBridgeOperation] {
+    lock.withLock { recordedOperations }
   }
 
   func close() {}

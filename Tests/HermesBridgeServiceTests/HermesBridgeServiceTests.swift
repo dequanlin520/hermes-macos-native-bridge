@@ -152,6 +152,33 @@ final class HermesBridgeServiceTests: XCTestCase {
     await fixture.host.stop()
   }
 
+  func testComposedServiceAgentDiscoveryUsesExistingDiscoveryComponent() async throws {
+    let fixture = try AnonymousHostFixture(configuration: configuration())
+    try fixture.host.start()
+
+    let response = try await fixture.send(operation: .discoverAgent)
+
+    guard case .success(.discoverAgent(let payload)) = response.result else {
+      return XCTFail("expected agent discovery")
+    }
+    let encoded = String(data: try JSONEncoder().encode(payload), encoding: .utf8) ?? ""
+    XCTAssertEqual(payload.status, .available)
+    XCTAssertEqual(payload.semanticVersion, "0.18.2")
+    XCTAssertFalse(encoded.contains(temporaryDirectory.path))
+    XCTAssertEqual(fixture.compositionRoot.runtimeSessionManager.listSessions(), [])
+    await fixture.host.stop()
+  }
+
+  func testServiceOwnsConcreteAgentDiscoveryImplementation() throws {
+    let source = try String(
+      contentsOfFile: "Sources/HermesBridgeService/HermesBridgeCompositionRoot.swift",
+      encoding: .utf8
+    )
+
+    XCTAssertTrue(source.contains("self.discovery = HermesDiscovery("))
+    XCTAssertTrue(source.contains("agentDiscovery: discovery"))
+  }
+
   func testStartupFailureRedaction() {
     let message = HermesBridgeServiceMain.redactedStartupFailure(
       HermesBridgeServiceConfigurationError.invalidRoot(temporaryDirectory.path)
@@ -315,7 +342,8 @@ final class HermesBridgeServiceTests: XCTestCase {
   private func executableFixture() throws -> URL {
     let url = temporaryDirectory.appendingPathComponent("fixture-service")
     if !FileManager.default.fileExists(atPath: url.path) {
-      try "#!/bin/zsh\nexit 0\n".write(to: url, atomically: true, encoding: .utf8)
+      try "#!/bin/zsh\nprintf 'Hermes Agent v0.18.2 (2026.7.7.2)\\n'\n"
+        .write(to: url, atomically: true, encoding: .utf8)
       try FileManager.default.setAttributes(
         [.posixPermissions: NSNumber(value: Int16(0o700))],
         ofItemAtPath: url.path
