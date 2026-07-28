@@ -1,4 +1,5 @@
 import Foundation
+import HermesTimeline
 import SwiftUI
 
 @MainActor
@@ -13,8 +14,16 @@ public final class HermesDashboardViewModel: ObservableObject {
     self.state = HermesDashboardState()
   }
 
-  public convenience init(commandAPI: HermesDashboardRuntimeCommandExecuting) {
-    self.init(controller: HermesDashboardController(commandAPI: commandAPI))
+  public convenience init(
+    commandAPI: HermesDashboardRuntimeCommandExecuting,
+    timelineReader: (any HermesTimelineReadable)? = nil
+  ) {
+    self.init(
+      controller: HermesDashboardController(
+        commandAPI: commandAPI,
+        timelineReader: timelineReader
+      )
+    )
   }
 
   public func load() {

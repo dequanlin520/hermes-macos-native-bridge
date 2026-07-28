@@ -72,6 +72,9 @@ public struct HermesBridgeMenuBarContent: View {
       Button("Logs Viewer") {
         compositionRoot.router.openLogs()
       }
+      Button("Activity Timeline") {
+        compositionRoot.router.openTimeline()
+      }
       Button("Settings") {
         compositionRoot.router.openSettings()
       }
