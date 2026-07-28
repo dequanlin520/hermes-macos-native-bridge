@@ -160,6 +160,36 @@ final class HermesOnboardingTests: XCTestCase {
     XCTAssertEqual(executeCount, 0)
   }
 
+  func testCapabilityAbsentAgentDiscoveryReportsUnknownWithoutCallingDiscovery() async {
+    let client = RecordingXPCReadinessClient(
+      capabilities: HermesBridgeCapabilitiesPayload(
+        protocolVersion: HermesBridgeProtocolVersion(major: 1, minor: 7),
+        capabilities: HermesBridgeCapability.allCases.filter { $0 != .agentDiscovery }
+      ),
+      discovery: HermesBridgeAgentDiscoveryPayload(status: .available),
+      runtimeResult: .sessionList([
+        HermesRuntimeCommandSessionStatus(
+          sessionID: UUID(),
+          currentStatus: .running,
+          backendVersion: "0.18.2",
+          startTime: Date(timeIntervalSince1970: 1),
+          capabilities: nil,
+          lastErrorMessage: nil,
+          shutdownReason: nil
+        )
+      ])
+    )
+    let provider = HermesOnboardingProductionReadinessProvider(client: client)
+
+    let readiness = await provider.checkAgent()
+
+    XCTAssertEqual(readiness.status, .unknown)
+    let discoverAgentCount = await client.discoverAgentCountValue()
+    let executeCount = await client.executeCountValue()
+    XCTAssertEqual(discoverAgentCount, 0)
+    XCTAssertEqual(executeCount, 0)
+  }
+
   func testUnavailableAgentWithHistoricalSessionsReportsUnavailable() async {
     let client = RecordingXPCReadinessClient(
       discovery: HermesBridgeAgentDiscoveryPayload(status: .unavailable),
@@ -297,7 +327,7 @@ final class HermesOnboardingTests: XCTestCase {
       manualReopenAvailable: true,
       stateMachineValid: true,
       serviceCheckUsedXPC: true,
-      xpcProtocol17Compatible: HermesBridgeProtocolVersion.current == HermesBridgeProtocolVersion(major: 1, minor: 7),
+      xpcProtocol18Compatible: HermesBridgeProtocolVersion.current == HermesBridgeProtocolVersion(major: 1, minor: 8),
       agentDiscoveryChecked: true,
       agentDiscoveryUsedExistingComponent: true,
       agentDiscoveryIndependentOfSessions: true,
@@ -322,6 +352,63 @@ final class HermesOnboardingTests: XCTestCase {
     try result.write()
     let artifact = try String(contentsOf: M13001AcceptanceResult.resultURL)
     XCTAssertTrue(result.isPassing, artifact)
+    XCTAssertNoThrow(try M13001AcceptanceResult.validateRenderedArtifact(artifact))
+    XCTAssertFalse(artifact.contains("XPC_PROTOCOL_1_7_COMPATIBLE"))
+    XCTAssertTrue(artifact.contains("XPC_PROTOCOL_1_8_COMPATIBLE=yes"))
+  }
+
+  func testM13001ResultRejectsDuplicateKeys() throws {
+    let entries = M13001AcceptanceResult.validPassingEntries()
+      + [("COMPLETED_RUN_SKIPS_ONBOARDING", "yes")]
+
+    XCTAssertThrowsError(try M13001AcceptanceResult.validate(entries: entries)) { error in
+      XCTAssertEqual(
+        error as? M13001AcceptanceResult.ValidationError,
+        .duplicateKey("COMPLETED_RUN_SKIPS_ONBOARDING")
+      )
+    }
+  }
+
+  func testM13001ResultRejectsMissingKeys() throws {
+    let entries = M13001AcceptanceResult.validPassingEntries().filter {
+      $0.key != "AGENT_DISCOVERY_CHECKED"
+    }
+
+    XCTAssertThrowsError(try M13001AcceptanceResult.validate(entries: entries)) { error in
+      XCTAssertEqual(
+        error as? M13001AcceptanceResult.ValidationError,
+        .missingKeys(["AGENT_DISCOVERY_CHECKED"])
+      )
+    }
+  }
+
+  func testM13001ResultRejectsUnexpectedKeys() throws {
+    let entries = Array(
+      M13001AcceptanceResult.validPassingEntries().dropLast()
+        + [("UNEXPECTED_KEY", "yes"), ("M13_001_RESULT", "PASS")]
+    )
+
+    XCTAssertThrowsError(try M13001AcceptanceResult.validate(entries: entries)) { error in
+      XCTAssertEqual(
+        error as? M13001AcceptanceResult.ValidationError,
+        .unexpectedKeys(["UNEXPECTED_KEY"])
+      )
+    }
+  }
+
+  func testM13001ResultUsesDeterministicKeyOrdering() throws {
+    let keys = try M13001AcceptanceResult.passingFixture().render().split(separator: "\n").map {
+      String($0.split(separator: "=", maxSplits: 1)[0])
+    }
+
+    XCTAssertEqual(keys, M13001AcceptanceResult.expectedKeys)
+    XCTAssertEqual(keys.last, "M13_001_RESULT")
+  }
+
+  func testM13001ResultAcceptsValidResult() throws {
+    XCTAssertNoThrow(
+      try M13001AcceptanceResult.validate(entries: M13001AcceptanceResult.validPassingEntries())
+    )
   }
 
   func testGeneratedM13001EvidenceIsIgnoredAndUntracked() throws {
@@ -536,12 +623,15 @@ private final class NoopRuntimeClient: HermesAppRuntimeClienting, @unchecked Sen
 }
 
 private actor RecordingXPCReadinessClient: HermesOnboardingXPCReadinessClient {
+  private let capabilitiesPayload: HermesBridgeCapabilitiesPayload
   private let discovery: HermesBridgeAgentDiscoveryPayload
   private let discoveryError: Error?
   private let runtimeResult: HermesRuntimeCommandResult
+  private var discoverAgentCount = 0
   private var executeCount = 0
 
   init(
+    capabilities: HermesBridgeCapabilitiesPayload = HermesBridgeCapabilitiesPayload(),
     discovery: HermesBridgeAgentDiscoveryPayload = HermesBridgeAgentDiscoveryPayload(
       status: .available,
       semanticVersion: "0.18.2",
@@ -550,13 +640,14 @@ private actor RecordingXPCReadinessClient: HermesOnboardingXPCReadinessClient {
     discoveryError: Error? = nil,
     runtimeResult: HermesRuntimeCommandResult = .sessionList([])
   ) {
+    self.capabilitiesPayload = capabilities
     self.discovery = discovery
     self.discoveryError = discoveryError
     self.runtimeResult = runtimeResult
   }
 
   func connect() async throws -> HermesBridgeCapabilitiesPayload {
-    HermesBridgeCapabilitiesPayload()
+    capabilitiesPayload
   }
 
   func protocolVersion() async throws -> HermesBridgeProtocolVersionPayload {
@@ -564,10 +655,11 @@ private actor RecordingXPCReadinessClient: HermesOnboardingXPCReadinessClient {
   }
 
   func capabilities() async throws -> HermesBridgeCapabilitiesPayload {
-    HermesBridgeCapabilitiesPayload()
+    capabilitiesPayload
   }
 
   func discoverAgent() async throws -> HermesBridgeAgentDiscoveryPayload {
+    discoverAgentCount += 1
     if let discoveryError {
       throw discoveryError
     }
@@ -581,6 +673,10 @@ private actor RecordingXPCReadinessClient: HermesOnboardingXPCReadinessClient {
 
   func executeCountValue() -> Int {
     executeCount
+  }
+
+  func discoverAgentCountValue() -> Int {
+    discoverAgentCount
   }
 }
 
@@ -600,7 +696,7 @@ private struct M13001AcceptanceResult {
   var manualReopenAvailable: Bool
   var stateMachineValid: Bool
   var serviceCheckUsedXPC: Bool
-  var xpcProtocol17Compatible: Bool
+  var xpcProtocol18Compatible: Bool
   var agentDiscoveryChecked: Bool
   var agentDiscoveryUsedExistingComponent: Bool
   var agentDiscoveryIndependentOfSessions: Bool
@@ -625,7 +721,7 @@ private struct M13001AcceptanceResult {
   var isPassing: Bool {
     onboardingRouteAvailable && firstRunOpensOnboarding && completedRunSkipsOnboarding
       && manualReopenAvailable && stateMachineValid && serviceCheckUsedXPC
-      && xpcProtocol17Compatible && agentDiscoveryChecked && !agentPathExposed
+      && xpcProtocol18Compatible && agentDiscoveryChecked && !agentPathExposed
       && agentDiscoveryUsedExistingComponent && agentDiscoveryIndependentOfSessions
       && zeroSessionAgentReportedAvailable && historicalSessionDidNotFakeAvailability
       && permissionsChecked && permissionStatusTruthful && connectionTestPassed
@@ -643,37 +739,158 @@ private struct M13001AcceptanceResult {
     try render().write(to: Self.resultURL, atomically: true, encoding: .utf8)
   }
 
-  func render() -> String {
+  func render() throws -> String {
+    let entries = entries()
+    try Self.validate(entries: entries)
+    return entries.map { "\($0.key)=\($0.value)" }.joined(separator: "\n") + "\n"
+  }
+
+  func entries() -> [(key: String, value: String)] {
     [
-      "ONBOARDING_ROUTE_AVAILABLE=\(yesNo(onboardingRouteAvailable))",
-      "FIRST_RUN_OPENS_ONBOARDING=\(yesNo(firstRunOpensOnboarding))",
-      "COMPLETED_RUN_SKIPS_ONBOARDING=\(yesNo(completedRunSkipsOnboarding))",
-      "MANUAL_REOPEN_AVAILABLE=\(yesNo(manualReopenAvailable))",
-      "STATE_MACHINE_VALID=\(yesNo(stateMachineValid))",
-      "SERVICE_CHECK_USED_XPC=\(yesNo(serviceCheckUsedXPC))",
-      "XPC_PROTOCOL_1_7_COMPATIBLE=\(yesNo(xpcProtocol17Compatible))",
-      "AGENT_DISCOVERY_CHECKED=\(yesNo(agentDiscoveryChecked))",
-      "AGENT_DISCOVERY_USED_EXISTING_COMPONENT=\(yesNo(agentDiscoveryUsedExistingComponent))",
-      "AGENT_DISCOVERY_INDEPENDENT_OF_SESSIONS=\(yesNo(agentDiscoveryIndependentOfSessions))",
-      "ZERO_SESSION_AGENT_REPORTED_AVAILABLE=\(yesNo(zeroSessionAgentReportedAvailable))",
-      "HISTORICAL_SESSION_DID_NOT_FAKE_AVAILABILITY=\(yesNo(historicalSessionDidNotFakeAvailability))",
-      "AGENT_PATH_EXPOSED=\(noYes(agentPathExposed))",
-      "PERMISSIONS_CHECKED=\(yesNo(permissionsChecked))",
-      "PERMISSION_STATUS_TRUTHFUL=\(yesNo(permissionStatusTruthful))",
-      "CONNECTION_TEST_PASSED=\(yesNo(connectionTestPassed))",
-      "COMPLETION_PERSISTED=\(yesNo(completionPersisted))",
-      "FAILED_FLOW_PERSISTED_COMPLETE=\(noYes(failedFlowPersistedComplete))",
-      "ONE_LOGICAL_WINDOW=\(yesNo(oneLogicalWindow))",
-      "APP_OWNS_CONCRETE_RUNTIME=\(noYes(appOwnsConcreteRuntime))",
-      "ARBITRARY_SHELL_AVAILABLE=\(noYes(arbitraryShellAvailable))",
-      "ARBITRARY_URL_AVAILABLE=\(noYes(arbitraryURLAvailable))",
-      "TOKEN_EXPOSED=\(noYes(tokenExposed))",
-      "PRIVATE_PATH_EXPOSED=\(noYes(privatePathExposed))",
-      "PID_EXPOSED=\(noYes(pidExposed))",
-      "RESIDUAL_PROCESS=\(noYes(residualProcess))",
-      "GENERATED_ARTIFACT_TRACKED_BY_GIT=\(noYes(generatedArtifactTrackedByGit))",
-      "M13_001_RESULT=\(isPassing ? "PASS" : "FAIL")",
-    ].joined(separator: "\n") + "\n"
+      ("ONBOARDING_ROUTE_AVAILABLE", yesNo(onboardingRouteAvailable)),
+      ("FIRST_RUN_OPENS_ONBOARDING", yesNo(firstRunOpensOnboarding)),
+      ("COMPLETED_RUN_SKIPS_ONBOARDING", yesNo(completedRunSkipsOnboarding)),
+      ("MANUAL_REOPEN_AVAILABLE", yesNo(manualReopenAvailable)),
+      ("STATE_MACHINE_VALID", yesNo(stateMachineValid)),
+      ("SERVICE_CHECK_USED_XPC", yesNo(serviceCheckUsedXPC)),
+      ("XPC_PROTOCOL_1_8_COMPATIBLE", yesNo(xpcProtocol18Compatible)),
+      ("AGENT_DISCOVERY_CHECKED", yesNo(agentDiscoveryChecked)),
+      ("AGENT_DISCOVERY_USED_EXISTING_COMPONENT", yesNo(agentDiscoveryUsedExistingComponent)),
+      ("AGENT_DISCOVERY_INDEPENDENT_OF_SESSIONS", yesNo(agentDiscoveryIndependentOfSessions)),
+      ("ZERO_SESSION_AGENT_REPORTED_AVAILABLE", yesNo(zeroSessionAgentReportedAvailable)),
+      ("HISTORICAL_SESSION_DID_NOT_FAKE_AVAILABILITY", yesNo(historicalSessionDidNotFakeAvailability)),
+      ("AGENT_PATH_EXPOSED", noYes(agentPathExposed)),
+      ("PERMISSIONS_CHECKED", yesNo(permissionsChecked)),
+      ("PERMISSION_STATUS_TRUTHFUL", yesNo(permissionStatusTruthful)),
+      ("CONNECTION_TEST_PASSED", yesNo(connectionTestPassed)),
+      ("COMPLETION_PERSISTED", yesNo(completionPersisted)),
+      ("FAILED_FLOW_PERSISTED_COMPLETE", noYes(failedFlowPersistedComplete)),
+      ("ONE_LOGICAL_WINDOW", yesNo(oneLogicalWindow)),
+      ("APP_OWNS_CONCRETE_RUNTIME", noYes(appOwnsConcreteRuntime)),
+      ("ARBITRARY_SHELL_AVAILABLE", noYes(arbitraryShellAvailable)),
+      ("ARBITRARY_URL_AVAILABLE", noYes(arbitraryURLAvailable)),
+      ("TOKEN_EXPOSED", noYes(tokenExposed)),
+      ("PRIVATE_PATH_EXPOSED", noYes(privatePathExposed)),
+      ("PID_EXPOSED", noYes(pidExposed)),
+      ("RESIDUAL_PROCESS", noYes(residualProcess)),
+      ("GENERATED_ARTIFACT_TRACKED_BY_GIT", noYes(generatedArtifactTrackedByGit)),
+      ("M13_001_RESULT", isPassing ? "PASS" : "FAIL"),
+    ]
+  }
+
+  static let expectedKeys = [
+    "ONBOARDING_ROUTE_AVAILABLE",
+    "FIRST_RUN_OPENS_ONBOARDING",
+    "COMPLETED_RUN_SKIPS_ONBOARDING",
+    "MANUAL_REOPEN_AVAILABLE",
+    "STATE_MACHINE_VALID",
+    "SERVICE_CHECK_USED_XPC",
+    "XPC_PROTOCOL_1_8_COMPATIBLE",
+    "AGENT_DISCOVERY_CHECKED",
+    "AGENT_DISCOVERY_USED_EXISTING_COMPONENT",
+    "AGENT_DISCOVERY_INDEPENDENT_OF_SESSIONS",
+    "ZERO_SESSION_AGENT_REPORTED_AVAILABLE",
+    "HISTORICAL_SESSION_DID_NOT_FAKE_AVAILABILITY",
+    "AGENT_PATH_EXPOSED",
+    "PERMISSIONS_CHECKED",
+    "PERMISSION_STATUS_TRUTHFUL",
+    "CONNECTION_TEST_PASSED",
+    "COMPLETION_PERSISTED",
+    "FAILED_FLOW_PERSISTED_COMPLETE",
+    "ONE_LOGICAL_WINDOW",
+    "APP_OWNS_CONCRETE_RUNTIME",
+    "ARBITRARY_SHELL_AVAILABLE",
+    "ARBITRARY_URL_AVAILABLE",
+    "TOKEN_EXPOSED",
+    "PRIVATE_PATH_EXPOSED",
+    "PID_EXPOSED",
+    "RESIDUAL_PROCESS",
+    "GENERATED_ARTIFACT_TRACKED_BY_GIT",
+    "M13_001_RESULT",
+  ]
+
+  enum ValidationError: Error, Equatable {
+    case duplicateKey(String)
+    case missingKeys([String])
+    case unexpectedKeys([String])
+    case resultKeyCount(Int)
+    case resultKeyNotLast
+    case nonDeterministicOrder
+  }
+
+  static func validateRenderedArtifact(_ artifact: String) throws {
+    let entries = artifact.split(separator: "\n").map { line -> (key: String, value: String) in
+      let parts = line.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+      return (key: String(parts[0]), value: parts.count > 1 ? String(parts[1]) : "")
+    }
+    try validate(entries: entries)
+  }
+
+  static func validate(entries: [(key: String, value: String)]) throws {
+    var seen: Set<String> = []
+    for entry in entries {
+      guard seen.insert(entry.key).inserted else {
+        throw ValidationError.duplicateKey(entry.key)
+      }
+    }
+
+    let keys = entries.map(\.key)
+    let expected = Set(expectedKeys)
+    let actual = Set(keys)
+    let missing = expectedKeys.filter { !actual.contains($0) }
+    guard missing.isEmpty else {
+      throw ValidationError.missingKeys(missing)
+    }
+    let unexpected = keys.filter { !expected.contains($0) }
+    guard unexpected.isEmpty else {
+      throw ValidationError.unexpectedKeys(unexpected)
+    }
+    let resultCount = keys.filter { $0 == "M13_001_RESULT" }.count
+    guard resultCount == 1 else {
+      throw ValidationError.resultKeyCount(resultCount)
+    }
+    guard keys.last == "M13_001_RESULT" else {
+      throw ValidationError.resultKeyNotLast
+    }
+    guard keys == expectedKeys else {
+      throw ValidationError.nonDeterministicOrder
+    }
+  }
+
+  static func passingFixture() -> M13001AcceptanceResult {
+    M13001AcceptanceResult(
+      onboardingRouteAvailable: true,
+      firstRunOpensOnboarding: true,
+      completedRunSkipsOnboarding: true,
+      manualReopenAvailable: true,
+      stateMachineValid: true,
+      serviceCheckUsedXPC: true,
+      xpcProtocol18Compatible: true,
+      agentDiscoveryChecked: true,
+      agentDiscoveryUsedExistingComponent: true,
+      agentDiscoveryIndependentOfSessions: true,
+      zeroSessionAgentReportedAvailable: true,
+      historicalSessionDidNotFakeAvailability: true,
+      agentPathExposed: false,
+      permissionsChecked: true,
+      permissionStatusTruthful: true,
+      connectionTestPassed: true,
+      completionPersisted: true,
+      failedFlowPersistedComplete: false,
+      oneLogicalWindow: true,
+      appOwnsConcreteRuntime: false,
+      arbitraryShellAvailable: false,
+      arbitraryURLAvailable: false,
+      tokenExposed: false,
+      privatePathExposed: false,
+      pidExposed: false,
+      residualProcess: false,
+      generatedArtifactTrackedByGit: false
+    )
+  }
+
+  static func validPassingEntries() -> [(key: String, value: String)] {
+    passingFixture().entries()
   }
 
   private func yesNo(_ value: Bool) -> String { value ? "yes" : "no" }

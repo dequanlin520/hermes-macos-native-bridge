@@ -13,7 +13,7 @@ final class HermesBridgeEventPolicyXPCTests: XCTestCase {
       timeout: 1
     )
     let capabilities = try await client.capabilities()
-    XCTAssertEqual(capabilities.protocolVersion, HermesBridgeProtocolVersion(major: 1, minor: 7))
+    XCTAssertEqual(capabilities.protocolVersion, .current)
     XCTAssertTrue(capabilities.capabilities.contains(.systemEventPolicyManagement))
     XCTAssertTrue(capabilities.capabilities.contains(.eventPolicyApprovalManagement))
 

@@ -4,7 +4,7 @@ import HermesRuntimeFoundation
 public struct HermesBridgeProtocolVersion: Codable, Equatable, Sendable,
   CustomStringConvertible
 {
-  public static let current = HermesBridgeProtocolVersion(major: 1, minor: 7)
+  public static let current = HermesBridgeProtocolVersion(major: 1, minor: 8)
   public static let supportedMajor = 1
 
   public let major: Int

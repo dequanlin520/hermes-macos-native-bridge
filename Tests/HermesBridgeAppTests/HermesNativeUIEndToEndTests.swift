@@ -16,7 +16,9 @@ final class HermesNativeUIEndToEndTests: XCTestCase {
     var result = M11002Result()
     do {
       let evidence = try await harness.runEndToEnd()
-      result.xpcProtocol17 = evidence.protocolVersion == HermesBridgeProtocolVersion(major: 1, minor: 7)
+      result.xpcProtocol17 = evidence.protocolVersion.isCompatible(
+        with: HermesBridgeProtocolVersion(major: 1, minor: 7)
+      )
       result.appOwnsConcreteRuntime = try Self.appOwnsConcreteRuntime()
       result.serviceOwnsRuntime = evidence.serviceOwnsRuntime
       result.dashboardRoute = evidence.window.dashboard

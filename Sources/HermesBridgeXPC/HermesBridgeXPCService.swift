@@ -379,7 +379,10 @@ public actor HermesBridgeXPCRequestDispatcher {
     guard preflight.protocolVersion.isSupported else {
       return encodeFailure(.unsupportedProtocolVersion, correlationID: preflight.correlationID)
     }
-    guard HermesBridgeOperation(rawValue: preflight.operation) != nil else {
+    guard let operation = HermesBridgeOperation(rawValue: preflight.operation) else {
+      return encodeFailure(.unsupportedOperation, correlationID: preflight.correlationID)
+    }
+    guard operation.isAvailable(in: preflight.protocolVersion) else {
       return encodeFailure(.unsupportedOperation, correlationID: preflight.correlationID)
     }
 
@@ -415,6 +418,9 @@ public actor HermesBridgeXPCRequestDispatcher {
   private func validateEnvelope(_ envelope: HermesBridgeRequestEnvelope) throws {
     guard envelope.protocolVersion.isSupported else {
       throw HermesBridgeXPCError.unsupportedProtocolVersion
+    }
+    guard envelope.operation.isAvailable(in: envelope.protocolVersion) else {
+      throw HermesBridgeXPCError.unsupportedOperation
     }
     switch envelope.operation {
     case .submit:
@@ -683,7 +689,12 @@ public actor HermesBridgeXPCRequestDispatcher {
     case .protocolVersion:
       return .protocolVersion(HermesBridgeProtocolVersionPayload(version: .current))
     case .capabilities:
-      return .capabilities(HermesBridgeCapabilitiesPayload())
+      return .capabilities(
+        HermesBridgeCapabilitiesPayload(
+          capabilities: HermesBridgeCapability.allCases.filter {
+            $0.isAvailable(in: envelope.protocolVersion)
+          }
+        ))
     case .listEnabledBindings:
       return .listEnabledBindings(
         try HermesBridgeBindingListPayload(bindings: try await handler.listEnabledBindings()))
@@ -1643,6 +1654,34 @@ public final class HermesBridgeXPCService: NSObject, HermesBridgeXPCProtocol, @u
 
   public func invalidate() {
     taskRegistry.cancelAll()
+  }
+}
+
+private extension HermesBridgeOperation {
+  func isAvailable(in version: HermesBridgeProtocolVersion) -> Bool {
+    guard version.major == HermesBridgeProtocolVersion.supportedMajor else {
+      return false
+    }
+    switch self {
+    case .discoverAgent:
+      return version.minor >= 8
+    default:
+      return true
+    }
+  }
+}
+
+private extension HermesBridgeCapability {
+  func isAvailable(in version: HermesBridgeProtocolVersion) -> Bool {
+    guard version.major == HermesBridgeProtocolVersion.supportedMajor else {
+      return false
+    }
+    switch self {
+    case .agentDiscovery:
+      return version.minor >= 8
+    default:
+      return true
+    }
   }
 }
 

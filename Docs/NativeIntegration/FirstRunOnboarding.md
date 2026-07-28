@@ -37,20 +37,26 @@ Service readiness uses:
 
 - `protocolVersion`
 - `capabilities`
-- protocol compatibility with HermesBridgeXPC 1.7
+- protocol compatibility with HermesBridgeXPC 1.8 and backward compatibility with 1.7
 - safe health classification
 
 The connection test uses `connect` plus non-destructive `listSessions`. It does not create or start a Runtime session.
 
 ## Agent discovery
 
+HermesBridgeXPC protocol 1.8 introduces the `agentDiscovery` capability, the `discoverAgent` operation, and the sanitized `HermesBridgeAgentDiscoveryPayload` DTO. Protocol 1.7 services predate this operation.
+
 Agent readiness is independent from Runtime sessions. Session summaries, active session counts, and persisted Runtime session records are not evidence of Hermes Agent installation or compatibility.
 
-Production discovery flows through the client-safe onboarding adapter to `HermesBridgeRuntimeClientAdapter`, `HermesBridgeXPCClient`, the HermesBridgeXPC 1.7 `discoverAgent` operation, `HermesBridgeService`, and the service-owned `HermesDiscovery` component. The app does not instantiate the concrete discovery implementation and does not inspect the filesystem directly.
+Production discovery flows through the client-safe onboarding adapter to `HermesBridgeRuntimeClientAdapter`, `HermesBridgeXPCClient`, the HermesBridgeXPC 1.8 `discoverAgent` operation, `HermesBridgeService`, and the service-owned `HermesDiscovery` component. The app does not instantiate the concrete discovery implementation and does not inspect the filesystem directly.
+
+A 1.8 client must check the advertised `agentDiscovery` capability before sending `discoverAgent`. If the connected service is protocol 1.7 or omits `agentDiscovery`, onboarding maps agent readiness to the typed safe `unknown` state and does not call `discoverAgent`. It must not infer agent availability from `listSessions` or any historical Runtime session data.
 
 The UI receives only a sanitized discovery DTO. Public states are available, unavailable, incompatible, and unknown. Safe compatibility metadata may include a sanitized semantic version and compatibility state. The DTO does not expose executable paths, filesystem paths, PIDs, command lines, tokens, environment variables, raw discovery errors, or stack traces.
 
 Generated M13-001 acceptance evidence is written at execution time under `artifacts/m13-001/result.txt`. `artifacts/` is ignored by Git, and generated acceptance evidence is not committed.
+
+The machine-readable M13-001 result has a fixed key set and order. Every expected key must appear exactly once, no unexpected key may appear, and `M13_001_RESULT` must appear exactly once as the final key. The result may be `PASS` only when all expected safety values pass and the uniqueness checks succeed.
 
 ## Permission behavior
 

@@ -782,6 +782,10 @@ public actor HermesBridgeXPCClient {
 
   public func discoverAgent() async throws -> HermesBridgeAgentDiscoveryPayload {
     try ensureOpen()
+    let capabilities = try await capabilities()
+    guard capabilities.capabilities.contains(.agentDiscovery) else {
+      return HermesBridgeAgentDiscoveryPayload(status: .unknown)
+    }
     let response = try await send(
       HermesBridgeRequestEnvelope(
         correlationID: Self.correlationID(),

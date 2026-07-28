@@ -64,6 +64,10 @@ public struct HermesOnboardingProductionReadinessProvider: HermesOnboardingReadi
 
   public func checkAgent() async -> HermesOnboardingAgentReadiness {
     do {
+      let capabilities = try await client.capabilities()
+      guard capabilities.capabilities.contains(.agentDiscovery) else {
+        return HermesOnboardingAgentReadiness(status: .unknown, safeMessage: "Agent status is unknown.")
+      }
       let discovery = try await client.discoverAgent()
       switch discovery.status {
       case .available:
