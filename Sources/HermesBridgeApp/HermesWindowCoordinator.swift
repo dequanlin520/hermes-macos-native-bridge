@@ -15,6 +15,7 @@ public enum HermesNativeUIWindowIdentifier: String, CaseIterable, Equatable, Has
   case privacy = "com.hermes.bridge.window.privacy"
   case policy = "com.hermes.bridge.window.policy"
   case administration = "com.hermes.bridge.window.administration"
+  case compliance = "com.hermes.bridge.window.compliance"
   case recovery = "com.hermes.bridge.window.recovery"
 }
 

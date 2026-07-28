@@ -12,6 +12,7 @@ public final class HermesSettingsViewModel: ObservableObject {
   private let openPrivacyCenterAction: @MainActor () -> Void
   private let openPolicyCenterAction: @MainActor () -> Void
   private let openAdministrationCenterAction: @MainActor () -> Void
+  private let openComplianceCenterAction: @MainActor () -> Void
 
   public init(
     controller: HermesSettingsController,
@@ -19,7 +20,8 @@ public final class HermesSettingsViewModel: ObservableObject {
     openUpdateCenter: @escaping @MainActor () -> Void = {},
     openPrivacyCenter: @escaping @MainActor () -> Void = {},
     openPolicyCenter: @escaping @MainActor () -> Void = {},
-    openAdministrationCenter: @escaping @MainActor () -> Void = {}
+    openAdministrationCenter: @escaping @MainActor () -> Void = {},
+    openComplianceCenter: @escaping @MainActor () -> Void = {}
   ) {
     self.controller = controller
     self.reopenOnboardingAction = reopenOnboarding
@@ -27,6 +29,7 @@ public final class HermesSettingsViewModel: ObservableObject {
     self.openPrivacyCenterAction = openPrivacyCenter
     self.openPolicyCenterAction = openPolicyCenter
     self.openAdministrationCenterAction = openAdministrationCenter
+    self.openComplianceCenterAction = openComplianceCenter
     self.state = HermesSettingsState()
     self.draftSettings = .defaults
   }
@@ -37,7 +40,8 @@ public final class HermesSettingsViewModel: ObservableObject {
     openUpdateCenter: @escaping @MainActor () -> Void = {},
     openPrivacyCenter: @escaping @MainActor () -> Void = {},
     openPolicyCenter: @escaping @MainActor () -> Void = {},
-    openAdministrationCenter: @escaping @MainActor () -> Void = {}
+    openAdministrationCenter: @escaping @MainActor () -> Void = {},
+    openComplianceCenter: @escaping @MainActor () -> Void = {}
   ) {
     self.init(
       controller: HermesSettingsController(store: store),
@@ -45,7 +49,8 @@ public final class HermesSettingsViewModel: ObservableObject {
       openUpdateCenter: openUpdateCenter,
       openPrivacyCenter: openPrivacyCenter,
       openPolicyCenter: openPolicyCenter,
-      openAdministrationCenter: openAdministrationCenter
+      openAdministrationCenter: openAdministrationCenter,
+      openComplianceCenter: openComplianceCenter
     )
   }
 
@@ -91,5 +96,9 @@ public final class HermesSettingsViewModel: ObservableObject {
 
   public func openAdministrationCenter() {
     openAdministrationCenterAction()
+  }
+
+  public func openComplianceCenter() {
+    openComplianceCenterAction()
   }
 }

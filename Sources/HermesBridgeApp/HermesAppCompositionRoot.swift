@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 import HermesAdministration
 import HermesBridgeXPC
+import HermesCompliance
 import HermesDashboard
 import HermesDiagnostics
 import HermesFeedback
@@ -46,6 +47,7 @@ public final class HermesAppClientGraph: @unchecked Sendable {
   public let policyCenter: HermesPolicyCenter
   public let privacyCenter: HermesPrivacyCenter
   public let adminCenter: HermesAdminCenter
+  public let complianceCenter: HermesComplianceCenter
   public let navigationActions = HermesAppNavigationActions()
 
   private let shutdownHandler: @Sendable () async -> Void
@@ -64,6 +66,7 @@ public final class HermesAppClientGraph: @unchecked Sendable {
     policyCenter: HermesPolicyCenter = HermesPolicyCenter(),
     privacyCenter: HermesPrivacyCenter = HermesPrivacyCenter(),
     adminCenter: HermesAdminCenter? = nil,
+    complianceCenter: HermesComplianceCenter? = nil,
     shutdownHandler: (@Sendable () async -> Void)? = nil
   ) {
     self.runtimeClient = runtimeClient
@@ -117,6 +120,11 @@ public final class HermesAppClientGraph: @unchecked Sendable {
       privacyCenter: privacyCenter,
       updateCoordinator: self.updateCoordinator
     )
+    self.complianceCenter = complianceCenter ?? Self.makeComplianceCenter(
+      policyCenter: policyCenter,
+      privacyCenter: privacyCenter,
+      updateCoordinator: self.updateCoordinator
+    )
     self.shutdownHandler = shutdownHandler ?? {
       await runtimeClient.invalidate()
     }
@@ -147,6 +155,43 @@ public final class HermesAppClientGraph: @unchecked Sendable {
             ? HermesAdminAvailability.unknown
             : .available
           return HermesAdminSystemStatus(
+            applicationVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0",
+            protocolVersion: snapshot.current.xpcProtocolVersion,
+            serviceAvailability: serviceAvailable
+          )
+        },
+        policies: {
+          try policyCenter.listPolicies()
+        },
+        privacyRecords: {
+          try privacyCenter.listConsentRecords()
+        },
+        updateSnapshot: {
+          await updateCoordinator.currentSnapshot
+        },
+        policyAuditEvents: {
+          try policyCenter.loadAuditEvents()
+        },
+        privacyAuditEvents: {
+          try privacyCenter.loadAuditEvents()
+        }
+      )
+    )
+  }
+
+  private static func makeComplianceCenter(
+    policyCenter: HermesPolicyCenter,
+    privacyCenter: HermesPrivacyCenter,
+    updateCoordinator: HermesUpdateCoordinator
+  ) -> HermesComplianceCenter {
+    HermesComplianceCenter(
+      inputs: HermesComplianceCenterInputs(
+        systemStatus: {
+          let snapshot = await updateCoordinator.currentSnapshot
+          let serviceAvailable = snapshot.current.serviceVersion == "unknown"
+            ? HermesComplianceServiceAvailability.unknown
+            : .available
+          return HermesComplianceSystemStatus(
             applicationVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0",
             protocolVersion: snapshot.current.xpcProtocolVersion,
             serviceAvailability: serviceAvailable
@@ -224,6 +269,9 @@ public final class HermesAppCompositionRoot: ObservableObject {
     }
     clientGraph.navigationActions.openAdministrationCenter = { [weak windowCoordinator] in
       windowCoordinator?.open(.administration)
+    }
+    clientGraph.navigationActions.openComplianceCenter = { [weak windowCoordinator] in
+      windowCoordinator?.open(.compliance)
     }
     clientGraph.navigationActions.openRecovery = { [weak clientGraph, weak windowCoordinator] issue in
       Task { @MainActor in
@@ -314,6 +362,9 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
           },
           openAdministrationCenter: {
             clientGraph.navigationActions.openAdministrationCenter()
+          },
+          openComplianceCenter: {
+            clientGraph.navigationActions.openComplianceCenter()
           }
         )
       )
@@ -424,6 +475,21 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
           },
           openPolicyCenter: {
             clientGraph.navigationActions.openPolicyCenter()
+          },
+          openComplianceCenter: {
+            clientGraph.navigationActions.openComplianceCenter()
+          }
+        )
+      )
+    case .compliance:
+      controller = HermesComplianceWindowController(
+        viewModel: HermesComplianceViewModel(
+          center: clientGraph.complianceCenter,
+          openSettings: {
+            clientGraph.navigationActions.openSettings()
+          },
+          openAdministrationCenter: {
+            clientGraph.navigationActions.openAdministrationCenter()
           }
         )
       )
@@ -470,6 +536,7 @@ public final class HermesAppNavigationActions {
   public var openPolicyCenter: () -> Void = {}
   public var openSettings: () -> Void = {}
   public var openAdministrationCenter: () -> Void = {}
+  public var openComplianceCenter: () -> Void = {}
   public var openRecovery: (HermesRecoveryIssueCategory) -> Void = { _ in }
 
   public init() {}
