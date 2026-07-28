@@ -128,6 +128,7 @@ final class HermesNativeUICompositionTests: XCTestCase {
     root.router.openLogs()
     root.router.openSettings()
     root.router.openDiagnostics()
+    root.router.openComplianceCenter()
 
     XCTAssertEqual(Set(factory.clientGraphIDs).count, 1)
     XCTAssertEqual(factory.clientGraphIDs.first, ObjectIdentifier(root.clientGraph))
@@ -192,6 +193,16 @@ final class HermesNativeUICompositionTests: XCTestCase {
       XCTAssertFalse(identifier.localizedCaseInsensitiveContains("credential"))
       XCTAssertFalse(identifier.localizedCaseInsensitiveContains("pid"))
     }
+  }
+
+  func testComplianceRouting() {
+    let factory = RecordingWindowFactory()
+    let root = makeRoot(factory: factory)
+
+    root.router.openComplianceCenter()
+
+    XCTAssertEqual(factory.createdIdentifiers, [.compliance])
+    XCTAssertEqual(factory.window(for: .compliance)?.showCount, 1)
   }
 
   private func makeRoot(

@@ -1,13 +1,13 @@
 import AppKit
 import SwiftUI
 
-public final class HermesAdministrationWindowController: NSWindowController {
+public final class HermesComplianceWindowController: NSWindowController {
   @MainActor
-  public init(viewModel: HermesAdminViewModel) {
-    let rootView = HermesAdministrationWindow(viewModel: viewModel)
+  public init(viewModel: HermesComplianceViewModel) {
+    let rootView = HermesComplianceWindow(viewModel: viewModel)
     let hostingController = NSHostingController(rootView: rootView)
     let window = NSWindow(contentViewController: hostingController)
-    window.title = "Hermes Enterprise Administration Center"
+    window.title = "Hermes Enterprise Compliance Center"
     window.setContentSize(NSSize(width: 860, height: 680))
     window.minSize = NSSize(width: 720, height: 560)
     window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
@@ -20,10 +20,10 @@ public final class HermesAdministrationWindowController: NSWindowController {
   }
 }
 
-public struct HermesAdministrationWindow: View {
-  @ObservedObject private var viewModel: HermesAdminViewModel
+public struct HermesComplianceWindow: View {
+  @ObservedObject private var viewModel: HermesComplianceViewModel
 
-  public init(viewModel: HermesAdminViewModel) {
+  public init(viewModel: HermesComplianceViewModel) {
     self.viewModel = viewModel
   }
 
@@ -38,8 +38,7 @@ public struct HermesAdministrationWindow: View {
               .foregroundStyle(.red)
               .lineLimit(3)
           }
-          statusGrid
-          preferencesSection
+          postureGrid
           boundarySection
           auditSection
         }
@@ -56,13 +55,13 @@ public struct HermesAdministrationWindow: View {
 
   private var header: some View {
     HStack(spacing: 12) {
-      Image(systemName: "building.columns")
+      Image(systemName: "checkmark.seal")
         .font(.title2)
         .foregroundStyle(statusColor)
       VStack(alignment: .leading, spacing: 2) {
-        Text("Hermes Enterprise Administration Center")
+        Text("Hermes Enterprise Compliance Center")
           .font(.title2)
-        Text(viewModel.snapshot.complianceState.rawValue)
+        Text(viewModel.snapshot.overallState.rawValue)
           .font(.subheadline)
           .foregroundStyle(.secondary)
       }
@@ -76,51 +75,65 @@ public struct HermesAdministrationWindow: View {
     .padding(.vertical, 14)
   }
 
-  private var statusGrid: some View {
+  private var postureGrid: some View {
     Grid(alignment: .leading, horizontalSpacing: 18, verticalSpacing: 10) {
       sectionRow(
-        title: "System",
-        image: "desktopcomputer",
+        title: "Security",
+        image: "lock.shield",
+        state: viewModel.snapshot.security.state,
         rows: [
-          ("Application", viewModel.snapshot.system.applicationVersion),
-          ("Protocol", viewModel.snapshot.system.protocolVersion),
-          ("Service", viewModel.snapshot.system.serviceAvailability.rawValue),
-        ]
-      )
-      sectionRow(
-        title: "Policy",
-        image: "checkmark.shield",
-        rows: [
-          ("Active", "\(viewModel.snapshot.policy.activePolicies)"),
-          ("Denied", "\(viewModel.snapshot.policy.deniedPolicies)"),
-          ("Version", viewModel.snapshot.policy.policyVersion),
+          ("Service", viewModel.snapshot.security.serviceAvailability.rawValue),
+          ("Protocol", viewModel.snapshot.security.protocolVersion),
+          ("Runtime", viewModel.snapshot.security.runtimeOwnership),
         ]
       )
       sectionRow(
         title: "Privacy",
         image: "hand.raised",
+        state: viewModel.snapshot.privacy.state,
         rows: [
-          ("Consent", viewModel.snapshot.privacy.consentSummary),
-          ("State", viewModel.snapshot.privacy.privacyState.rawValue),
+          ("Consent", viewModel.snapshot.privacy.summary),
+          ("Upload", viewModel.snapshot.privacy.uploadAllowed ? "available" : "none"),
+          ("Sensitive", viewModel.snapshot.privacy.sensitiveDataExposed ? "exposed" : "redacted"),
         ]
       )
       sectionRow(
-        title: "Update",
-        image: "arrow.up.circle",
+        title: "Policy",
+        image: "building.2.crop.circle",
+        state: viewModel.snapshot.policy.state,
         rows: [
-          ("Current", viewModel.snapshot.update.currentVersion),
-          ("Availability", viewModel.snapshot.update.updateAvailability.rawValue),
-          ("Available", viewModel.snapshot.update.availableVersion ?? "none"),
+          ("Active", "\(viewModel.snapshot.policy.activePolicies)"),
+          ("Restrictive", "\(viewModel.snapshot.policy.deniedPolicies)"),
+          ("Version", viewModel.snapshot.policy.policyVersion),
+        ]
+      )
+      sectionRow(
+        title: "Release",
+        image: "arrow.up.circle",
+        state: viewModel.snapshot.release.state,
+        rows: [
+          ("Current", viewModel.snapshot.release.currentVersion),
+          ("Availability", viewModel.snapshot.release.availability.rawValue),
+          ("Available", viewModel.snapshot.release.availableVersion ?? "none"),
+          ("Signing", viewModel.snapshot.release.signingState),
+          ("Provenance", viewModel.snapshot.release.provenanceState),
         ]
       )
     }
   }
 
-  private func sectionRow(title: String, image: String, rows: [(String, String)]) -> some View {
+  private func sectionRow(
+    title: String,
+    image: String,
+    state: HermesCompliancePostureState,
+    rows: [(String, String)]
+  ) -> some View {
     GridRow {
       Label(title, systemImage: image)
         .font(.headline)
       VStack(alignment: .leading, spacing: 4) {
+        Text(state.rawValue)
+          .foregroundStyle(color(for: state))
         ForEach(rows, id: \.0) { label, value in
           HStack(alignment: .firstTextBaseline) {
             Text(label)
@@ -130,26 +143,6 @@ public struct HermesAdministrationWindow: View {
               .lineLimit(2)
           }
         }
-      }
-    }
-  }
-
-  private var preferencesSection: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      Text("Preferences")
-        .font(.headline)
-      Toggle("Show compliance status", isOn: Binding(
-        get: { viewModel.preferences.showComplianceStatus },
-        set: { viewModel.setShowComplianceStatus($0) }
-      ))
-      Stepper(
-        value: Binding(
-          get: { viewModel.preferences.visibleAuditLimit },
-          set: { viewModel.setVisibleAuditLimit($0) }
-        ),
-        in: 0...25
-      ) {
-        Text("Audit rows: \(viewModel.preferences.visibleAuditLimit)")
       }
     }
   }
@@ -165,21 +158,21 @@ public struct HermesAdministrationWindow: View {
 
   private var auditSection: some View {
     VStack(alignment: .leading, spacing: 8) {
-      Text("Audit Summary")
+      Text("Audit Evidence")
         .font(.headline)
-      if viewModel.snapshot.audit.recentEvents.isEmpty {
-        Text("No recent audit events")
+      if viewModel.snapshot.auditEvidence.recentEvidence.isEmpty {
+        Text("No recent audit evidence")
           .foregroundStyle(.secondary)
       } else {
-        ForEach(viewModel.snapshot.audit.recentEvents) { event in
+        ForEach(viewModel.snapshot.auditEvidence.recentEvidence) { item in
           HStack {
-            Image(systemName: event.source == .policy ? "checkmark.shield" : "hand.raised")
+            Image(systemName: item.source == .policy ? "checkmark.shield" : "hand.raised")
               .foregroundStyle(.secondary)
               .frame(width: 22)
-            Text(event.source.rawValue)
+            Text(item.source.rawValue)
               .foregroundStyle(.secondary)
               .frame(width: 56, alignment: .leading)
-            Text(event.summary)
+            Text(item.summary)
               .lineLimit(2)
             Spacer()
           }
@@ -196,19 +189,9 @@ public struct HermesAdministrationWindow: View {
         Label("Settings", systemImage: "gearshape.2")
       }
       Button {
-        viewModel.openDiagnostics()
+        viewModel.openAdministrationCenter()
       } label: {
-        Label("Diagnostics", systemImage: "stethoscope")
-      }
-      Button {
-        viewModel.openPolicyCenter()
-      } label: {
-        Label("Policy", systemImage: "building.2.crop.circle")
-      }
-      Button {
-        viewModel.openComplianceCenter()
-      } label: {
-        Label("Compliance", systemImage: "checkmark.seal")
+        Label("Administration", systemImage: "building.columns")
       }
       Spacer()
       Button {
@@ -223,7 +206,11 @@ public struct HermesAdministrationWindow: View {
   }
 
   private var statusColor: Color {
-    switch viewModel.snapshot.complianceState {
+    color(for: viewModel.snapshot.overallState)
+  }
+
+  private func color(for state: HermesCompliancePostureState) -> Color {
+    switch state {
     case .compliant:
       return .green
     case .attentionRequired:
