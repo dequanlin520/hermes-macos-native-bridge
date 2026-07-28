@@ -1,11 +1,17 @@
 import Foundation
+import HermesRecovery
 
-public enum HermesNativeUIRoute: CaseIterable, Equatable, Sendable {
+public enum HermesNativeUIRoute: Equatable, Sendable {
   case onboarding
   case dashboard
   case logs
   case settings
   case diagnostics
+  case recovery(HermesRecoveryIssueCategory)
+
+  public static let allCases: [HermesNativeUIRoute] = [
+    .onboarding, .dashboard, .logs, .settings, .diagnostics,
+  ]
 
   public var windowIdentifier: HermesNativeUIWindowIdentifier {
     switch self {
@@ -19,6 +25,8 @@ public enum HermesNativeUIRoute: CaseIterable, Equatable, Sendable {
       return .settings
     case .diagnostics:
       return .diagnostics
+    case .recovery:
+      return .recovery
     }
   }
 }
@@ -51,7 +59,18 @@ public final class HermesNativeUIRouter {
     open(.diagnostics)
   }
 
+  public func openRecovery(issue: HermesRecoveryIssueCategory) {
+    open(.recovery(issue))
+  }
+
   public func open(_ route: HermesNativeUIRoute) {
+    if case .recovery(let issue) = route {
+      Task {
+        await windowCoordinator.clientGraph.recoveryCoordinator.evaluate(issue: issue)
+        windowCoordinator.open(route.windowIdentifier)
+      }
+      return
+    }
     windowCoordinator.open(route.windowIdentifier)
   }
 }

@@ -1,4 +1,5 @@
 import Foundation
+import HermesRecovery
 import HermesRuntimeFoundation
 
 public enum HermesOnboardingState: String, CaseIterable, Equatable, Sendable {
@@ -68,6 +69,7 @@ public enum HermesOnboardingRemediationAction: Equatable, Hashable, Sendable {
   case `continue`
   case openSystemSettings(HermesOnboardingPermissionKind)
   case openDiagnostics
+  case openRecovery(HermesRecoveryIssueCategory)
   case reopenOnboarding
   case finish
 }

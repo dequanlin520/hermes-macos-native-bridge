@@ -7,6 +7,7 @@ public enum HermesNativeUIWindowIdentifier: String, CaseIterable, Equatable, Has
   case logs = "com.hermes.bridge.window.logs"
   case settings = "com.hermes.bridge.window.settings"
   case diagnostics = "com.hermes.bridge.window.diagnostics"
+  case recovery = "com.hermes.bridge.window.recovery"
 }
 
 @MainActor
@@ -31,7 +32,7 @@ public protocol HermesNativeUIWindowFactory: Sendable {
 public final class HermesWindowCoordinator {
   public private(set) var openedWindowIdentifiers: Set<HermesNativeUIWindowIdentifier> = []
 
-  private let clientGraph: HermesAppClientGraph
+  public let clientGraph: HermesAppClientGraph
   private let windowFactory: HermesNativeUIWindowFactory
   private var windows: [HermesNativeUIWindowIdentifier: HermesNativeUIWindowControlling] = [:]
 
