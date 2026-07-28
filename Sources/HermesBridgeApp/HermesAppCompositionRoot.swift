@@ -6,6 +6,7 @@ import HermesDiagnostics
 import HermesLogsViewer
 import HermesMenuBar
 import HermesOnboarding
+import HermesRecovery
 import HermesSettings
 import SwiftUI
 
@@ -27,6 +28,7 @@ public final class HermesAppClientGraph: @unchecked Sendable {
   public let runtimeClient: any HermesAppRuntimeClienting
   public let settingsStore: HermesConfigurationStoring
   public let onboardingCoordinator: HermesOnboardingCoordinator
+  public let recoveryCoordinator: HermesRecoveryCoordinator
   public let navigationActions = HermesAppNavigationActions()
 
   private let shutdownHandler: @Sendable () async -> Void
@@ -35,6 +37,7 @@ public final class HermesAppClientGraph: @unchecked Sendable {
     runtimeClient: any HermesAppRuntimeClienting,
     settingsStore: HermesConfigurationStoring = HermesConfigurationStore(),
     onboardingCoordinator: HermesOnboardingCoordinator? = nil,
+    recoveryCoordinator: HermesRecoveryCoordinator? = nil,
     shutdownHandler: (@Sendable () async -> Void)? = nil
   ) {
     self.runtimeClient = runtimeClient
@@ -48,6 +51,23 @@ public final class HermesAppClientGraph: @unchecked Sendable {
     } else {
       self.onboardingCoordinator = HermesOnboardingCoordinator(
         readinessProvider: HermesOnboardingUnavailableReadinessProvider()
+      )
+    }
+    if let recoveryCoordinator {
+      self.recoveryCoordinator = recoveryCoordinator
+    } else if let xpc = runtimeClient as? any HermesRecoveryXPCConnecting {
+      self.recoveryCoordinator = HermesRecoveryCoordinator(
+        provider: HermesRecoveryProductionProvider(
+          xpc: xpc,
+          readiness: HermesAppOnboardingReadinessRerunner(coordinator: self.onboardingCoordinator)
+        )
+      )
+    } else {
+      self.recoveryCoordinator = HermesRecoveryCoordinator(
+        provider: HermesRecoveryProductionProvider(
+          xpc: HermesRecoveryUnavailableXPC(),
+          readiness: HermesAppOnboardingReadinessRerunner(coordinator: self.onboardingCoordinator)
+        )
       )
     }
     self.shutdownHandler = shutdownHandler ?? {
@@ -94,6 +114,12 @@ public final class HermesAppCompositionRoot: ObservableObject {
     clientGraph.navigationActions.openDiagnostics = { [weak windowCoordinator] in
       windowCoordinator?.open(.diagnostics)
     }
+    clientGraph.navigationActions.openRecovery = { [weak clientGraph, weak windowCoordinator] issue in
+      Task { @MainActor in
+        await clientGraph?.recoveryCoordinator.evaluate(issue: issue)
+        windowCoordinator?.open(.recovery)
+      }
+    }
   }
 
   public func start() {
@@ -130,6 +156,9 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
           openDiagnostics: {
             clientGraph.navigationActions.openDiagnostics()
           },
+          openRecovery: { issue in
+            clientGraph.navigationActions.openRecovery(issue)
+          },
           finishHandler: {
             NSApp.keyWindow?.close()
           }
@@ -161,6 +190,26 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
           ),
           reopenOnboarding: {
             clientGraph.navigationActions.reopenOnboarding()
+          },
+          openRecovery: { issue in
+            clientGraph.navigationActions.openRecovery(issue)
+          }
+        )
+      )
+    case .recovery:
+      controller = HermesRecoveryWindowController(
+        viewModel: HermesRecoveryViewModel(
+          coordinator: clientGraph.recoveryCoordinator,
+          openDiagnostics: {
+            clientGraph.navigationActions.openDiagnostics()
+          },
+          rerunReadiness: {
+            Task {
+              _ = await clientGraph.onboardingCoordinator.retry()
+            }
+          },
+          dismiss: {
+            NSApp.keyWindow?.close()
           }
         )
       )
@@ -175,8 +224,40 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
 public final class HermesAppNavigationActions {
   public var reopenOnboarding: () -> Void = {}
   public var openDiagnostics: () -> Void = {}
+  public var openRecovery: (HermesRecoveryIssueCategory) -> Void = { _ in }
 
   public init() {}
+}
+
+private struct HermesAppOnboardingReadinessRerunner: HermesRecoveryReadinessRerunning {
+  private let coordinator: HermesOnboardingCoordinator
+
+  init(coordinator: HermesOnboardingCoordinator) {
+    self.coordinator = coordinator
+  }
+
+  func rerunReadiness() async -> Bool {
+    let snapshot = await coordinator.retry()
+    return snapshot.state == .ready
+  }
+}
+
+private struct HermesRecoveryUnavailableXPC: HermesRecoveryXPCConnecting {
+  func connect() async throws -> HermesBridgeCapabilitiesPayload {
+    throw HermesBridgeXPCClientError.service(.serviceUnavailable)
+  }
+
+  func protocolVersion() async throws -> HermesBridgeProtocolVersionPayload {
+    throw HermesBridgeXPCClientError.service(.serviceUnavailable)
+  }
+
+  func capabilities() async throws -> HermesBridgeCapabilitiesPayload {
+    throw HermesBridgeXPCClientError.service(.serviceUnavailable)
+  }
+
+  func discoverAgent() async throws -> HermesBridgeAgentDiscoveryPayload {
+    HermesBridgeAgentDiscoveryPayload(status: .unknown)
+  }
 }
 
 private struct HermesOnboardingUnavailableReadinessProvider: HermesOnboardingReadinessProviding {

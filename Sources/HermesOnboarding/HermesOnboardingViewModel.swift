@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import HermesRecovery
 import HermesRuntimeFoundation
 import SwiftUI
 
@@ -10,12 +11,14 @@ public final class HermesOnboardingViewModel: ObservableObject {
 
   private let coordinator: HermesOnboardingCoordinator
   private let openDiagnostics: @MainActor () -> Void
+  private let openRecovery: @MainActor (HermesRecoveryIssueCategory) -> Void
   private let finishHandler: @MainActor () -> Void
   private let systemSettingsOpener: @MainActor (HermesOnboardingPermissionKind) -> Void
 
   public init(
     coordinator: HermesOnboardingCoordinator,
     openDiagnostics: @escaping @MainActor () -> Void = {},
+    openRecovery: @escaping @MainActor (HermesRecoveryIssueCategory) -> Void = { _ in },
     finishHandler: @escaping @MainActor () -> Void = {},
     systemSettingsOpener: @escaping @MainActor (HermesOnboardingPermissionKind) -> Void = {
       HermesOnboardingSystemSettings.open(permission: $0)
@@ -23,6 +26,7 @@ public final class HermesOnboardingViewModel: ObservableObject {
   ) {
     self.coordinator = coordinator
     self.openDiagnostics = openDiagnostics
+    self.openRecovery = openRecovery
     self.finishHandler = finishHandler
     self.systemSettingsOpener = systemSettingsOpener
     self.snapshot = coordinator.currentSnapshot
@@ -61,6 +65,8 @@ public final class HermesOnboardingViewModel: ObservableObject {
       systemSettingsOpener(permission)
     case .openDiagnostics:
       openDiagnostics()
+    case .openRecovery(let issue):
+      openRecovery(issue)
     case .reopenOnboarding:
       snapshot = coordinator.beginManualReopen()
     case .finish:

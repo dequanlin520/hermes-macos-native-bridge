@@ -1,4 +1,5 @@
 import Foundation
+import HermesRecovery
 
 public final class HermesOnboardingCoordinator: @unchecked Sendable {
   private let readinessProvider: any HermesOnboardingReadinessProviding
@@ -103,7 +104,7 @@ public final class HermesOnboardingCoordinator: @unchecked Sendable {
       explanation: service.safeMessage.isEmpty
         ? "Start or reinstall Hermes Bridge Service, then retry."
         : service.safeMessage,
-      availableActions: [.retry, .openDiagnostics],
+      availableActions: [.retry, .openRecovery(recoveryIssue(for: service)), .openDiagnostics],
       service: service
     )
     return snapshot
@@ -138,7 +139,7 @@ public final class HermesOnboardingCoordinator: @unchecked Sendable {
       explanation: agent.safeMessage.isEmpty
         ? "Install or repair Hermes Agent, then retry. Hermes Bridge will not download it automatically."
         : agent.safeMessage,
-      availableActions: [.retry, .openDiagnostics],
+      availableActions: [.retry, .openRecovery(recoveryIssue(for: agent)), .openDiagnostics],
       service: snapshot.service,
       agent: agent
     )
@@ -170,12 +171,16 @@ public final class HermesOnboardingCoordinator: @unchecked Sendable {
       return await testConnection()
     }
     let permissionActions = permissions.permissions.compactMap(\.remediation)
+    let recoveryActions = permissions.permissions.compactMap { permission -> HermesOnboardingRemediationAction? in
+      guard permission.status.isBlocking else { return nil }
+      return .openRecovery(recoveryIssue(for: permission.kind))
+    }
     snapshot = HermesOnboardingSnapshot(
       state: .permissionsRequired,
       step: .permissions,
       status: "Permissions required",
       explanation: "Grant the required macOS permissions in System Settings, then retry.",
-      availableActions: Array(Set(permissionActions + [.retry, .openDiagnostics])),
+      availableActions: Array(Set(permissionActions + recoveryActions + [.retry, .openDiagnostics])),
       service: snapshot.service,
       agent: snapshot.agent,
       permissions: permissions
@@ -214,12 +219,35 @@ public final class HermesOnboardingCoordinator: @unchecked Sendable {
       step: .connection,
       status: "Connection test failed",
       explanation: connection.safeMessage,
-      availableActions: [.retry, .openDiagnostics],
+      availableActions: [.retry, .openRecovery(.xpcConnectionFailed), .openDiagnostics],
       service: snapshot.service,
       agent: snapshot.agent,
       permissions: snapshot.permissions,
       connection: connection
     )
     return snapshot
+  }
+
+  private func recoveryIssue(for service: HermesOnboardingServiceReadiness) -> HermesRecoveryIssueCategory {
+    if service.xpcConnected && !service.protocolCompatible {
+      return .protocolIncompatible
+    }
+    if !service.xpcConnected {
+      return .xpcConnectionFailed
+    }
+    return .bridgeServiceUnavailable
+  }
+
+  private func recoveryIssue(for agent: HermesOnboardingAgentReadiness) -> HermesRecoveryIssueCategory {
+    agent.status == .incompatible ? .agentIncompatible : .agentUnavailable
+  }
+
+  private func recoveryIssue(for permission: HermesOnboardingPermissionKind) -> HermesRecoveryIssueCategory {
+    switch permission {
+    case .accessibility: return .accessibilityPermissionMissing
+    case .automation: return .automationPermissionMissing
+    case .screenRecording: return .screenRecordingPermissionMissing
+    case .notifications: return .notificationsPermissionMissing
+    }
   }
 }

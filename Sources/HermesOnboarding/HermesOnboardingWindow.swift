@@ -167,6 +167,15 @@ public struct HermesOnboardingWindow: View {
           Label("Diagnostics", systemImage: "stethoscope")
         }
       }
+      ForEach(recoveryActions, id: \.self) { action in
+        if case .openRecovery = action {
+          Button {
+            viewModel.perform(action)
+          } label: {
+            Label("Recovery", systemImage: "wrench.and.screwdriver")
+          }
+        }
+      }
       ForEach(systemSettingsActions, id: \.self) { action in
         if case .openSystemSettings(let permission) = action {
           Button {
@@ -209,6 +218,13 @@ public struct HermesOnboardingWindow: View {
   private var systemSettingsActions: [HermesOnboardingRemediationAction] {
     viewModel.snapshot.availableActions.filter {
       if case .openSystemSettings = $0 { return true }
+      return false
+    }
+  }
+
+  private var recoveryActions: [HermesOnboardingRemediationAction] {
+    viewModel.snapshot.availableActions.filter {
+      if case .openRecovery = $0 { return true }
       return false
     }
   }

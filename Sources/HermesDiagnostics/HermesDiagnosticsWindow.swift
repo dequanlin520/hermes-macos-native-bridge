@@ -197,6 +197,13 @@ public struct HermesDiagnosticsWindow: View {
       .disabled(viewModel.state.isRefreshing || viewModel.state.isRunningDiagnostics)
 
       Button {
+        viewModel.openRecovery()
+      } label: {
+        Label("Recovery", systemImage: "wrench.and.screwdriver")
+      }
+      .disabled(viewModel.state.isRefreshing || viewModel.state.isRunningDiagnostics)
+
+      Button {
         viewModel.refresh()
       } label: {
         Label("Refresh", systemImage: "arrow.clockwise")
