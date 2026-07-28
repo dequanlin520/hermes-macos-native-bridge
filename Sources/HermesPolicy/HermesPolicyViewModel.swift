@@ -10,9 +10,14 @@ public final class HermesPolicyViewModel: ObservableObject {
   @Published public private(set) var lastErrorMessage: String?
 
   private let center: HermesPolicyCenter
+  private let openAdministrationCenterAction: @MainActor () -> Void
 
-  public init(center: HermesPolicyCenter = HermesPolicyCenter()) {
+  public init(
+    center: HermesPolicyCenter = HermesPolicyCenter(),
+    openAdministrationCenter: @escaping @MainActor () -> Void = {}
+  ) {
     self.center = center
+    self.openAdministrationCenterAction = openAdministrationCenter
     self.preferences = (try? center.loadPreferences()) ?? HermesPolicyPreferences()
   }
 
@@ -76,6 +81,10 @@ public final class HermesPolicyViewModel: ObservableObject {
     } catch {
       lastErrorMessage = Self.userFacing(error)
     }
+  }
+
+  public func openAdministrationCenter() {
+    openAdministrationCenterAction()
   }
 
   public var policySummary: String {

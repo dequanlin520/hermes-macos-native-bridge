@@ -1,5 +1,6 @@
 import Foundation
 import AppKit
+import HermesAdministration
 import HermesBridgeXPC
 import HermesDashboard
 import HermesDiagnostics
@@ -44,6 +45,7 @@ public final class HermesAppClientGraph: @unchecked Sendable {
   public let feedbackCenter: HermesFeedbackCenter
   public let policyCenter: HermesPolicyCenter
   public let privacyCenter: HermesPrivacyCenter
+  public let adminCenter: HermesAdminCenter
   public let navigationActions = HermesAppNavigationActions()
 
   private let shutdownHandler: @Sendable () async -> Void
@@ -61,6 +63,7 @@ public final class HermesAppClientGraph: @unchecked Sendable {
     feedbackCenter: HermesFeedbackCenter = HermesFeedbackCenter(),
     policyCenter: HermesPolicyCenter = HermesPolicyCenter(),
     privacyCenter: HermesPrivacyCenter = HermesPrivacyCenter(),
+    adminCenter: HermesAdminCenter? = nil,
     shutdownHandler: (@Sendable () async -> Void)? = nil
   ) {
     self.runtimeClient = runtimeClient
@@ -109,6 +112,11 @@ public final class HermesAppClientGraph: @unchecked Sendable {
     self.feedbackCenter = feedbackCenter
     self.policyCenter = policyCenter
     self.privacyCenter = privacyCenter
+    self.adminCenter = adminCenter ?? Self.makeAdminCenter(
+      policyCenter: policyCenter,
+      privacyCenter: privacyCenter,
+      updateCoordinator: self.updateCoordinator
+    )
     self.shutdownHandler = shutdownHandler ?? {
       await runtimeClient.invalidate()
     }
@@ -124,6 +132,43 @@ public final class HermesAppClientGraph: @unchecked Sendable {
 
   public func shutdown() async {
     await shutdownHandler()
+  }
+
+  private static func makeAdminCenter(
+    policyCenter: HermesPolicyCenter,
+    privacyCenter: HermesPrivacyCenter,
+    updateCoordinator: HermesUpdateCoordinator
+  ) -> HermesAdminCenter {
+    HermesAdminCenter(
+      inputs: HermesAdminCenterInputs(
+        systemStatus: {
+          let snapshot = await updateCoordinator.currentSnapshot
+          let serviceAvailable = snapshot.current.serviceVersion == "unknown"
+            ? HermesAdminAvailability.unknown
+            : .available
+          return HermesAdminSystemStatus(
+            applicationVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.1.0",
+            protocolVersion: snapshot.current.xpcProtocolVersion,
+            serviceAvailability: serviceAvailable
+          )
+        },
+        policies: {
+          try policyCenter.listPolicies()
+        },
+        privacyRecords: {
+          try privacyCenter.listConsentRecords()
+        },
+        updateSnapshot: {
+          await updateCoordinator.currentSnapshot
+        },
+        policyAuditEvents: {
+          try policyCenter.loadAuditEvents()
+        },
+        privacyAuditEvents: {
+          try privacyCenter.loadAuditEvents()
+        }
+      )
+    )
   }
 }
 
@@ -153,6 +198,9 @@ public final class HermesAppCompositionRoot: ObservableObject {
     clientGraph.navigationActions.openDiagnostics = { [weak windowCoordinator] in
       windowCoordinator?.open(.diagnostics)
     }
+    clientGraph.navigationActions.openSettings = { [weak windowCoordinator] in
+      windowCoordinator?.open(.settings)
+    }
     clientGraph.navigationActions.openUpdateCenter = { [weak windowCoordinator] in
       windowCoordinator?.open(.update)
     }
@@ -173,6 +221,9 @@ public final class HermesAppCompositionRoot: ObservableObject {
     }
     clientGraph.navigationActions.openPolicyCenter = { [weak windowCoordinator] in
       windowCoordinator?.open(.policy)
+    }
+    clientGraph.navigationActions.openAdministrationCenter = { [weak windowCoordinator] in
+      windowCoordinator?.open(.administration)
     }
     clientGraph.navigationActions.openRecovery = { [weak clientGraph, weak windowCoordinator] issue in
       Task { @MainActor in
@@ -197,6 +248,7 @@ public final class HermesAppCompositionRoot: ObservableObject {
     windowCoordinator.cleanup()
     await clientGraph.shutdown()
   }
+
 }
 
 public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory {
@@ -259,6 +311,9 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
           },
           openPolicyCenter: {
             clientGraph.navigationActions.openPolicyCenter()
+          },
+          openAdministrationCenter: {
+            clientGraph.navigationActions.openAdministrationCenter()
           }
         )
       )
@@ -286,6 +341,9 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
           },
           openPolicyCenter: {
             clientGraph.navigationActions.openPolicyCenter()
+          },
+          openAdministrationCenter: {
+            clientGraph.navigationActions.openAdministrationCenter()
           }
         )
       )
@@ -347,7 +405,27 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
       )
     case .policy:
       controller = HermesPolicyWindowController(
-        viewModel: HermesPolicyViewModel(center: clientGraph.policyCenter)
+        viewModel: HermesPolicyViewModel(
+          center: clientGraph.policyCenter,
+          openAdministrationCenter: {
+            clientGraph.navigationActions.openAdministrationCenter()
+          }
+        )
+      )
+    case .administration:
+      controller = HermesAdministrationWindowController(
+        viewModel: HermesAdminViewModel(
+          center: clientGraph.adminCenter,
+          openSettings: {
+            clientGraph.navigationActions.openSettings()
+          },
+          openDiagnostics: {
+            clientGraph.navigationActions.openDiagnostics()
+          },
+          openPolicyCenter: {
+            clientGraph.navigationActions.openPolicyCenter()
+          }
+        )
       )
     case .recovery:
       controller = HermesRecoveryWindowController(
@@ -390,6 +468,8 @@ public final class HermesAppNavigationActions {
   public var openFeedbackCenter: () -> Void = {}
   public var openPrivacyCenter: () -> Void = {}
   public var openPolicyCenter: () -> Void = {}
+  public var openSettings: () -> Void = {}
+  public var openAdministrationCenter: () -> Void = {}
   public var openRecovery: (HermesRecoveryIssueCategory) -> Void = { _ in }
 
   public init() {}

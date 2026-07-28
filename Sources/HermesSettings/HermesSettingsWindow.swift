@@ -118,6 +118,14 @@ public struct HermesSettingsWindow: View {
             Label("Open Policy Center", systemImage: "building.2.crop.circle")
           }
         }
+
+        Section("Enterprise Administration") {
+          Button {
+            viewModel.openAdministrationCenter()
+          } label: {
+            Label("Open Administration Center", systemImage: "building.columns")
+          }
+        }
       }
       .formStyle(.grouped)
 

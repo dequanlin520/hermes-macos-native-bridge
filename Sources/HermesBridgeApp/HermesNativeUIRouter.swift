@@ -1,4 +1,5 @@
 import Foundation
+import HermesAdministration
 import HermesPolicy
 import HermesPrivacy
 import HermesRecovery
@@ -16,11 +17,12 @@ public enum HermesNativeUIRoute: Equatable, Sendable {
   case feedback
   case privacy
   case policy
+  case administration
   case recovery(HermesRecoveryIssueCategory)
 
   public static let allCases: [HermesNativeUIRoute] = [
     .onboarding, .dashboard, .logs, .settings, .diagnostics, .update, .notifications, .timeline,
-    .search, .feedback, .privacy, .policy,
+    .search, .feedback, .privacy, .policy, .administration,
   ]
 
   public var windowIdentifier: HermesNativeUIWindowIdentifier {
@@ -49,6 +51,8 @@ public enum HermesNativeUIRoute: Equatable, Sendable {
       return .privacy
     case .policy:
       return .policy
+    case .administration:
+      return .administration
     case .recovery:
       return .recovery
     }
@@ -109,6 +113,10 @@ public final class HermesNativeUIRouter {
 
   public func openPolicyCenter() {
     open(.policy)
+  }
+
+  public func openAdministrationCenter() {
+    open(.administration)
   }
 
   public func openRecovery(issue: HermesRecoveryIssueCategory) {

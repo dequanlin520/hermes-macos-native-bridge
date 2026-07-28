@@ -66,6 +66,11 @@ public struct HermesPolicyWindow: View {
           .foregroundStyle(.secondary)
       }
       Spacer()
+      Button {
+        viewModel.openAdministrationCenter()
+      } label: {
+        Label("Admin", systemImage: "building.columns")
+      }
     }
     .padding(.horizontal, 18)
     .padding(.vertical, 14)
