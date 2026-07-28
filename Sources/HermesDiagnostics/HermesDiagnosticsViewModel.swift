@@ -12,6 +12,7 @@ public final class HermesDiagnosticsViewModel: ObservableObject {
   private let openUpdateCenterAction: @MainActor () -> Void
   private let openFeedbackCenterAction: @MainActor () -> Void
   private let openPrivacyCenterAction: @MainActor () -> Void
+  private let openPolicyCenterAction: @MainActor () -> Void
 
   public init(
     controller: HermesDiagnosticsController,
@@ -19,7 +20,8 @@ public final class HermesDiagnosticsViewModel: ObservableObject {
     openRecovery: @escaping @MainActor (HermesRecoveryIssueCategory) -> Void = { _ in },
     openUpdateCenter: @escaping @MainActor () -> Void = {},
     openFeedbackCenter: @escaping @MainActor () -> Void = {},
-    openPrivacyCenter: @escaping @MainActor () -> Void = {}
+    openPrivacyCenter: @escaping @MainActor () -> Void = {},
+    openPolicyCenter: @escaping @MainActor () -> Void = {}
   ) {
     self.controller = controller
     self.reopenOnboardingAction = reopenOnboarding
@@ -27,6 +29,7 @@ public final class HermesDiagnosticsViewModel: ObservableObject {
     self.openUpdateCenterAction = openUpdateCenter
     self.openFeedbackCenterAction = openFeedbackCenter
     self.openPrivacyCenterAction = openPrivacyCenter
+    self.openPolicyCenterAction = openPolicyCenter
     self.state = HermesDiagnosticsState()
   }
 
@@ -36,7 +39,8 @@ public final class HermesDiagnosticsViewModel: ObservableObject {
     openRecovery: @escaping @MainActor (HermesRecoveryIssueCategory) -> Void = { _ in },
     openUpdateCenter: @escaping @MainActor () -> Void = {},
     openFeedbackCenter: @escaping @MainActor () -> Void = {},
-    openPrivacyCenter: @escaping @MainActor () -> Void = {}
+    openPrivacyCenter: @escaping @MainActor () -> Void = {},
+    openPolicyCenter: @escaping @MainActor () -> Void = {}
   ) {
     self.init(
       controller: HermesDiagnosticsController(provider: provider),
@@ -44,7 +48,8 @@ public final class HermesDiagnosticsViewModel: ObservableObject {
       openRecovery: openRecovery,
       openUpdateCenter: openUpdateCenter,
       openFeedbackCenter: openFeedbackCenter,
-      openPrivacyCenter: openPrivacyCenter
+      openPrivacyCenter: openPrivacyCenter,
+      openPolicyCenter: openPolicyCenter
     )
   }
 
@@ -78,6 +83,10 @@ public final class HermesDiagnosticsViewModel: ObservableObject {
 
   public func openPrivacyCenter() {
     openPrivacyCenterAction()
+  }
+
+  public func openPolicyCenter() {
+    openPolicyCenterAction()
   }
 
   public var recoveryIssue: HermesRecoveryIssueCategory {

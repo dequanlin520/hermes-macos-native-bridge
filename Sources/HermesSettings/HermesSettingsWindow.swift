@@ -110,6 +110,14 @@ public struct HermesSettingsWindow: View {
             Label("Open Privacy Center", systemImage: "hand.raised")
           }
         }
+
+        Section("Enterprise Policy") {
+          Button {
+            viewModel.openPolicyCenter()
+          } label: {
+            Label("Open Policy Center", systemImage: "building.2.crop.circle")
+          }
+        }
       }
       .formStyle(.grouped)
 

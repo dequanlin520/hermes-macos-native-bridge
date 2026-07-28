@@ -8,6 +8,7 @@ import HermesLogsViewer
 import HermesMenuBar
 import HermesNotifications
 import HermesOnboarding
+import HermesPolicy
 import HermesPrivacy
 import HermesRecovery
 import HermesSearch
@@ -41,6 +42,7 @@ public final class HermesAppClientGraph: @unchecked Sendable {
   public let searchStore: HermesSearchStore
   public let searchIndexer: HermesSearchIndexer
   public let feedbackCenter: HermesFeedbackCenter
+  public let policyCenter: HermesPolicyCenter
   public let privacyCenter: HermesPrivacyCenter
   public let navigationActions = HermesAppNavigationActions()
 
@@ -57,6 +59,7 @@ public final class HermesAppClientGraph: @unchecked Sendable {
     searchStore: HermesSearchStore = HermesSearchStore(),
     searchIndexer: HermesSearchIndexer? = nil,
     feedbackCenter: HermesFeedbackCenter = HermesFeedbackCenter(),
+    policyCenter: HermesPolicyCenter = HermesPolicyCenter(),
     privacyCenter: HermesPrivacyCenter = HermesPrivacyCenter(),
     shutdownHandler: (@Sendable () async -> Void)? = nil
   ) {
@@ -104,6 +107,7 @@ public final class HermesAppClientGraph: @unchecked Sendable {
     self.searchStore = searchStore
     self.searchIndexer = searchIndexer ?? HermesSearchIndexer(store: searchStore)
     self.feedbackCenter = feedbackCenter
+    self.policyCenter = policyCenter
     self.privacyCenter = privacyCenter
     self.shutdownHandler = shutdownHandler ?? {
       await runtimeClient.invalidate()
@@ -166,6 +170,9 @@ public final class HermesAppCompositionRoot: ObservableObject {
     }
     clientGraph.navigationActions.openPrivacyCenter = { [weak windowCoordinator] in
       windowCoordinator?.open(.privacy)
+    }
+    clientGraph.navigationActions.openPolicyCenter = { [weak windowCoordinator] in
+      windowCoordinator?.open(.policy)
     }
     clientGraph.navigationActions.openRecovery = { [weak clientGraph, weak windowCoordinator] issue in
       Task { @MainActor in
@@ -249,6 +256,9 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
           },
           openPrivacyCenter: {
             clientGraph.navigationActions.openPrivacyCenter()
+          },
+          openPolicyCenter: {
+            clientGraph.navigationActions.openPolicyCenter()
           }
         )
       )
@@ -273,6 +283,9 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
           },
           openPrivacyCenter: {
             clientGraph.navigationActions.openPrivacyCenter()
+          },
+          openPolicyCenter: {
+            clientGraph.navigationActions.openPolicyCenter()
           }
         )
       )
@@ -321,6 +334,9 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
       controller = HermesPrivacyWindowController(
         viewModel: HermesPrivacyViewModel(
           center: clientGraph.privacyCenter,
+          openPolicyCenter: {
+            clientGraph.navigationActions.openPolicyCenter()
+          },
           metadataProvider: {
             HermesPrivacySafeApplicationMetadata(
               applicationVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
@@ -328,6 +344,10 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
             )
           }
         )
+      )
+    case .policy:
+      controller = HermesPolicyWindowController(
+        viewModel: HermesPolicyViewModel(center: clientGraph.policyCenter)
       )
     case .recovery:
       controller = HermesRecoveryWindowController(
@@ -369,6 +389,7 @@ public final class HermesAppNavigationActions {
   public var openSearchCenter: () -> Void = {}
   public var openFeedbackCenter: () -> Void = {}
   public var openPrivacyCenter: () -> Void = {}
+  public var openPolicyCenter: () -> Void = {}
   public var openRecovery: (HermesRecoveryIssueCategory) -> Void = { _ in }
 
   public init() {}

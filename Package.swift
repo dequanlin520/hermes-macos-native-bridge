@@ -76,6 +76,10 @@ let package = Package(
       name: "HermesPrivacy",
       targets: ["HermesPrivacy"]
     ),
+    .library(
+      name: "HermesPolicy",
+      targets: ["HermesPolicy"]
+    ),
     .executable(
       name: "HermesBridgeService",
       targets: ["HermesBridgeServiceExecutable"]
@@ -196,6 +200,9 @@ let package = Package(
     .target(
       name: "HermesPrivacy"
     ),
+    .target(
+      name: "HermesPolicy"
+    ),
     .executableTarget(
       name: "HermesBridgeControl",
       dependencies: ["HermesBridgeControlCore"]
@@ -210,7 +217,7 @@ let package = Package(
         "HermesBridgeXPC",
         "HermesDashboard", "HermesDiagnostics", "HermesFeedback", "HermesLogsViewer", "HermesMenuBar",
         "HermesNotifications", "HermesOnboarding", "HermesRecovery", "HermesSearch",
-        "HermesPrivacy", "HermesSettings", "HermesTimeline", "HermesUpdate",
+        "HermesPolicy", "HermesPrivacy", "HermesSettings", "HermesTimeline", "HermesUpdate",
       ]
     ),
     .executableTarget(
@@ -319,8 +326,8 @@ let package = Package(
       dependencies: [
         "HermesBridgeApp", "HermesBridgeAppAcceptanceSupport", "HermesBridgeService",
         "HermesBridgeXPC", "HermesDashboard", "HermesDiagnostics", "HermesFeedback", "HermesLogsViewer",
-        "HermesMenuBar", "HermesNotifications", "HermesRecovery", "HermesRuntimeFoundation",
-        "HermesPrivacy", "HermesSearch", "HermesSettings", "HermesUpdate",
+        "HermesMenuBar", "HermesNotifications", "HermesPolicy", "HermesRecovery",
+        "HermesRuntimeFoundation", "HermesPrivacy", "HermesSearch", "HermesSettings", "HermesUpdate",
       ]
     ),
     .testTarget(
@@ -345,6 +352,10 @@ let package = Package(
     .testTarget(
       name: "HermesPrivacyTests",
       dependencies: ["HermesBridgeApp", "HermesPrivacy", "HermesRuntimeFoundation"]
+    ),
+    .testTarget(
+      name: "HermesPolicyTests",
+      dependencies: ["HermesBridgeApp", "HermesPolicy", "HermesRuntimeFoundation"]
     ),
     .testTarget(
       name: "HermesUpdateTests",

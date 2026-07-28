@@ -110,6 +110,11 @@ public struct HermesPrivacyWindow: View {
         set: { viewModel.setRetainLocalHistory($0) }
       ))
       Button {
+        viewModel.openPolicyCenter()
+      } label: {
+        Label("Open Policy Center", systemImage: "building.2.crop.circle")
+      }
+      Button {
         viewModel.clearStoredLocalData()
       } label: {
         Label("Clear Stored Local Privacy Data", systemImage: "trash")

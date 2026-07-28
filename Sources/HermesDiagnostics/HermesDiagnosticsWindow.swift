@@ -225,6 +225,13 @@ public struct HermesDiagnosticsWindow: View {
       .disabled(viewModel.state.isRefreshing || viewModel.state.isRunningDiagnostics)
 
       Button {
+        viewModel.openPolicyCenter()
+      } label: {
+        Label("Policy", systemImage: "building.2.crop.circle")
+      }
+      .disabled(viewModel.state.isRefreshing || viewModel.state.isRunningDiagnostics)
+
+      Button {
         viewModel.refresh()
       } label: {
         Label("Refresh", systemImage: "arrow.clockwise")

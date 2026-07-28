@@ -10,15 +10,18 @@ public final class HermesPrivacyViewModel: ObservableObject {
   @Published public private(set) var lastErrorMessage: String?
 
   private let center: HermesPrivacyCenter
+  private let openPolicyCenterAction: @MainActor () -> Void
   private let metadataProvider: @MainActor () -> HermesPrivacySafeApplicationMetadata
 
   public init(
     center: HermesPrivacyCenter = HermesPrivacyCenter(),
+    openPolicyCenter: @escaping @MainActor () -> Void = {},
     metadataProvider: @escaping @MainActor () -> HermesPrivacySafeApplicationMetadata = {
       HermesPrivacySafeApplicationMetadata()
     }
   ) {
     self.center = center
+    self.openPolicyCenterAction = openPolicyCenter
     self.metadataProvider = metadataProvider
     self.preferences = (try? center.loadPreferences()) ?? HermesPrivacyPreferences()
     self.safeMetadata = metadataProvider()
@@ -76,6 +79,10 @@ public final class HermesPrivacyViewModel: ObservableObject {
     } catch {
       lastErrorMessage = Self.userFacing(error)
     }
+  }
+
+  public func openPolicyCenter() {
+    openPolicyCenterAction()
   }
 
   public var policySummary: String {
