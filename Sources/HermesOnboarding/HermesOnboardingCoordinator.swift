@@ -104,7 +104,9 @@ public final class HermesOnboardingCoordinator: @unchecked Sendable {
       explanation: service.safeMessage.isEmpty
         ? "Start or reinstall Hermes Bridge Service, then retry."
         : service.safeMessage,
-      availableActions: [.retry, .openRecovery(recoveryIssue(for: service)), .openDiagnostics],
+      availableActions: [
+        .retry, .openRecovery(recoveryIssue(for: service)), .openDiagnostics, .openPrivacyCenter,
+      ],
       service: service
     )
     return snapshot
@@ -139,7 +141,9 @@ public final class HermesOnboardingCoordinator: @unchecked Sendable {
       explanation: agent.safeMessage.isEmpty
         ? "Install or repair Hermes Agent, then retry. Hermes Bridge will not download it automatically."
         : agent.safeMessage,
-      availableActions: [.retry, .openRecovery(recoveryIssue(for: agent)), .openDiagnostics],
+      availableActions: [
+        .retry, .openRecovery(recoveryIssue(for: agent)), .openDiagnostics, .openPrivacyCenter,
+      ],
       service: snapshot.service,
       agent: agent
     )
@@ -180,7 +184,9 @@ public final class HermesOnboardingCoordinator: @unchecked Sendable {
       step: .permissions,
       status: "Permissions required",
       explanation: "Grant the required macOS permissions in System Settings, then retry.",
-      availableActions: Array(Set(permissionActions + recoveryActions + [.retry, .openDiagnostics])),
+      availableActions: Array(
+        Set(permissionActions + recoveryActions + [.retry, .openDiagnostics, .openPrivacyCenter])
+      ),
       service: snapshot.service,
       agent: snapshot.agent,
       permissions: permissions
@@ -219,7 +225,9 @@ public final class HermesOnboardingCoordinator: @unchecked Sendable {
       step: .connection,
       status: "Connection test failed",
       explanation: connection.safeMessage,
-      availableActions: [.retry, .openRecovery(.xpcConnectionFailed), .openDiagnostics],
+      availableActions: [
+        .retry, .openRecovery(.xpcConnectionFailed), .openDiagnostics, .openPrivacyCenter,
+      ],
       service: snapshot.service,
       agent: snapshot.agent,
       permissions: snapshot.permissions,

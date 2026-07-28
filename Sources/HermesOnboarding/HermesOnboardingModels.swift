@@ -69,6 +69,7 @@ public enum HermesOnboardingRemediationAction: Equatable, Hashable, Sendable {
   case `continue`
   case openSystemSettings(HermesOnboardingPermissionKind)
   case openDiagnostics
+  case openPrivacyCenter
   case openRecovery(HermesRecoveryIssueCategory)
   case reopenOnboarding
   case finish

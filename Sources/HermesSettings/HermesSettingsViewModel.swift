@@ -9,15 +9,18 @@ public final class HermesSettingsViewModel: ObservableObject {
   private let controller: HermesSettingsController
   private let reopenOnboardingAction: @MainActor () -> Void
   private let openUpdateCenterAction: @MainActor () -> Void
+  private let openPrivacyCenterAction: @MainActor () -> Void
 
   public init(
     controller: HermesSettingsController,
     reopenOnboarding: @escaping @MainActor () -> Void = {},
-    openUpdateCenter: @escaping @MainActor () -> Void = {}
+    openUpdateCenter: @escaping @MainActor () -> Void = {},
+    openPrivacyCenter: @escaping @MainActor () -> Void = {}
   ) {
     self.controller = controller
     self.reopenOnboardingAction = reopenOnboarding
     self.openUpdateCenterAction = openUpdateCenter
+    self.openPrivacyCenterAction = openPrivacyCenter
     self.state = HermesSettingsState()
     self.draftSettings = .defaults
   }
@@ -25,12 +28,14 @@ public final class HermesSettingsViewModel: ObservableObject {
   public convenience init(
     store: HermesConfigurationStoring = HermesConfigurationStore(),
     reopenOnboarding: @escaping @MainActor () -> Void = {},
-    openUpdateCenter: @escaping @MainActor () -> Void = {}
+    openUpdateCenter: @escaping @MainActor () -> Void = {},
+    openPrivacyCenter: @escaping @MainActor () -> Void = {}
   ) {
     self.init(
       controller: HermesSettingsController(store: store),
       reopenOnboarding: reopenOnboarding,
-      openUpdateCenter: openUpdateCenter
+      openUpdateCenter: openUpdateCenter,
+      openPrivacyCenter: openPrivacyCenter
     )
   }
 
@@ -64,5 +69,9 @@ public final class HermesSettingsViewModel: ObservableObject {
 
   public func openUpdateCenter() {
     openUpdateCenterAction()
+  }
+
+  public func openPrivacyCenter() {
+    openPrivacyCenterAction()
   }
 }

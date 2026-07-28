@@ -11,6 +11,7 @@ public final class HermesOnboardingViewModel: ObservableObject {
 
   private let coordinator: HermesOnboardingCoordinator
   private let openDiagnostics: @MainActor () -> Void
+  private let openPrivacyCenter: @MainActor () -> Void
   private let openRecovery: @MainActor (HermesRecoveryIssueCategory) -> Void
   private let finishHandler: @MainActor () -> Void
   private let systemSettingsOpener: @MainActor (HermesOnboardingPermissionKind) -> Void
@@ -18,6 +19,7 @@ public final class HermesOnboardingViewModel: ObservableObject {
   public init(
     coordinator: HermesOnboardingCoordinator,
     openDiagnostics: @escaping @MainActor () -> Void = {},
+    openPrivacyCenter: @escaping @MainActor () -> Void = {},
     openRecovery: @escaping @MainActor (HermesRecoveryIssueCategory) -> Void = { _ in },
     finishHandler: @escaping @MainActor () -> Void = {},
     systemSettingsOpener: @escaping @MainActor (HermesOnboardingPermissionKind) -> Void = {
@@ -26,6 +28,7 @@ public final class HermesOnboardingViewModel: ObservableObject {
   ) {
     self.coordinator = coordinator
     self.openDiagnostics = openDiagnostics
+    self.openPrivacyCenter = openPrivacyCenter
     self.openRecovery = openRecovery
     self.finishHandler = finishHandler
     self.systemSettingsOpener = systemSettingsOpener
@@ -65,6 +68,8 @@ public final class HermesOnboardingViewModel: ObservableObject {
       systemSettingsOpener(permission)
     case .openDiagnostics:
       openDiagnostics()
+    case .openPrivacyCenter:
+      openPrivacyCenter()
     case .openRecovery(let issue):
       openRecovery(issue)
     case .reopenOnboarding:

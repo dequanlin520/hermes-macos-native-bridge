@@ -102,6 +102,14 @@ public struct HermesSettingsWindow: View {
             Label("Open Update Center", systemImage: "arrow.up.circle")
           }
         }
+
+        Section("Privacy") {
+          Button {
+            viewModel.openPrivacyCenter()
+          } label: {
+            Label("Open Privacy Center", systemImage: "hand.raised")
+          }
+        }
       }
       .formStyle(.grouped)
 
