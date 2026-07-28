@@ -142,6 +142,14 @@ public struct HermesSettingsWindow: View {
             Label("Open Health Center", systemImage: "heart.text.square")
           }
         }
+
+        Section("Enterprise Operations") {
+          Button {
+            viewModel.openOperationsCenter()
+          } label: {
+            Label("Open Operations Center", systemImage: "command.circle")
+          }
+        }
       }
       .formStyle(.grouped)
 

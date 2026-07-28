@@ -11,6 +11,7 @@ import HermesLogsViewer
 import HermesMenuBar
 import HermesNotifications
 import HermesOnboarding
+import HermesOperations
 import HermesPolicy
 import HermesPrivacy
 import HermesRecovery
@@ -50,6 +51,7 @@ public final class HermesAppClientGraph: @unchecked Sendable {
   public let adminCenter: HermesAdminCenter
   public let complianceCenter: HermesComplianceCenter
   public let healthCenter: HermesHealthCenter
+  public let operationsCenter: HermesOperationsCenter
   public let navigationActions = HermesAppNavigationActions()
 
   private let shutdownHandler: @Sendable () async -> Void
@@ -70,6 +72,7 @@ public final class HermesAppClientGraph: @unchecked Sendable {
     adminCenter: HermesAdminCenter? = nil,
     complianceCenter: HermesComplianceCenter? = nil,
     healthCenter: HermesHealthCenter? = nil,
+    operationsCenter: HermesOperationsCenter? = nil,
     shutdownHandler: (@Sendable () async -> Void)? = nil
   ) {
     self.runtimeClient = runtimeClient
@@ -134,6 +137,13 @@ public final class HermesAppClientGraph: @unchecked Sendable {
       updateCoordinator: self.updateCoordinator,
       notificationCenter: notificationCenter,
       recoveryCoordinator: self.recoveryCoordinator,
+      complianceCenter: self.complianceCenter
+    )
+    self.operationsCenter = operationsCenter ?? Self.makeOperationsCenter(
+      policyCenter: policyCenter,
+      privacyCenter: privacyCenter,
+      updateCoordinator: self.updateCoordinator,
+      notificationCenter: notificationCenter,
       complianceCenter: self.complianceCenter
     )
     self.shutdownHandler = shutdownHandler ?? {
@@ -291,6 +301,58 @@ public final class HermesAppClientGraph: @unchecked Sendable {
       )
     )
   }
+
+  private static func makeOperationsCenter(
+    policyCenter: HermesPolicyCenter,
+    privacyCenter: HermesPrivacyCenter,
+    updateCoordinator: HermesUpdateCoordinator,
+    notificationCenter: HermesNotificationCenter,
+    complianceCenter: HermesComplianceCenter
+  ) -> HermesOperationsCenter {
+    HermesOperationsCenter(
+      inputs: HermesOperationsCenterInputs(
+        runtimeOperations: {
+          let update = await updateCoordinator.currentSnapshot
+          let serviceKnown = update.current.serviceVersion != "unknown"
+          return HermesRuntimeOperationsProviderSnapshot(
+            runtimeStatus: serviceKnown ? "runtime visible through service-owned provider" : "runtime unknown",
+            sessionStatus: "sessions owned by Bridge Service",
+            backendStatus: serviceKnown ? "backend available" : "backend unknown",
+            activeOperationCount: 0
+          )
+        },
+        eventOperations: {
+          let notifications = await notificationCenter.currentNotifications()
+          return HermesEventOperationsProviderSnapshot(
+            eventPipelineStatus: "event summaries available",
+            recentEventCount: notifications.count,
+            notificationStatus: "\(notifications.count) notifications",
+            recentEventSummaries: notifications.prefix(8).map { "\($0.category.rawValue) \($0.title)" }
+          )
+        },
+        releaseOperations: {
+          let update = await updateCoordinator.currentSnapshot
+          return HermesReleaseOperationsProviderSnapshot(
+            releaseStatus: update.state.rawValue,
+            currentVersion: update.current.appVersion,
+            availableVersion: update.availableRelease?.version,
+            releaseReadiness: update.message
+          )
+        },
+        governanceOperations: {
+          let compliance = await complianceCenter.snapshot()
+          let policyCount = (try? policyCenter.listPolicies().count) ?? 0
+          let privacyCount = (try? privacyCenter.listConsentRecords().count) ?? 0
+          return HermesGovernanceOperationsProviderSnapshot(
+            policyStatus: "\(compliance.policy.state.rawValue) \(policyCount) policies",
+            privacyStatus: "\(compliance.privacy.state.rawValue) \(privacyCount) records",
+            auditStatus: "\(compliance.auditEvidence.recentEventCount) audit events",
+            complianceStatus: compliance.overallState.rawValue
+          )
+        }
+      )
+    )
+  }
 }
 
 @MainActor
@@ -351,6 +413,9 @@ public final class HermesAppCompositionRoot: ObservableObject {
     }
     clientGraph.navigationActions.openHealthCenter = { [weak windowCoordinator] in
       windowCoordinator?.open(.health)
+    }
+    clientGraph.navigationActions.openOperationsCenter = { [weak windowCoordinator] in
+      windowCoordinator?.open(.operations)
     }
     clientGraph.navigationActions.openRecovery = { [weak clientGraph, weak windowCoordinator] issue in
       Task { @MainActor in
@@ -447,6 +512,9 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
           },
           openHealthCenter: {
             clientGraph.navigationActions.openHealthCenter()
+          },
+          openOperationsCenter: {
+            clientGraph.navigationActions.openOperationsCenter()
           }
         )
       )
@@ -480,6 +548,9 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
           },
           openHealthCenter: {
             clientGraph.navigationActions.openHealthCenter()
+          },
+          openOperationsCenter: {
+            clientGraph.navigationActions.openOperationsCenter()
           }
         )
       )
@@ -566,6 +637,9 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
           },
           openHealthCenter: {
             clientGraph.navigationActions.openHealthCenter()
+          },
+          openOperationsCenter: {
+            clientGraph.navigationActions.openOperationsCenter()
           }
         )
       )
@@ -585,6 +659,21 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
       controller = HermesHealthWindowController(
         viewModel: HermesHealthViewModel(
           center: clientGraph.healthCenter,
+          openSettings: {
+            clientGraph.navigationActions.openSettings()
+          },
+          openDiagnostics: {
+            clientGraph.navigationActions.openDiagnostics()
+          },
+          openAdministrationCenter: {
+            clientGraph.navigationActions.openAdministrationCenter()
+          }
+        )
+      )
+    case .operations:
+      controller = HermesOperationsWindowController(
+        viewModel: HermesOperationsViewModel(
+          center: clientGraph.operationsCenter,
           openSettings: {
             clientGraph.navigationActions.openSettings()
           },
@@ -641,6 +730,7 @@ public final class HermesAppNavigationActions {
   public var openAdministrationCenter: () -> Void = {}
   public var openComplianceCenter: () -> Void = {}
   public var openHealthCenter: () -> Void = {}
+  public var openOperationsCenter: () -> Void = {}
   public var openRecovery: (HermesRecoveryIssueCategory) -> Void = { _ in }
 
   public init() {}
