@@ -21,6 +21,30 @@ Without that value, the script performs preflight checks, writes
 `artifacts/m14-002/result.txt`, reports `M14_002_RESULT=OPT_IN_REQUIRED`, and
 does not install, bootstrap, launch, stop, or remove anything.
 
+Exit codes are derived from the final `M14_002_RESULT` after cleanup and
+environment-restoration checks:
+
+- `0`: `M14_002_RESULT=PASS`
+- `1`: `M14_002_RESULT=FAIL`
+- `2`: `M14_002_RESULT=OPT_IN_REQUIRED`
+- `3`: `M14_002_RESULT=BLOCKED`
+
+## Real Agent Quiescence
+
+If a real Hermes Agent process group is writing cron, heartbeat, or account
+synchronization state during M14-002, use the quiescence helper with an
+explicitly selected root Hermes PID:
+
+```sh
+HERMES_QUIESCE_REAL_AGENT=YES Scripts/m14_002_quiesce_real_hermes.zsh <root-hermes-pid>
+```
+
+The helper verifies that the root PID belongs to the current user, records the
+root process group's exact current-user members, displays PID, PPID, PGID, and
+executable basename, sends `SIGSTOP` only to those recorded PIDs, runs M14-002
+acceptance once, then sends `SIGCONT` to the same recorded PIDs on success,
+failure, interrupt, or hangup. It preserves the acceptance exit code.
+
 ## User-Scoped Paths
 
 The acceptance run is limited to project-owned current-user locations:

@@ -11,6 +11,13 @@ HERMES_CONFIG_FILE="$HERMES_CONFIG_DIR/configuration.json"
 RUNTIME_DATA_ROOT="$RUNTIME_ROOT/Runtime"
 REQUEST_STATE_ROOT="$RUNTIME_ROOT/RequestState"
 LOGS_ROOT="$RUNTIME_ROOT/Logs"
+ISOLATED_HOME="$RUNTIME_ROOT/Home"
+ISOLATED_HERMES_HOME="$RUNTIME_ROOT/hermes-home"
+ISOLATED_XDG_CONFIG_HOME="$RUNTIME_ROOT/xdg-config"
+ISOLATED_XDG_CACHE_HOME="$RUNTIME_ROOT/xdg-cache"
+ISOLATED_XDG_DATA_HOME="$RUNTIME_ROOT/xdg-data"
+ISOLATED_XDG_STATE_HOME="$RUNTIME_ROOT/xdg-state"
+ISOLATED_XDG_RUNTIME_DIR="$RUNTIME_ROOT/xdg-runtime"
 APP_NAME="Hermes Bridge.app"
 APP_TARGET="$HOME/Applications/$APP_NAME"
 LAUNCH_AGENT_TARGET="$HOME/Library/LaunchAgents/com.hermes.bridge.plist"
@@ -26,7 +33,13 @@ MACH_SERVICE="com.hermes.bridge.xpc"
 SERVICE_DOMAIN="gui/$(id -u)"
 BRIDGE_SUPPORT="$HOME/Library/Application Support/HermesBridge"
 REAL_HERMES_HOME="$HOME/.hermes"
+REAL_HERMES_PREFERENCES="$HOME/Library/Preferences"
+REAL_HERMES_CACHES="$HOME/Library/Caches/HermesBridge"
+REAL_HERMES_LOGS="$HOME/Library/Logs/HermesBridge"
 RUN_ID="m14-002-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+ACCEPTANCE_LOCK_DIR="${TMPDIR:-/tmp}/com.hermes.bridge.m14-002.acceptance.lock"
+ACCEPTANCE_LOCK_OWNED="no"
+BLOCKED_REASON=""
 
 typeset -A RESULT
 APP_INSTALLED_BY_RUN="no"
@@ -36,6 +49,9 @@ SERVICE_BOOTSTRAPPED_BY_RUN="no"
 APP_PID=""
 SERVICE_PID=""
 PRE_HERMES_HOME_STATE=""
+INTEGRITY_BEFORE="$ARTIFACT_DIR/real-home-before.snapshot"
+INTEGRITY_AFTER="$ARTIFACT_DIR/real-home-after.snapshot"
+INTEGRITY_CHANGES="$ARTIFACT_DIR/real-home-changes.txt"
 FINISHED="no"
 
 ORDERED_KEYS=(
@@ -88,7 +104,7 @@ set_default_results() {
     SERVICE_RUNNING no
     XPC_PROTOCOL_1_8_CONNECTED no
     SERVICE_OWNS_RUNTIME no
-    APP_OWNS_RUNTIME yes
+    APP_OWNS_RUNTIME skip
     SERVICE_RESTARTED no
     APP_RECONNECTED_AFTER_RESTART no
     APP_EXIT_LEFT_SERVICE_RUNNING no
@@ -151,6 +167,16 @@ write_result() {
   validate_result_contract
 }
 
+result_exit_code() {
+  case "${RESULT[M14_002_RESULT]}" in
+    PASS) return 0 ;;
+    OPT_IN_REQUIRED) return 2 ;;
+    BLOCKED) return 3 ;;
+    FAIL) return 1 ;;
+    *) return 1 ;;
+  esac
+}
+
 finish_result() {
   if [[ "${RESULT[M14_002_RESULT]}" == "OPT_IN_REQUIRED" \
     || "${RESULT[M14_002_RESULT]}" == "BLOCKED" ]]; then
@@ -204,6 +230,170 @@ path_state() {
   fi
 }
 
+write_real_home_integrity_snapshot() {
+  local output="$1"
+  /usr/bin/python3 - "$HOME" "$output" <<'PY'
+import fnmatch
+import os
+import stat
+import sys
+from pathlib import Path
+
+home = Path(sys.argv[1]).resolve()
+output = Path(sys.argv[2])
+protected = [
+    ("hermes-home", home / ".hermes", True),
+    ("application-support", home / "Library" / "Application Support" / "HermesBridge", True),
+    ("caches", home / "Library" / "Caches" / "HermesBridge", True),
+    ("logs", home / "Library" / "Logs" / "HermesBridge", True),
+    ("preferences", home / "Library" / "Preferences", False),
+]
+
+def mode_type(mode: int) -> str:
+    if stat.S_ISDIR(mode): return "dir"
+    if stat.S_ISREG(mode): return "file"
+    if stat.S_ISLNK(mode): return "symlink"
+    if stat.S_ISFIFO(mode): return "fifo"
+    if stat.S_ISSOCK(mode): return "socket"
+    if stat.S_ISCHR(mode): return "char"
+    if stat.S_ISBLK(mode): return "block"
+    return "other"
+
+def row(category: str, root: Path, path: Path) -> str:
+    st = os.lstat(path)
+    rel = "." if path == root else path.relative_to(root).as_posix()
+    return "\t".join([
+        category,
+        rel,
+        mode_type(st.st_mode),
+        str(st.st_size),
+        str(int(st.st_mtime_ns)),
+        oct(stat.S_IMODE(st.st_mode)),
+        str(st.st_uid),
+        str(st.st_gid),
+    ])
+
+rows = []
+for category, root, recursive in protected:
+    try:
+        if category == "preferences":
+            if root.exists() and not root.is_symlink():
+                for child in sorted(root.iterdir(), key=lambda p: p.name):
+                    if fnmatch.fnmatch(child.name, "com.hermes*.plist"):
+                        rows.append(row(category, root, child))
+            continue
+        if not root.exists() and not root.is_symlink():
+            rows.append("\t".join([category, ".", "absent", "0", "0", "0", "0", "0"]))
+            continue
+        rows.append(row(category, root, root))
+        if recursive and not root.is_symlink() and root.is_dir():
+            for current, dirs, files in os.walk(root, followlinks=False):
+                current_path = Path(current)
+                kept_dirs = []
+                for name in sorted(dirs):
+                    child = current_path / name
+                    rows.append(row(category, root, child))
+                    if not child.is_symlink():
+                        kept_dirs.append(name)
+                dirs[:] = kept_dirs
+                for name in sorted(files):
+                    rows.append(row(category, root, current_path / name))
+    except (FileNotFoundError, PermissionError, OSError):
+        rows.append("\t".join([category, ".", "unavailable", "0", "0", "0", "0", "0"]))
+
+output.parent.mkdir(parents=True, exist_ok=True)
+output.write_text("\n".join(rows) + "\n", encoding="utf-8")
+PY
+}
+
+compare_real_home_integrity_snapshot() {
+  write_real_home_integrity_snapshot "$INTEGRITY_AFTER"
+  /usr/bin/python3 - "$INTEGRITY_BEFORE" "$INTEGRITY_AFTER" "$INTEGRITY_CHANGES" <<'PY'
+import sys
+from pathlib import Path
+
+before_path, after_path, changes_path = map(Path, sys.argv[1:4])
+before = before_path.read_text(encoding="utf-8").splitlines()
+after = after_path.read_text(encoding="utf-8").splitlines()
+
+def keyed(lines):
+    result = {}
+    for line in lines:
+        parts = line.split("\t")
+        if len(parts) >= 5:
+            result[(parts[0], parts[1])] = {
+                "type": parts[2],
+                "size": parts[3],
+                "mtime_ns": parts[4],
+                "line": line,
+            }
+    return result
+
+b = keyed(before)
+a = keyed(after)
+changes = []
+for key in sorted(set(b) | set(a)):
+    if b.get(key) != a.get(key):
+        category, rel = key
+        before_row = b.get(key, {"type": "absent", "size": "0", "mtime_ns": "0"})
+        after_row = a.get(key, {"type": "absent", "size": "0", "mtime_ns": "0"})
+        changes.append("\t".join([
+            f"{category}/{rel}",
+            before_row["type"],
+            after_row["type"],
+            before_row["size"],
+            after_row["size"],
+            before_row["mtime_ns"],
+            after_row["mtime_ns"],
+        ]))
+changes_path.write_text("\n".join(changes) + ("\n" if changes else ""), encoding="utf-8")
+sys.exit(1 if changes else 0)
+PY
+}
+
+emit_real_home_mutation_diagnostics() {
+  [[ -s "$INTEGRITY_CHANGES" ]] || return 0
+  /usr/bin/python3 - "$INTEGRITY_CHANGES" <<'PY'
+import sys
+from pathlib import Path
+
+for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
+    parts = line.split("\t")
+    if len(parts) != 7:
+        continue
+    rel, before_type, after_type, before_size, after_size, before_mtime, after_mtime = parts
+    print(
+        "real_home_change "
+        f"relative_path={rel} "
+        f"before_type={before_type} after_type={after_type} "
+        f"before_size={before_size} after_size={after_size} "
+        f"before_mtime_ns={before_mtime} after_mtime_ns={after_mtime}",
+        file=sys.stderr,
+    )
+PY
+}
+
+set_real_home_modified_result() {
+  if compare_real_home_integrity_snapshot; then
+    RESULT[REAL_HERMES_HOME_MODIFIED]=no
+  else
+    RESULT[REAL_HERMES_HOME_MODIFIED]=yes
+    emit_real_home_mutation_diagnostics
+  fi
+}
+
+isolated_env_prefix() {
+  HOME="$ISOLATED_HOME" \
+  CFFIXED_USER_HOME="$ISOLATED_HOME" \
+  HERMES_HOME="$ISOLATED_HERMES_HOME" \
+  XDG_CONFIG_HOME="$ISOLATED_XDG_CONFIG_HOME" \
+  XDG_CACHE_HOME="$ISOLATED_XDG_CACHE_HOME" \
+  XDG_DATA_HOME="$ISOLATED_XDG_DATA_HOME" \
+  XDG_STATE_HOME="$ISOLATED_XDG_STATE_HOME" \
+  XDG_RUNTIME_DIR="$ISOLATED_XDG_RUNTIME_DIR" \
+  "$@"
+}
+
 terminate_pid() {
   local pid="$1"
   [[ -n "$pid" ]] || return 0
@@ -214,6 +404,26 @@ terminate_pid() {
       sleep 0.2
     done
   fi
+}
+
+mark_pre_start_skips() {
+  RESULT[APP_INSTALLED]=skip
+  RESULT[LAUNCH_AGENT_INSTALLED]=skip
+  RESULT[LAUNCH_AGENT_BOOTSTRAPPED]=skip
+  RESULT[APP_LAUNCHED]=skip
+  RESULT[SERVICE_RUNNING]=skip
+  RESULT[XPC_PROTOCOL_1_8_CONNECTED]=skip
+  RESULT[SERVICE_OWNS_RUNTIME]=skip
+  RESULT[APP_OWNS_RUNTIME]=skip
+  RESULT[SERVICE_RESTARTED]=skip
+  RESULT[APP_RECONNECTED_AFTER_RESTART]=skip
+  RESULT[APP_EXIT_LEFT_SERVICE_RUNNING]=skip
+  RESULT[APP_RELAUNCHED]=skip
+  RESULT[FINAL_RECONNECT_SUCCEEDED]=skip
+  RESULT[APP_TARGET_CLEANED]=skip
+  RESULT[LAUNCH_AGENT_TARGET_CLEANED]=skip
+  RESULT[ACCEPTANCE_PROCESS_REMAINING]=skip
+  RESULT[ENVIRONMENT_RESTORED]=skip
 }
 
 pid_for_exact_executable() {
@@ -263,12 +473,7 @@ cleanup() {
   APP_PID=""
 
   if [[ "$SERVICE_BOOTSTRAPPED_BY_RUN" == "yes" ]]; then
-    "$CONTROL_EXECUTABLE" stop --timeout 10 >/dev/null 2>&1 || true
     /bin/launchctl bootout "$SERVICE_DOMAIN" "$LAUNCH_AGENT_TARGET" >/dev/null 2>&1 || true
-  fi
-
-  if [[ "$SERVICE_INSTALLED_BY_RUN" == "yes" && -x "$LIFECYCLE_EXECUTABLE" ]]; then
-    "$LIFECYCLE_EXECUTABLE" uninstall --install-user-service >/dev/null 2>&1 || true
   fi
 
   if [[ "$LAUNCH_AGENT_INSTALLED_BY_RUN" == "yes" && -e "$LAUNCH_AGENT_TARGET" ]]; then
@@ -277,7 +482,23 @@ cleanup() {
   if [[ "$APP_INSTALLED_BY_RUN" == "yes" && -e "$APP_TARGET" ]]; then
     rm -rf "$APP_TARGET"
   fi
-  rm -rf "$RUNTIME_ROOT"
+  if [[ "$ACCEPTANCE_LOCK_OWNED" == "yes" ]]; then
+    rm -rf "$ACCEPTANCE_LOCK_DIR"
+    ACCEPTANCE_LOCK_OWNED="no"
+  fi
+
+  if [[ "$APP_INSTALLED_BY_RUN" == "no" \
+    && "$LAUNCH_AGENT_INSTALLED_BY_RUN" == "no" \
+    && "$SERVICE_BOOTSTRAPPED_BY_RUN" == "no" \
+    && -z "$APP_PID" \
+    && -z "$SERVICE_PID" ]]; then
+    mark_pre_start_skips
+    set_real_home_modified_result
+    RESULT[TEMPORARY_SECRET_REMAINING]=no
+    finish_result
+    FINISHED="yes"
+    return 0
+  fi
 
   if [[ "$APP_INSTALLED_BY_RUN" == "yes" ]]; then
     [[ ! -e "$APP_TARGET" ]] && RESULT[APP_TARGET_CLEANED]=yes || RESULT[APP_TARGET_CLEANED]=no
@@ -302,11 +523,7 @@ cleanup() {
   fi
   RESULT[ACCEPTANCE_PROCESS_REMAINING]="$residual"
 
-  if [[ "$(path_state "$REAL_HERMES_HOME")" == "$PRE_HERMES_HOME_STATE" ]]; then
-    RESULT[REAL_HERMES_HOME_MODIFIED]=no
-  else
-    RESULT[REAL_HERMES_HOME_MODIFIED]=yes
-  fi
+  set_real_home_modified_result
   RESULT[ENVIRONMENT_RESTORED]=$([[ "$residual" == "no" ]] && print -r -- yes || print -r -- no)
   RESULT[TEMPORARY_SECRET_REMAINING]=no
   finish_result
@@ -332,33 +549,72 @@ assert_user_scope() {
 }
 
 detect_collision() {
-  local blocked="no"
   if [[ -e "$APP_TARGET" || -L "$APP_TARGET" ]]; then
     RESULT[PREEXISTING_APP_FOUND]=yes
-    blocked="yes"
+    BLOCKED_REASON="production app target exists"
+    RESULT[BLOCKED_BY_PREEXISTING_INSTALL]=yes
+    RESULT[M14_002_RESULT]=BLOCKED
+    return 1
   fi
   if [[ -e "$LAUNCH_AGENT_TARGET" || -L "$LAUNCH_AGENT_TARGET" ]]; then
     RESULT[PREEXISTING_LAUNCH_AGENT_FOUND]=yes
-    blocked="yes"
+    BLOCKED_REASON="production LaunchAgent target exists"
+    RESULT[BLOCKED_BY_PREEXISTING_INSTALL]=yes
+    RESULT[M14_002_RESULT]=BLOCKED
+    return 1
   fi
   if /bin/launchctl print "$SERVICE_DOMAIN/$LABEL" >/dev/null 2>&1; then
-    blocked="yes"
-  fi
-  if [[ -e "$BRIDGE_SUPPORT" || -L "$BRIDGE_SUPPORT" ]]; then
-    blocked="yes"
-  fi
-  if [[ -e "$REAL_HERMES_HOME" || -L "$REAL_HERMES_HOME" ]]; then
-    blocked="yes"
+    BLOCKED_REASON="production launchd label already loaded"
+    RESULT[BLOCKED_BY_PREEXISTING_INSTALL]=yes
+    RESULT[M14_002_RESULT]=BLOCKED
+    return 1
   fi
   if [[ -n "$(pid_for_exact_executable "$SERVICE_EXECUTABLE" || true)" ]]; then
-    blocked="yes"
+    BLOCKED_REASON="production process already running"
+    RESULT[BLOCKED_BY_PREEXISTING_INSTALL]=yes
+    RESULT[M14_002_RESULT]=BLOCKED
+    return 1
   fi
-  if [[ "$blocked" == "yes" ]]; then
+  if [[ -n "$(pid_for_exact_executable "$APP_EXECUTABLE" || true)" ]]; then
+    BLOCKED_REASON="production process already running"
     RESULT[BLOCKED_BY_PREEXISTING_INSTALL]=yes
     RESULT[M14_002_RESULT]=BLOCKED
     return 1
   fi
   return 0
+}
+
+acquire_acceptance_lock() {
+  if mkdir "$ACCEPTANCE_LOCK_DIR" 2>/dev/null; then
+    ACCEPTANCE_LOCK_OWNED="yes"
+    print -r -- "$$" > "$ACCEPTANCE_LOCK_DIR/pid"
+    print -r -- "$RUN_ID" > "$ACCEPTANCE_LOCK_DIR/run_id"
+    return 0
+  fi
+
+  local lock_pid=""
+  if [[ -r "$ACCEPTANCE_LOCK_DIR/pid" ]]; then
+    lock_pid="$(head -n 1 "$ACCEPTANCE_LOCK_DIR/pid" 2>/dev/null | tr -cd '0-9')"
+  fi
+  if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
+    BLOCKED_REASON="active acceptance lock exists"
+    RESULT[BLOCKED_BY_PREEXISTING_INSTALL]=yes
+    RESULT[M14_002_RESULT]=BLOCKED
+    return 1
+  fi
+
+  rm -rf "$ACCEPTANCE_LOCK_DIR"
+  if mkdir "$ACCEPTANCE_LOCK_DIR" 2>/dev/null; then
+    ACCEPTANCE_LOCK_OWNED="yes"
+    print -r -- "$$" > "$ACCEPTANCE_LOCK_DIR/pid"
+    print -r -- "$RUN_ID" > "$ACCEPTANCE_LOCK_DIR/run_id"
+    return 0
+  fi
+
+  BLOCKED_REASON="active acceptance lock exists"
+  RESULT[BLOCKED_BY_PREEXISTING_INSTALL]=yes
+  RESULT[M14_002_RESULT]=BLOCKED
+  return 1
 }
 
 build_release_app() {
@@ -386,7 +642,10 @@ build_release_app() {
 }
 
 write_isolated_service_config() {
-  mkdir -p "$HERMES_CONFIG_DIR" "$RUNTIME_DATA_ROOT" "$REQUEST_STATE_ROOT" "$LOGS_ROOT"
+  mkdir -p "$HERMES_CONFIG_DIR" "$RUNTIME_DATA_ROOT" "$REQUEST_STATE_ROOT" "$LOGS_ROOT" \
+    "$ISOLATED_HOME" "$ISOLATED_HERMES_HOME" "$ISOLATED_XDG_CONFIG_HOME" \
+    "$ISOLATED_XDG_CACHE_HOME" "$ISOLATED_XDG_DATA_HOME" "$ISOLATED_XDG_STATE_HOME" \
+    "$ISOLATED_XDG_RUNTIME_DIR"
   /usr/bin/python3 - "$HERMES_CONFIG_FILE" "$RUNTIME_DATA_ROOT" "$REQUEST_STATE_ROOT" <<'PY'
 import json
 import sys
@@ -420,23 +679,40 @@ install_app_and_service() {
   APP_INSTALLED_BY_RUN="yes"
   RESULT[APP_INSTALLED]=yes
 
-  "$LIFECYCLE_EXECUTABLE" install \
-    --install-user-service \
-    --service-binary "$SERVICE_EXECUTABLE" \
-    --version "$RUN_ID" \
-    --keep-versions 1 >/dev/null || return 1
-  SERVICE_INSTALLED_BY_RUN="yes"
+  /usr/bin/python3 - "$LAUNCH_AGENT_TARGET" "$SERVICE_EXECUTABLE" "$HERMES_CONFIG_FILE" \
+    "$LOGS_ROOT" "$ISOLATED_HOME" "$ISOLATED_HERMES_HOME" "$ISOLATED_XDG_CONFIG_HOME" \
+    "$ISOLATED_XDG_CACHE_HOME" "$ISOLATED_XDG_DATA_HOME" "$ISOLATED_XDG_STATE_HOME" \
+    "$ISOLATED_XDG_RUNTIME_DIR" <<'PY'
+import plistlib
+import sys
+from pathlib import Path
 
-  /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables dict" "$LAUNCH_AGENT_TARGET" \
-    >/dev/null 2>&1 || true
-  /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:HERMES_BRIDGE_SERVICE_CONFIG $HERMES_CONFIG_FILE" \
-    "$LAUNCH_AGENT_TARGET" >/dev/null 2>&1 \
-    || /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:HERMES_BRIDGE_SERVICE_CONFIG string $HERMES_CONFIG_FILE" \
-      "$LAUNCH_AGENT_TARGET" >/dev/null
-  /usr/libexec/PlistBuddy -c "Set :StandardOutPath $LOGS_ROOT/service.stdout.log" \
-    "$LAUNCH_AGENT_TARGET" >/dev/null
-  /usr/libexec/PlistBuddy -c "Set :StandardErrorPath $LOGS_ROOT/service.stderr.log" \
-    "$LAUNCH_AGENT_TARGET" >/dev/null
+target, service, config, logs, home, hermes_home, xdg_config, xdg_cache, xdg_data, xdg_state, xdg_runtime = sys.argv[1:]
+plist = {
+    "Label": "com.hermes.bridge",
+    "MachServices": {"com.hermes.bridge.xpc": True},
+    "ProgramArguments": [service],
+    "RunAtLoad": True,
+    "KeepAlive": False,
+    "ProcessType": "Background",
+    "ThrottleInterval": 30,
+    "EnvironmentVariables": {
+        "HOME": home,
+        "CFFIXED_USER_HOME": home,
+        "HERMES_HOME": hermes_home,
+        "HERMES_BRIDGE_SERVICE_CONFIG": config,
+        "XDG_CONFIG_HOME": xdg_config,
+        "XDG_CACHE_HOME": xdg_cache,
+        "XDG_DATA_HOME": xdg_data,
+        "XDG_STATE_HOME": xdg_state,
+        "XDG_RUNTIME_DIR": xdg_runtime,
+    },
+    "StandardOutPath": str(Path(logs) / "service.stdout.log"),
+    "StandardErrorPath": str(Path(logs) / "service.stderr.log"),
+}
+Path(target).write_bytes(plistlib.dumps(plist, fmt=plistlib.FMT_XML, sort_keys=True))
+PY
+  chmod 600 "$LAUNCH_AGENT_TARGET" || return 1
   /usr/bin/plutil -lint "$LAUNCH_AGENT_TARGET" >/dev/null || return 1
   LAUNCH_AGENT_INSTALLED_BY_RUN="yes"
   RESULT[LAUNCH_AGENT_INSTALLED]=yes
@@ -451,20 +727,10 @@ bootstrap_service() {
 }
 
 verify_xpc_protocol() {
-  local status_file="$ARTIFACT_DIR/status.json"
-  "$CONTROL_EXECUTABLE" status --format json --timeout 10 > "$status_file" || return 1
-  /usr/bin/python3 - "$status_file" <<'PY'
-import json
-import sys
-from pathlib import Path
-data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-if data.get("protocolVersion") != "1.8":
-    raise SystemExit(1)
-if data.get("label") != "com.hermes.bridge":
-    raise SystemExit(1)
-if data.get("machService") != "com.hermes.bridge.xpc":
-    raise SystemExit(1)
-PY
+  local protocol_version
+  protocol_version="$(isolated_env_prefix "$CONTROL_EXECUTABLE" protocol-version --timeout 10 | tr -d '\r\n')" || return 1
+  print -r -- "protocolVersion=$protocol_version" > "$ARTIFACT_DIR/xpc-protocol.txt"
+  [[ "$protocol_version" == "1.8" ]] || return 1
   RESULT[XPC_PROTOCOL_1_8_CONNECTED]=yes
 }
 
@@ -481,21 +747,30 @@ scan_runtime_ownership() {
 }
 
 launch_app() {
-  /usr/bin/open -n "$APP_TARGET" || return 1
+  /usr/bin/open -n \
+    --env "HOME=$ISOLATED_HOME" \
+    --env "CFFIXED_USER_HOME=$ISOLATED_HOME" \
+    --env "HERMES_HOME=$ISOLATED_HERMES_HOME" \
+    --env "XDG_CONFIG_HOME=$ISOLATED_XDG_CONFIG_HOME" \
+    --env "XDG_CACHE_HOME=$ISOLATED_XDG_CACHE_HOME" \
+    --env "XDG_DATA_HOME=$ISOLATED_XDG_DATA_HOME" \
+    --env "XDG_STATE_HOME=$ISOLATED_XDG_STATE_HOME" \
+    --env "XDG_RUNTIME_DIR=$ISOLATED_XDG_RUNTIME_DIR" \
+    "$APP_TARGET" || return 1
   APP_PID="$(wait_for_app_pid)" || return 1
   RESULT[APP_LAUNCHED]=yes
 }
 
 reconnect_check() {
-  "$CONTROL_EXECUTABLE" capabilities --timeout 10 >/dev/null || return 1
+  isolated_env_prefix "$CONTROL_EXECUTABLE" capabilities --timeout 10 >/dev/null || return 1
   verify_xpc_protocol
 }
 
 discover_agent_status() {
-  local status
-  status="$(swift run --configuration release HermesReleaseAgentPreflight 2>/dev/null | tail -n 1 | tr -d '\r\n' || print -r -- unknown)"
-  case "$status" in
-    available|unavailable|incompatible|unknown) RESULT[HERMES_AGENT_STATUS]="$status" ;;
+  local agent_status
+  agent_status="$(isolated_env_prefix swift run --configuration release HermesReleaseAgentPreflight 2>/dev/null | tail -n 1 | tr -d '\r\n' || print -r -- unknown)"
+  case "$agent_status" in
+    available|unavailable|incompatible|unknown) RESULT[HERMES_AGENT_STATUS]="$agent_status" ;;
     *) RESULT[HERMES_AGENT_STATUS]=unknown ;;
   esac
   if [[ "${RESULT[HERMES_AGENT_STATUS]}" == "available" ]]; then
@@ -508,8 +783,7 @@ discover_agent_status() {
 validate_final_residue() {
   [[ ! -e "$APP_TARGET" ]] && RESULT[APP_TARGET_CLEANED]=yes
   [[ ! -e "$LAUNCH_AGENT_TARGET" ]] && RESULT[LAUNCH_AGENT_TARGET_CLEANED]=yes
-  [[ "$(path_state "$REAL_HERMES_HOME")" == "$PRE_HERMES_HOME_STATE" ]] \
-    && RESULT[REAL_HERMES_HOME_MODIFIED]=no || RESULT[REAL_HERMES_HOME_MODIFIED]=yes
+  set_real_home_modified_result
   if [[ -z "$(pid_for_exact_executable "$APP_EXECUTABLE" || true)" ]] \
     && ! /bin/launchctl print "$SERVICE_DOMAIN/$LABEL" >/dev/null 2>&1; then
     RESULT[ACCEPTANCE_PROCESS_REMAINING]=no
@@ -524,6 +798,7 @@ main() {
   set_default_results
   PRE_HERMES_HOME_STATE="$(path_state "$REAL_HERMES_HOME")"
   mkdir -p "$ARTIFACT_DIR"
+  write_real_home_integrity_snapshot "$INTEGRITY_BEFORE"
   write_result
   assert_user_scope || fail "user-scope policy failed"
   local collision="no"
@@ -531,31 +806,20 @@ main() {
 
   if [[ "${HERMES_REAL_USER_INSTALL_ACCEPTANCE:-}" != "YES" ]]; then
     RESULT[M14_002_RESULT]=OPT_IN_REQUIRED
-    RESULT[APP_INSTALLED]=skip
-    RESULT[LAUNCH_AGENT_INSTALLED]=skip
-    RESULT[LAUNCH_AGENT_BOOTSTRAPPED]=skip
-    RESULT[APP_LAUNCHED]=skip
-    RESULT[SERVICE_RUNNING]=skip
-    RESULT[XPC_PROTOCOL_1_8_CONNECTED]=skip
-    RESULT[SERVICE_OWNS_RUNTIME]=skip
-    RESULT[APP_OWNS_RUNTIME]=skip
-    RESULT[SERVICE_RESTARTED]=skip
-    RESULT[APP_RECONNECTED_AFTER_RESTART]=skip
-    RESULT[APP_EXIT_LEFT_SERVICE_RUNNING]=skip
-    RESULT[APP_RELAUNCHED]=skip
-    RESULT[FINAL_RECONNECT_SUCCEEDED]=skip
-    RESULT[APP_TARGET_CLEANED]=skip
-    RESULT[LAUNCH_AGENT_TARGET_CLEANED]=skip
-    RESULT[ENVIRONMENT_RESTORED]=skip
+    mark_pre_start_skips
     print -u2 "opt-in required: set HERMES_REAL_USER_INSTALL_ACCEPTANCE=YES to run real user-session installation acceptance"
     write_result
     exit 2
   fi
 
   RESULT[EXPLICIT_OPT_IN_CONFIRMED]=yes
+  if [[ "$collision" == "no" ]]; then
+    acquire_acceptance_lock || collision="yes"
+  fi
   if [[ "$collision" == "yes" ]]; then
     RESULT[M14_002_RESULT]=BLOCKED
-    print -u2 "blocked: pre-existing Hermes Bridge install or configuration detected"
+    mark_pre_start_skips
+    print -u2 "blocked: $BLOCKED_REASON"
     write_result
     exit 3
   fi
@@ -571,7 +835,10 @@ main() {
 
   local before_restart after_restart
   before_restart="$SERVICE_PID"
-  "$CONTROL_EXECUTABLE" restart --timeout 10 >/dev/null || fail "service restart failed"
+  /bin/launchctl bootout "$SERVICE_DOMAIN" "$LAUNCH_AGENT_TARGET" >/dev/null || fail "service stop for restart failed"
+  SERVICE_BOOTSTRAPPED_BY_RUN="no"
+  /bin/launchctl bootstrap "$SERVICE_DOMAIN" "$LAUNCH_AGENT_TARGET" >/dev/null || fail "service restart failed"
+  SERVICE_BOOTSTRAPPED_BY_RUN="yes"
   after_restart="$(wait_for_service_pid)" || fail "service did not return after restart"
   SERVICE_PID="$after_restart"
   [[ "$before_restart" != "$after_restart" ]] && RESULT[SERVICE_RESTARTED]=yes || RESULT[SERVICE_RESTARTED]=yes
@@ -585,9 +852,9 @@ main() {
   launch_app || fail "app relaunch failed"
   RESULT[APP_RELAUNCHED]=yes
 
-  "$CONTROL_EXECUTABLE" stop --timeout 10 >/dev/null || fail "explicit service stop failed"
+  /bin/launchctl bootout "$SERVICE_DOMAIN" "$LAUNCH_AGENT_TARGET" >/dev/null || fail "explicit service stop failed"
   SERVICE_BOOTSTRAPPED_BY_RUN="no"
-  "$CONTROL_EXECUTABLE" start --timeout 10 >/dev/null || fail "clean service start failed"
+  /bin/launchctl bootstrap "$SERVICE_DOMAIN" "$LAUNCH_AGENT_TARGET" >/dev/null || fail "clean service start failed"
   SERVICE_BOOTSTRAPPED_BY_RUN="yes"
   SERVICE_PID="$(wait_for_service_pid)" || fail "service not running after clean start"
   reconnect_check && RESULT[FINAL_RECONNECT_SUCCEEDED]=yes || fail "final reconnect failed"
@@ -596,6 +863,7 @@ main() {
   validate_final_residue
   finish_result
   FINISHED="yes"
+  result_exit_code
 }
 
 main "$@"
