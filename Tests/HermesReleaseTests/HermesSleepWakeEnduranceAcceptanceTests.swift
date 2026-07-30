@@ -2,6 +2,17 @@ import Foundation
 import XCTest
 
 final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
+  private let reservedZshNames = [
+    "status",
+    "pipestatus",
+    "signals",
+    "commands",
+    "functions",
+    "path",
+    "match",
+    "reply",
+  ]
+
   private var root: URL {
     URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
@@ -94,6 +105,61 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
     XCTAssertTrue(load.contains("invalid relative target"))
   }
 
+  func testZshReservedVariableStatusIsProhibited() throws {
+    let script = try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh")
+    XCTAssertFalse(try zshReservedNameViolations(in: script).contains { $0.name == "status" })
+
+    XCTAssertTrue(try zshReservedNameViolations(in: "local status=\"started\"\n").contains { $0.name == "status" })
+    XCTAssertTrue(try zshReservedNameViolations(in: "typeset status\n").contains { $0.name == "status" })
+    XCTAssertTrue(try zshReservedNameViolations(in: "status=started\n").contains { $0.name == "status" })
+  }
+
+  func testConfiguredZshReservedNamesAreProhibitedWithoutMatchingCommentsOrStrings() throws {
+    let script = try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh")
+    XCTAssertEqual(try zshReservedNameViolations(in: script), [])
+
+    for name in reservedZshNames {
+      XCTAssertFalse(try zshReservedNameViolations(in: "local \(name)\n").isEmpty, name)
+      XCTAssertFalse(try zshReservedNameViolations(in: "typeset \(name)=value\n").isEmpty, name)
+      XCTAssertFalse(try zshReservedNameViolations(in: "\(name)=value\n").isEmpty, name)
+    }
+
+    let ignored = """
+    # local status
+    print -r -- "local pipestatus"
+    print -r -- 'commands=value'
+    RESULT[M14_003_RESULT]=FAIL
+    """
+    XCTAssertEqual(try zshReservedNameViolations(in: ignored), [])
+  }
+
+  func testAtomicCheckpointWriteUsesRuntimeTempFsyncAndRename() throws {
+    let script = try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh")
+    let write = try extractFunction("write_checkpoint", from: script)
+
+    XCTAssertTrue(write.contains("local checkpoint_tmp=\"$RUNTIME_ROOT/.checkpoint.$RUN_ID.$$.$RANDOM.tmp\""))
+    XCTAssertTrue(write.contains("tmp.parent != final.parent"))
+    XCTAssertTrue(write.contains("handle.flush()"))
+    XCTAssertTrue(write.contains("os.fsync(handle.fileno())"))
+    XCTAssertTrue(write.contains("json.load(handle)"))
+    XCTAssertTrue(write.contains("os.replace(tmp, final)"))
+    XCTAssertTrue(write.contains("os.fsync(directory_fd)"))
+    XCTAssertFalse(write.contains("Path(path).write_text"))
+  }
+
+  func testTemporaryCheckpointCleanupOnFailure() throws {
+    let script = try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh")
+    let write = try extractFunction("write_checkpoint", from: script)
+    let failed = try extractFunction("checkpoint_write_failed", from: script)
+
+    XCTAssertTrue(write.contains("rm -f \"$checkpoint_tmp\""))
+    XCTAssertTrue(write.contains("HERMES_M14_003_CHECKPOINT_TEST_FAIL_AFTER_TEMP"))
+    XCTAssertTrue(failed.contains("rm -f \"$checkpoint_tmp\""))
+    XCTAssertTrue(failed.contains("cleanup_owned_state"))
+    XCTAssertTrue(failed.contains("RESULT[M14_003_RESULT]=FAIL"))
+    XCTAssertTrue(failed.contains("exit 1"))
+  }
+
   func testForegroundTerminalIndependence() throws {
     let script = try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh")
     let prepare = try extractFunction("prepare", from: script)
@@ -167,6 +233,37 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
     XCTAssertTrue(resume.contains("write_checkpoint \"resume\" \"resuming\""))
   }
 
+  func testMissingCheckpointResumeReturnsExitOneAndIsHarmless() throws {
+    try removeRuntimeCheckpoint()
+
+    let first = try runAcceptanceScript(["resume"], optIn: true)
+    let second = try runAcceptanceScript(["resume"], optIn: true)
+
+    for result in [first, second] {
+      XCTAssertEqual(result.exitCode, 1)
+      XCTAssertEqual(result.combinedOutput.components(separatedBy: "error: missing or invalid durable checkpoint").count - 1, 1)
+      XCTAssertFalse(result.combinedOutput.contains("genuine sleep/wake evidence"))
+      XCTAssertFalse(result.combinedOutput.contains("post-wake validation"))
+    }
+    XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("artifacts/m14-003/runtime/checkpoint.json").path))
+    let resultText = try read("artifacts/m14-003/result.txt")
+    XCTAssertTrue(resultText.contains("M14_003_RESULT=FAIL"))
+  }
+
+  func testNoPartialCheckpointAcceptedByResume() throws {
+    let runtime = root.appendingPathComponent("artifacts/m14-003/runtime")
+    try FileManager.default.createDirectory(at: runtime, withIntermediateDirectories: true)
+    try "partial\n".write(to: runtime.appendingPathComponent("checkpoint.json"), atomically: true, encoding: .utf8)
+
+    let result = try runAcceptanceScript(["resume"], optIn: true)
+
+    XCTAssertEqual(result.exitCode, 1)
+    XCTAssertEqual(result.combinedOutput.components(separatedBy: "error: missing or invalid durable checkpoint").count - 1, 1)
+    XCTAssertFalse(result.combinedOutput.contains("REAL_SLEEP_DETECTED=yes"))
+    let resultText = try read("artifacts/m14-003/result.txt")
+    XCTAssertTrue(resultText.contains("M14_003_RESULT=FAIL"))
+  }
+
   func testDuplicateServiceDetectionAndPostWakeReconnect() throws {
     let script = try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh")
     let duplicate = try extractFunction("detect_duplicate_service_instance", from: script)
@@ -198,6 +295,40 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
     XCTAssertFalse(script.contains("sudo "))
   }
 
+  func testPrepareFailureAfterInstallUsesLiveExactCleanupState() throws {
+    let script = try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh")
+    let cleanup = try extractFunction("cleanup_owned_state", from: script)
+    let live = try extractFunction("has_live_owned_state", from: script)
+    let failed = try extractFunction("checkpoint_write_failed", from: script)
+
+    XCTAssertTrue(live.contains("APP_INSTALLED_BY_RUN"))
+    XCTAssertTrue(live.contains("LAUNCH_AGENT_INSTALLED_BY_RUN"))
+    XCTAssertTrue(live.contains("SERVICE_BOOTSTRAPPED_BY_RUN"))
+    XCTAssertTrue(live.contains("RECORDER_BOOTSTRAPPED_BY_RUN"))
+    XCTAssertTrue(live.contains("APP_PID"))
+    XCTAssertTrue(live.contains("SERVICE_PID"))
+    XCTAssertTrue(live.contains("RECORDER_PID"))
+    XCTAssertTrue(cleanup.contains("if ! has_live_owned_state; then"))
+    XCTAssertTrue(cleanup.contains("[[ -r \"$CHECKPOINT_FILE\" ]] && load_checkpoint 2>/dev/null || true"))
+    XCTAssertTrue(failed.contains("cleanup_owned_state"))
+  }
+
+  func testCleanupRemainsExactPIDLabelAndPathOnly() throws {
+    let script = try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh")
+    let cleanup = try extractFunction("cleanup_owned_state", from: script)
+
+    XCTAssertTrue(cleanup.contains("terminate_pid \"$APP_PID\""))
+    XCTAssertTrue(cleanup.contains("terminate_pid \"$RECORDER_PID\""))
+    XCTAssertTrue(cleanup.contains("launchctl bootout \"$SERVICE_DOMAIN\" \"$RECORDER_PLIST\""))
+    XCTAssertTrue(cleanup.contains("launchctl bootout \"$SERVICE_DOMAIN\" \"$LAUNCH_AGENT_TARGET\""))
+    XCTAssertTrue(cleanup.contains("[[ \"$LAUNCH_AGENT_INSTALLED_BY_RUN\" == \"yes\" && -e \"$LAUNCH_AGENT_TARGET\" ]]"))
+    XCTAssertTrue(cleanup.contains("[[ \"$APP_INSTALLED_BY_RUN\" == \"yes\" && -e \"$APP_TARGET\" ]]"))
+    XCTAssertFalse(cleanup.contains("~/.hermes"))
+    XCTAssertFalse(cleanup.contains("Keychain"))
+    XCTAssertFalse(script.contains("killall"))
+    XCTAssertFalse(script.contains("pkill"))
+  }
+
   func testCleanupAfterTerminalLossPrepareFailureAndResumeFailure() throws {
     let script = try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh")
     let cleanupCommand = try extractFunction("cleanup_command", from: script)
@@ -205,7 +336,7 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
 
     XCTAssertTrue(script.contains("trap cleanup EXIT"))
     XCTAssertTrue(script.contains("trap 'RESULT[M14_003_RESULT]=FAIL; exit 130' INT TERM HUP"))
-    XCTAssertTrue(cleanup.contains("[[ -r \"$CHECKPOINT_FILE\" ]] && load_checkpoint || true"))
+    XCTAssertTrue(cleanup.contains("[[ -r \"$CHECKPOINT_FILE\" ]] && load_checkpoint 2>/dev/null || true"))
     XCTAssertTrue(cleanup.contains("write_checkpoint \"cleanup\" \"cleaned\""))
     XCTAssertTrue(cleanupCommand.contains("cleanup_owned_state"))
     XCTAssertTrue(cleanupCommand.contains("ENVIRONMENT_RESTORED"))
@@ -336,5 +467,86 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
     }
     XCTFail("Unterminated function \(name)")
     return ""
+  }
+
+  private func removeRuntimeCheckpoint() throws {
+    let runtime = root.appendingPathComponent("artifacts/m14-003/runtime")
+    try? FileManager.default.removeItem(at: runtime.appendingPathComponent("checkpoint.json"))
+    try FileManager.default.createDirectory(at: runtime, withIntermediateDirectories: true)
+  }
+
+  private func runAcceptanceScript(_ arguments: [String], optIn: Bool) throws -> (exitCode: Int32, combinedOutput: String) {
+    let process = Process()
+    process.currentDirectoryURL = root
+    process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+    process.arguments = ["Scripts/m14_003_sleep_wake_endurance_acceptance.sh"] + arguments
+    var environment = ProcessInfo.processInfo.environment
+    environment["HERMES_M14_003_RUN_ID"] = "m14-003-test-\(UUID().uuidString)"
+    if optIn {
+      environment["HERMES_SLEEP_WAKE_ACCEPTANCE"] = "YES"
+    } else {
+      environment.removeValue(forKey: "HERMES_SLEEP_WAKE_ACCEPTANCE")
+    }
+    process.environment = environment
+    let pipe = Pipe()
+    process.standardOutput = pipe
+    process.standardError = pipe
+    try process.run()
+    process.waitUntilExit()
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    return (process.terminationStatus, String(data: data, encoding: .utf8) ?? "")
+  }
+
+  private func zshReservedNameViolations(in script: String) throws -> [ReservedNameViolation] {
+    var violations: [ReservedNameViolation] = []
+    for (index, rawLine) in script.components(separatedBy: .newlines).enumerated() {
+      let line = stripZshComment(from: rawLine).trimmingCharacters(in: .whitespaces)
+      guard !line.isEmpty else { continue }
+      if line.hasPrefix("local ") || line.hasPrefix("typeset ") {
+        let body = line.split(maxSplits: 1, whereSeparator: \.isWhitespace).dropFirst().joined(separator: " ")
+        for token in body.split(whereSeparator: \.isWhitespace) {
+          let variable = token.split(separator: "=", maxSplits: 1).first.map(String.init) ?? ""
+          if reservedZshNames.contains(variable) {
+            violations.append(ReservedNameViolation(line: index + 1, name: variable))
+          }
+        }
+      } else if let equals = line.firstIndex(of: "=") {
+        let variable = String(line[..<equals])
+        if variable.range(of: #"^[A-Za-z_][A-Za-z0-9_]*$"#, options: .regularExpression) != nil,
+           reservedZshNames.contains(variable) {
+          violations.append(ReservedNameViolation(line: index + 1, name: variable))
+        }
+      }
+    }
+    return violations
+  }
+
+  private func stripZshComment(from line: String) -> String {
+    var result = ""
+    var inSingleQuote = false
+    var inDoubleQuote = false
+    var previousWasBackslash = false
+    for character in line {
+      if character == "#" && !inSingleQuote && !inDoubleQuote {
+        break
+      }
+      result.append(character)
+      if character == "\\" && !previousWasBackslash {
+        previousWasBackslash = true
+        continue
+      }
+      if character == "'" && !inDoubleQuote && !previousWasBackslash {
+        inSingleQuote.toggle()
+      } else if character == "\"" && !inSingleQuote && !previousWasBackslash {
+        inDoubleQuote.toggle()
+      }
+      previousWasBackslash = false
+    }
+    return result
+  }
+
+  private struct ReservedNameViolation: Equatable {
+    let line: Int
+    let name: String
   }
 }

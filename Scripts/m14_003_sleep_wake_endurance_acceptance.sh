@@ -62,6 +62,7 @@ INTEGRITY_BEFORE="$RUNTIME_ROOT/real-home-before.snapshot"
 INTEGRITY_AFTER="$RUNTIME_ROOT/real-home-after.snapshot"
 INTEGRITY_CHANGES="$RUNTIME_ROOT/real-home-changes.txt"
 FINISHED="no"
+CHECKPOINT_FAILURE_FATAL="yes"
 
 ORDERED_KEYS=(
   EXPLICIT_OPT_IN_CONFIRMED
@@ -282,7 +283,9 @@ require_opt_in() {
     RESULT[M14_003_RESULT]=OPT_IN_REQUIRED
     mark_pre_start_skips
     print -u2 "opt-in required: set HERMES_SLEEP_WAKE_ACCEPTANCE=YES to run real sleep/wake endurance acceptance"
+    trap - EXIT INT TERM HUP
     write_result
+    FINISHED="yes"
     exit 2
   fi
   RESULT[EXPLICIT_OPT_IN_CONFIRMED]=yes
@@ -570,21 +573,35 @@ acquire_acceptance_lock() {
   return 1
 }
 
+checkpoint_write_failed() {
+  local checkpoint_tmp="$1"
+  rm -f "$checkpoint_tmp"
+  RESULT[M14_003_RESULT]=FAIL
+  cleanup_owned_state
+  write_result
+  trap - EXIT INT TERM HUP
+  FINISHED="yes"
+  exit 1
+}
+
 write_checkpoint() {
   local phase="$1"
-  local status="$2"
+  local checkpoint_state="$2"
+  local checkpoint_tmp="$RUNTIME_ROOT/.checkpoint.$RUN_ID.$$.$RANDOM.tmp"
   mkdir -p "$RUNTIME_ROOT"
-  /usr/bin/python3 - "$CHECKPOINT_FILE" "$RUN_ID" "$phase" "$status" \
+  if ! /usr/bin/python3 - "$CHECKPOINT_FILE" "$checkpoint_tmp" "$RUN_ID" "$phase" "$checkpoint_state" \
     "$LABEL" "$RECORDER_LABEL" "$APP_TARGET_REL" "$LAUNCH_AGENT_TARGET_REL" "$RECORDER_PLIST_REL" \
     "$APP_EXECUTABLE_REL" "$SERVICE_EXECUTABLE_REL" "$APP_PID" "$SERVICE_PID" "$RECORDER_PID" \
     "$APP_INSTALLED_BY_RUN" "$LAUNCH_AGENT_INSTALLED_BY_RUN" "$SERVICE_BOOTSTRAPPED_BY_RUN" \
     "$RECORDER_BOOTSTRAPPED_BY_RUN" "$RESTART_CYCLES_EXPECTED" <<'PY'
 import json
+import os
 import sys
+import time
 from pathlib import Path
 
 (
-    path, run_id, phase, status, service_label, recorder_label, app_target_rel,
+    final_path, tmp_path, run_id, phase, checkpoint_state, service_label, recorder_label, app_target_rel,
     launch_agent_target_rel, recorder_plist_rel, app_executable_rel,
     service_executable_rel, app_pid, service_pid, recorder_pid, app_installed,
     launch_agent_installed, service_bootstrapped, recorder_bootstrapped,
@@ -594,9 +611,9 @@ checkpoint = {
     "schemaVersion": 1,
     "runIdentifier": run_id,
     "phase": phase,
-    "status": status,
-    "createdAtMonotonicUptime": None,
-    "updatedAtEpochSeconds": None,
+    "status": checkpoint_state,
+    "createdAtMonotonicUptime": time.monotonic(),
+    "updatedAtEpochSeconds": int(time.time()),
     "serviceDomain": "gui/current-user",
     "serviceLabel": service_label,
     "recorderLabel": recorder_label,
@@ -624,24 +641,64 @@ checkpoint = {
     "wakeEvidence": "artifacts/m14-003/runtime/wake-recorder-evidence.jsonl",
     "realHomeSnapshotBefore": "artifacts/m14-003/runtime/real-home-before.snapshot",
 }
-Path(path).write_text(json.dumps(checkpoint, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-PY
-  /usr/bin/python3 - "$CHECKPOINT_FILE" <<'PY'
-import json
-import subprocess
-import sys
-import time
-from pathlib import Path
-path = Path(sys.argv[1])
-data = json.loads(path.read_text(encoding="utf-8"))
+required = [
+    ("schemaVersion", int),
+    ("runIdentifier", str),
+    ("phase", str),
+    ("status", str),
+    ("createdAtMonotonicUptime", float),
+    ("updatedAtEpochSeconds", int),
+    ("serviceDomain", str),
+    ("serviceLabel", str),
+    ("recorderLabel", str),
+    ("targets", dict),
+    ("ownedPids", dict),
+    ("ownership", dict),
+    ("restartCyclesExpected", int),
+    ("resultFile", str),
+    ("runtimeRoot", str),
+    ("wakeEvidence", str),
+    ("realHomeSnapshotBefore", str),
+]
+for key, expected in required:
+    if key not in checkpoint or not isinstance(checkpoint[key], expected):
+        raise SystemExit(f"invalid checkpoint payload: {key}")
+target_keys = ["app", "launchAgent", "recorderLaunchAgent", "appExecutable", "serviceExecutable"]
+for key in target_keys:
+    value = checkpoint["targets"].get(key)
+    if not isinstance(value, str) or value.startswith("/") or ".." in value.split("/"):
+        raise SystemExit(f"invalid checkpoint target: {key}")
+if os.environ.get("HERMES_M14_003_CHECKPOINT_TEST_FAIL_AFTER_TEMP") == "YES":
+    Path(tmp_path).write_text("partial\n", encoding="utf-8")
+    raise SystemExit("injected checkpoint failure")
+payload = json.dumps(checkpoint, indent=2, sort_keys=True) + "\n"
+tmp = Path(tmp_path)
+final = Path(final_path)
+if tmp.parent != final.parent:
+    raise SystemExit("temporary checkpoint must share final directory")
+with tmp.open("w", encoding="utf-8") as handle:
+    handle.write(payload)
+    handle.flush()
+    os.fsync(handle.fileno())
+with tmp.open("r", encoding="utf-8") as handle:
+    written = json.load(handle)
+for key, expected in required:
+    if key not in written or not isinstance(written[key], expected):
+        raise SystemExit(f"invalid written checkpoint: {key}")
+os.replace(tmp, final)
+directory_fd = os.open(str(final.parent), os.O_RDONLY)
 try:
-    uptime = float(subprocess.check_output(["/usr/bin/python3", "-c", "import time; print(time.monotonic())"], text=True).strip())
-except Exception:
-    uptime = None
-data["createdAtMonotonicUptime"] = data.get("createdAtMonotonicUptime") or uptime
-data["updatedAtEpochSeconds"] = int(time.time())
-path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    os.fsync(directory_fd)
+finally:
+    os.close(directory_fd)
 PY
+  then
+    rm -f "$checkpoint_tmp"
+    if [[ "$CHECKPOINT_FAILURE_FATAL" == "yes" ]]; then
+      checkpoint_write_failed "$checkpoint_tmp"
+    fi
+    return 1
+  fi
 }
 
 load_checkpoint() {
@@ -1097,9 +1154,21 @@ post_wake_validation() {
   RESULT[FINAL_RECONNECT_SUCCEEDED]=yes
 }
 
+has_live_owned_state() {
+  [[ "$APP_INSTALLED_BY_RUN" == "yes" \
+    || "$LAUNCH_AGENT_INSTALLED_BY_RUN" == "yes" \
+    || "$SERVICE_BOOTSTRAPPED_BY_RUN" == "yes" \
+    || "$RECORDER_BOOTSTRAPPED_BY_RUN" == "yes" \
+    || -n "$APP_PID" \
+    || -n "$SERVICE_PID" \
+    || -n "$RECORDER_PID" ]]
+}
+
 cleanup_owned_state() {
   trap - EXIT INT TERM HUP
-  [[ -r "$CHECKPOINT_FILE" ]] && load_checkpoint || true
+  if ! has_live_owned_state; then
+    [[ -r "$CHECKPOINT_FILE" ]] && load_checkpoint 2>/dev/null || true
+  fi
 
   terminate_pid "$APP_PID"
   APP_PID=""
@@ -1159,10 +1228,13 @@ cleanup_owned_state() {
 
   set_real_home_modified_result
   RESULT[ENVIRONMENT_RESTORED]=$([[ "$residual" == "no" ]] && print -r -- yes || print -r -- no)
+  CHECKPOINT_FAILURE_FATAL="no"
   write_checkpoint "cleanup" "cleaned" 2>/dev/null || true
+  CHECKPOINT_FAILURE_FATAL="yes"
 }
 
 cleanup() {
+  [[ "$FINISHED" == "yes" ]] && return 0
   cleanup_owned_state
   finish_result
   FINISHED="yes"
@@ -1231,7 +1303,14 @@ resume() {
   set_default_results
   mkdir -p "$ARTIFACT_DIR" "$RUNTIME_ROOT"
   require_opt_in
-  load_checkpoint || fail "missing or invalid durable checkpoint"
+  if ! load_checkpoint 2>/dev/null; then
+    print -u2 "error: missing or invalid durable checkpoint"
+    RESULT[M14_003_RESULT]=FAIL
+    trap - EXIT INT TERM HUP
+    write_result
+    FINISHED="yes"
+    exit 1
+  fi
   local checkpoint_run_id checkpoint_status
   checkpoint_run_id="$(checkpoint_field runIdentifier)"
   checkpoint_status="$(checkpoint_field status)"
@@ -1297,7 +1376,9 @@ main() {
       mkdir -p "$ARTIFACT_DIR"
       RESULT[M14_003_RESULT]=OPT_IN_REQUIRED
       mark_pre_start_skips
+      trap - EXIT INT TERM HUP
       write_result
+      FINISHED="yes"
       usage
       exit 2
       ;;
@@ -1306,7 +1387,9 @@ main() {
       mkdir -p "$ARTIFACT_DIR"
       RESULT[M14_003_RESULT]=FAIL
       mark_pre_start_skips
+      trap - EXIT INT TERM HUP
       write_result
+      FINISHED="yes"
       usage
       exit 1
       ;;
