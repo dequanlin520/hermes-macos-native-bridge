@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "productName": "Hermes Bridge",
+  "targetVersion": "0.1.0",
+  "sourceCommit": {
+    "recordedBy": "Scripts/m14_001_release_freeze_preflight.sh",
+    "command": "git rev-parse HEAD",
+    "artifact": "artifacts/m14-001/freeze-manifest.runtime.json"
+  },
+  "supportedArchitecture": "arm64",
+  "minimumMacOSVersion": "13.0",
+  "xpcProtocolVersion": "1.8",
+  "productionTargets": [
+    "HermesBridgeApp",
+    "HermesBridgeService",
+    "HermesBridgeControl",
+    "HermesBridgeServiceLifecycle",
+    "HermesAppIntentsHost",
+    "HermesMenuBar"
+  ],
+  "excludedAcceptanceTestTargets": [
+    "HermesBridgeAppAcceptanceHarness",
+    "HermesBridgeAppAcceptanceSupport",
+    "M8001ReleaseCandidateAcceptance",
+    "M6001AuditFixture",
+    "M6003AuditSigningFixture",
+    "M6004AuditSigningOperationsFixture",
+    "Tests"
+  ],
+  "frozenCapabilities": [
+    "M0 Foundation and product baseline",
+    "M1 Native bridge scaffolding",
+    "M2 Hermes discovery, protocol client, XPC ingress, request orchestration",
+    "M3 service lifecycle, release packaging, control CLI and health doctor",
+    "M4 App Intents, menu bar binding discovery, Shortcuts runtime discovery",
+    "M5 authorized file roots, file events XPC, authorized root UI, sandboxed bookmarks",
+    "M6 permissions doctor, tamper-evident audit, keychain audit signing, audit signing operations",
+    "M7 system event bridge, event policy engine, approval workflow",
+    "M8 release candidate acceptance and CI release pipeline",
+    "M9 real Hermes compatibility, backend adapter, runtime session manager, runtime event bus, runtime command API",
+    "M10 menu bar controller, dashboard, logs viewer, settings, diagnostics",
+    "M11 native UI composition, native UI E2E acceptance, production app bundle acceptance, installed product acceptance",
+    "M12 release candidate assembly, reproducible provenance, signing and notarization pipeline",
+    "M13 onboarding, recovery, update, notifications, timeline, search, feedback, privacy, policy, administration, compliance, health, operations, analytics, reporting"
+  ],
+  "deferredCapabilities": [
+    "new product centers or feature expansion after M13",
+    "production Developer ID signing when no explicit identity is configured",
+    "production notarization when no explicit notary profile is configured",
+    "installer distribution outside artifact-owned release assembly",
+    "automatic repair actions from release preflight",
+    "network upload or notarization submission from release preflight"
+  ],
+  "signingState": "not-claimed-by-freeze-manifest",
+  "notarizationState": "not-claimed-by-freeze-manifest"
+}
