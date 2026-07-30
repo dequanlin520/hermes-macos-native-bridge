@@ -72,6 +72,12 @@ Read-only inspect:
 Scripts/m14_007_dynamic_endpoint_readiness_acceptance.sh inspect
 ```
 
+Read-only readiness plan:
+
+```sh
+Scripts/m14_007_dynamic_endpoint_readiness_acceptance.sh inspect-readiness-plan
+```
+
 Opt-in real acceptance:
 
 ```sh
@@ -95,6 +101,23 @@ Scripts/m14_007_dynamic_endpoint_readiness_acceptance.sh cleanup
 `BLOCKED` means the executable, platform, or exact socket ownership facility is unavailable.
 
 `FAIL` means ownership mismatch, ambiguous candidates, non-loopback exposure, malformed or spoofed identity, real-home access, cleanup failure, broad operation, or remaining process/listener evidence.
+
+## Readiness Diagnostics
+
+The deterministic result records only classified readiness diagnostics:
+
+- `READINESS_PROBE_ATTEMPTED`
+- `READINESS_PROBE_ROUTE_CATEGORY`
+- `READINESS_HTTP_STATUS`
+- `READINESS_RESPONSE_CATEGORY`
+- `READINESS_ATTEMPT_COUNT`
+- `READINESS_DURATION_MILLISECONDS`
+- `HERMES_ENDPOINT_IDENTITY_PROVEN`
+- `READINESS_STATUS`
+- `STATUS_QUERY_RESULT`
+
+Dynamic port values and raw response bodies are excluded from deterministic
+results. Every non-`PASS` result must carry a stable reason code.
 
 ## Limitations
 

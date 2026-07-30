@@ -18,6 +18,17 @@ final class HermesAgentEndpointDiscoveryTests: XCTestCase {
     XCTAssertEqual(result.descriptor?.observedAssignedPort, 49152)
   }
 
+  func testFixedPortAssumptionIsNotRequiredForOwnershipProof() {
+    let root = endpointIdentity(pid: 100)
+    let result = discovery(listeners: [
+      tcpListener(pid: 100, uid: root.uid, start: root.processStartTime, port: 52001)
+    ]).discover(root: root, processTree: tree(root: root), requestedPortCategory: .dynamic)
+
+    XCTAssertEqual(result.status, .provenRoot)
+    XCTAssertEqual(result.descriptor?.requestedPortCategory, .dynamic)
+    XCTAssertEqual(result.descriptor?.observedAssignedPort, 52001)
+  }
+
   func testProvenDescendantOwnedListenerIsAccepted() {
     let root = endpointIdentity(pid: 100, start: "10.0")
     let child = endpointIdentity(pid: 101, ppid: 100, start: "11.0")

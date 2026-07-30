@@ -12,6 +12,7 @@ READINESS_REPORT_FILE="$ARTIFACT_DIR/readiness-report.json"
 OWNED_IDENTITY_FILE="$RUNTIME_ROOT/owned-process.identity"
 STDOUT_FILE="$EVIDENCE_DIR/hermes-stdout.log"
 STDERR_FILE="$EVIDENCE_DIR/hermes-stderr.log"
+SERVICE_DISCOVERY_EVIDENCE_FILE="$EVIDENCE_DIR/scoped-service-discovery.txt"
 
 typeset -A RESULT
 
@@ -34,9 +35,15 @@ ORDERED_KEYS=(
   ENDPOINT_UNIQUE
   STARTUP_OUTPUT_ENDPOINT_MATCH
   READINESS_PROBE_ATTEMPTED
+  READINESS_PROBE_ROUTE_CATEGORY
+  READINESS_HTTP_STATUS
+  READINESS_RESPONSE_CATEGORY
+  READINESS_ATTEMPT_COUNT
+  READINESS_DURATION_MILLISECONDS
   READINESS_STATUS
   HERMES_ENDPOINT_IDENTITY_PROVEN
   STATUS_QUERY_RESULT
+  SERVICE_DISCOVERY_ATTEMPTED
   SERVICE_DISCOVERED_ISOLATED_AGENT
   DISCOVERY_ENDPOINT_MATCH
   EXACT_ROOT_TERM_USED
@@ -55,7 +62,7 @@ ORDERED_KEYS=(
 )
 
 usage() {
-  print -u2 "usage: $SCRIPT_NAME inspect|run|cleanup"
+  print -u2 "usage: $SCRIPT_NAME inspect|inspect-readiness-plan|run|cleanup"
   print -u2 "run requires HERMES_M14_007_ACCEPTANCE=YES"
 }
 
@@ -79,9 +86,15 @@ set_default_results() {
     ENDPOINT_UNIQUE no
     STARTUP_OUTPUT_ENDPOINT_MATCH not-evaluated
     READINESS_PROBE_ATTEMPTED no
+    READINESS_PROBE_ROUTE_CATEGORY unknown
+    READINESS_HTTP_STATUS unknown
+    READINESS_RESPONSE_CATEGORY unknown
+    READINESS_ATTEMPT_COUNT 0
+    READINESS_DURATION_MILLISECONDS 0
     READINESS_STATUS blocked
     HERMES_ENDPOINT_IDENTITY_PROVEN no
     STATUS_QUERY_RESULT blocked
+    SERVICE_DISCOVERY_ATTEMPTED no
     SERVICE_DISCOVERED_ISOLATED_AGENT blocked
     DISCOVERY_ENDPOINT_MATCH no
     EXACT_ROOT_TERM_USED no
@@ -126,6 +139,9 @@ if seen != expected:
     raise SystemExit("Invalid result schema")
 if any(":[0-9]" in line for line in path.read_text(encoding="utf-8").splitlines()):
     raise SystemExit("Dynamic endpoint leaked into deterministic result")
+values = dict(line.split("=", 1) for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+if values.get("M14_007_RESULT") != "PASS" and values.get("M14_007_REASON_CODE") in {"", "unknown"}:
+    raise SystemExit("Non-PASS result requires stable reason")
 PY
 }
 
@@ -155,9 +171,15 @@ readiness_path.write_text(json.dumps({
     "schemaVersion": 1,
     "run": "m14-007",
     "readinessProbeAttempted": result.get("READINESS_PROBE_ATTEMPTED", "no"),
+    "readinessProbeRouteCategory": result.get("READINESS_PROBE_ROUTE_CATEGORY", "unknown"),
+    "readinessHTTPStatus": result.get("READINESS_HTTP_STATUS", "unknown"),
+    "readinessResponseCategory": result.get("READINESS_RESPONSE_CATEGORY", "unknown"),
+    "readinessAttemptCount": result.get("READINESS_ATTEMPT_COUNT", "0"),
+    "readinessDurationMilliseconds": result.get("READINESS_DURATION_MILLISECONDS", "0"),
     "readinessStatus": result.get("READINESS_STATUS", "blocked"),
     "endpointIdentityProven": result.get("HERMES_ENDPOINT_IDENTITY_PROVEN", "no"),
     "statusQueryResult": result.get("STATUS_QUERY_RESULT", "blocked"),
+    "serviceDiscoveryAttempted": result.get("SERVICE_DISCOVERY_ATTEMPTED", "no"),
     "serviceDiscoveryObserved": result.get("SERVICE_DISCOVERED_ISOLATED_AGENT", "blocked"),
     "discoveryEndpointMatch": result.get("DISCOVERY_ENDPOINT_MATCH", "no"),
     "reasonCode": result.get("M14_007_REASON_CODE", "unknown"),
@@ -262,37 +284,139 @@ PY
 
 probe_readiness() {
   local port="$1"
-  local body="$EVIDENCE_DIR/status-response.json"
+  local body="$RUNTIME_ROOT/status-response.tmp"
+  local started ended duration http_status curl_status response_category
   RESULT[READINESS_PROBE_ATTEMPTED]=yes
-  if ! /usr/bin/curl --silent --show-error --max-time 5 "http://127.0.0.1:$port/api/status" > "$body" 2>"$EVIDENCE_DIR/status-curl.stderr"; then
+  RESULT[READINESS_PROBE_ROUTE_CATEGORY]=status
+  RESULT[READINESS_ATTEMPT_COUNT]=1
+  started="$(date +%s%3N 2>/dev/null || date +%s)"
+  http_status="$(/usr/bin/curl --silent --show-error --max-time 5 \
+    --output "$body" \
+    --write-out "%{http_code}" \
+    "http://127.0.0.1:$port/api/status" 2>"$EVIDENCE_DIR/status-curl.stderr")"
+  curl_status="$?"
+  ended="$(date +%s%3N 2>/dev/null || date +%s)"
+  if [[ "$started" == <-> && "$ended" == <-> ]]; then
+    duration=$(( ended - started ))
+    [[ "$duration" -lt 0 ]] && duration=0
+    if [[ "$duration" -lt 100000 && "$started" -lt 10000000000 ]]; then
+      duration=$(( duration * 1000 ))
+    fi
+  else
+    duration=0
+  fi
+  RESULT[READINESS_DURATION_MILLISECONDS]="$duration"
+  if [[ "$curl_status" -ne 0 ]]; then
+    rm -f "$body"
     RESULT[READINESS_STATUS]=blocked
     RESULT[STATUS_QUERY_RESULT]=blocked
-    RESULT[M14_007_REASON_CODE]=readiness.connection-failed
+    RESULT[READINESS_HTTP_STATUS]=none
+    RESULT[READINESS_RESPONSE_CATEGORY]=connection-failed
+    if [[ "$curl_status" -eq 28 ]]; then
+      RESULT[M14_007_REASON_CODE]=readiness.timeout
+    else
+      RESULT[M14_007_REASON_CODE]=readiness.connection-failed
+    fi
     return 1
   fi
-  if /usr/bin/python3 - "$body" <<'PY'
+  RESULT[READINESS_HTTP_STATUS]="$http_status"
+  if [[ "$http_status" == "404" ]]; then
+    rm -f "$body"
+    RESULT[READINESS_STATUS]=blocked
+    RESULT[STATUS_QUERY_RESULT]=not-found
+    RESULT[READINESS_RESPONSE_CATEGORY]=not-found
+    RESULT[M14_007_REASON_CODE]=readiness.http-not-found
+    return 1
+  fi
+  if [[ "$http_status" != "200" ]]; then
+    rm -f "$body"
+    RESULT[READINESS_STATUS]=blocked
+    RESULT[STATUS_QUERY_RESULT]=blocked
+    RESULT[READINESS_RESPONSE_CATEGORY]=unknown
+    RESULT[M14_007_REASON_CODE]=readiness.http-unexpected-status
+    return 1
+  fi
+  if [[ ! -s "$body" ]]; then
+    rm -f "$body"
+    RESULT[READINESS_STATUS]=blocked
+    RESULT[STATUS_QUERY_RESULT]=empty
+    RESULT[READINESS_RESPONSE_CATEGORY]=empty
+    RESULT[M14_007_REASON_CODE]=readiness.response-empty
+    return 1
+  fi
+  response_category="$(/usr/bin/python3 - "$body" <<'PY'
+import sys
+from pathlib import Path
+text = Path(sys.argv[1]).read_text(encoding="utf-8", errors="ignore").lstrip().lower()
+if text.startswith("<!doctype html") or text.startswith("<html"):
+    print("html")
+else:
+    print("unknown")
+PY
+)"
+  if [[ "$response_category" == "html" ]]; then
+    rm -f "$body"
+    RESULT[READINESS_STATUS]=blocked
+    RESULT[STATUS_QUERY_RESULT]=malformed
+    RESULT[READINESS_RESPONSE_CATEGORY]=html
+    RESULT[M14_007_REASON_CODE]=readiness.response-malformed
+    return 1
+  fi
+  response_category="$(/usr/bin/python3 - "$body" <<'PY'
 import json
 import sys
 from pathlib import Path
 try:
     data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
 except Exception:
-    raise SystemExit(1)
+    print("malformed")
+    raise SystemExit(0)
 keys = {"version", "auth_required", "desktop_contract", "gateway_running", "active_agents"}
-raise SystemExit(0 if keys.intersection(data.keys()) else 1)
+if isinstance(data, dict) and keys.intersection(data.keys()):
+    print("hermes-status" if isinstance(data.get("version"), str) else "hermes-metadata")
+else:
+    print("identity-unproven")
 PY
-  then
+)"
+  if [[ "$response_category" == "identity-unproven" ]]; then
+    RESULT[READINESS_RESPONSE_CATEGORY]=malformed
+  else
+    RESULT[READINESS_RESPONSE_CATEGORY]="$response_category"
+  fi
+  rm -f "$body"
+  if [[ "$response_category" == "hermes-status" || "$response_category" == "hermes-metadata" ]]; then
     RESULT[READINESS_STATUS]=ready
     RESULT[HERMES_ENDPOINT_IDENTITY_PROVEN]=yes
     RESULT[STATUS_QUERY_RESULT]=ready
-    RESULT[SERVICE_DISCOVERED_ISOLATED_AGENT]=yes
-    RESULT[DISCOVERY_ENDPOINT_MATCH]=yes
     return 0
   fi
   RESULT[READINESS_STATUS]=blocked
   RESULT[HERMES_ENDPOINT_IDENTITY_PROVEN]=no
   RESULT[STATUS_QUERY_RESULT]=malformed
-  RESULT[M14_007_REASON_CODE]=readiness.response-malformed
+  if [[ "$response_category" == "identity-unproven" ]]; then
+    RESULT[M14_007_REASON_CODE]=readiness.identity-unproven
+  else
+    RESULT[M14_007_REASON_CODE]=readiness.response-malformed
+  fi
+  return 1
+}
+
+scoped_service_discovery_match() {
+  local expected_port="$1"
+  local endpoint="$2"
+  local actual_port
+  RESULT[SERVICE_DISCOVERY_ATTEMPTED]=yes
+  print -r -- "strategy=acceptance-scoped-endpoint-only" > "$SERVICE_DISCOVERY_EVIDENCE_FILE"
+  print -r -- "global_scan_used=no" >> "$SERVICE_DISCOVERY_EVIDENCE_FILE"
+  actual_port="${endpoint##* }"
+  if [[ "$actual_port" == "$expected_port" ]]; then
+    RESULT[SERVICE_DISCOVERED_ISOLATED_AGENT]=yes
+    RESULT[DISCOVERY_ENDPOINT_MATCH]=yes
+    return 0
+  fi
+  RESULT[SERVICE_DISCOVERED_ISOLATED_AGENT]=no
+  RESULT[DISCOVERY_ENDPOINT_MATCH]=no
+  RESULT[M14_007_REASON_CODE]=discovery.endpoint-mismatch
   return 1
 }
 
@@ -310,6 +434,39 @@ cleanup_owned_process() {
     sleep 1
   fi
   return 0
+}
+
+finalize_cleanup_evidence() {
+  local pid
+  RESULT[ENVIRONMENT_RESTORED]=yes
+  RESULT[SUPERVISED_PROCESS_REAL_HOME_ACCESS]=no
+  if [[ ! -f "$OWNED_IDENTITY_FILE" ]]; then
+    RESULT[LISTENER_REMAINING_AFTER_SHUTDOWN]=no
+    RESULT[ACCEPTANCE_PROCESS_REMAINING]=no
+    RESULT[ORPHAN_PROCESS_FOUND]=no
+    return 0
+  fi
+  pid="$(/usr/bin/awk '{print $1}' "$OWNED_IDENTITY_FILE")"
+  if [[ "$pid" == <-> && "$pid" -gt 1 ]] && discover_listener "$pid" >/dev/null 2>&1; then
+    RESULT[LISTENER_REMAINING_AFTER_SHUTDOWN]=yes
+    RESULT[M14_007_RESULT]=FAIL
+    RESULT[M14_007_REASON_CODE]=cleanup.listener-remaining
+  else
+    RESULT[LISTENER_REMAINING_AFTER_SHUTDOWN]=no
+  fi
+  if [[ "$pid" == <-> && "$pid" -gt 1 ]] && identity_matches "$pid"; then
+    RESULT[ACCEPTANCE_PROCESS_REMAINING]=yes
+    RESULT[M14_007_RESULT]=FAIL
+    RESULT[M14_007_REASON_CODE]=cleanup.process-remaining
+  else
+    RESULT[ACCEPTANCE_PROCESS_REMAINING]=no
+  fi
+  if [[ "${RESULT[LISTENER_REMAINING_AFTER_SHUTDOWN]}" == "yes" || \
+        "${RESULT[ACCEPTANCE_PROCESS_REMAINING]}" == "yes" ]]; then
+    RESULT[ORPHAN_PROCESS_FOUND]=yes
+  else
+    RESULT[ORPHAN_PROCESS_FOUND]=no
+  fi
 }
 
 inspect() {
@@ -333,6 +490,27 @@ inspect() {
   print -r -- "opt_in_run_permitted=$([[ -x /usr/sbin/lsof ]] && print yes || print no)"
 }
 
+inspect_readiness_plan() {
+  local executable version blocking="none"
+  print -r -- "M14-007 read-only readiness plan"
+  if executable="$(hermes_executable)"; then
+    version="$(hermes_version "$executable")"
+  else
+    version="unknown"
+    blocking="executable.unavailable"
+  fi
+  if [[ ! -x /usr/sbin/lsof ]]; then
+    blocking="endpoint.socket-facility-unavailable"
+  fi
+  print -r -- "detected_hermes_version=${version:-unknown}"
+  print -r -- "selected_readiness_mechanism=http-loopback-api-status"
+  print -r -- "route_command_category=status"
+  print -r -- "hermes_identity_criteria=json-status-fields:version,auth_required,desktop_contract,gateway_running,active_agents"
+  print -r -- "service_discovery_strategy=acceptance-scoped-ownership-proven-endpoint-only"
+  print -r -- "retry_timeout_policy=single-bounded-curl-max-time-5s"
+  print -r -- "blocking_reason=$blocking"
+}
+
 run_acceptance() {
   local executable version pid endpoint assigned_port startup_port
   set_default_results
@@ -340,6 +518,7 @@ run_acceptance() {
   if [[ "${HERMES_M14_007_ACCEPTANCE:-}" != "YES" ]]; then
     RESULT[M14_007_RESULT]=OPT_IN_REQUIRED
     RESULT[M14_007_REASON_CODE]=acceptance.opt-in-required
+    finalize_cleanup_evidence
     write_result
     exit 2
   fi
@@ -347,6 +526,7 @@ run_acceptance() {
   executable="$(hermes_executable)" || {
     RESULT[M14_007_RESULT]=BLOCKED
     RESULT[M14_007_REASON_CODE]=executable.unavailable
+    finalize_cleanup_evidence
     write_result
     exit 3
   }
@@ -357,6 +537,7 @@ run_acceptance() {
   [[ "$version" == 0.18.* ]] || {
     RESULT[M14_007_RESULT]=BLOCKED
     RESULT[M14_007_REASON_CODE]=version.unsupported
+    finalize_cleanup_evidence
     write_result
     exit 3
   }
@@ -372,6 +553,7 @@ run_acceptance() {
     RESULT[M14_007_RESULT]=FAIL
     RESULT[M14_007_REASON_CODE]=process.identity-capture-failed
     cleanup_owned_process
+    finalize_cleanup_evidence
     write_result
     exit 1
   fi
@@ -403,43 +585,46 @@ run_acceptance() {
     *) RESULT[M14_007_RESULT]=FAIL; RESULT[M14_007_REASON_CODE]=endpoint.identity-mismatch; RESULT[LISTENER_OWNERSHIP_STATUS]=identity-mismatch ;;
   esac
 
-  if [[ "${RESULT[M14_007_RESULT]}" == FAIL || "${RESULT[M14_007_RESULT]}" == BLOCKED ]]; then
+  if [[ "${RESULT[LISTENER_DETECTED]}" != "yes" || \
+        "${RESULT[LISTENER_ADDRESS_SCOPE]}" != "loopback" || \
+        ( "${RESULT[LISTENER_OWNERSHIP_STATUS]}" != "proven-root" && \
+          "${RESULT[LISTENER_OWNERSHIP_STATUS]}" != "proven-descendant" ) || \
+        "${RESULT[ENDPOINT_UNIQUE]}" != "yes" || \
+        "${RESULT[STARTUP_OUTPUT_ENDPOINT_MATCH]}" == "mismatch" ]]; then
     cleanup_owned_process
-    RESULT[ENVIRONMENT_RESTORED]=yes
+    finalize_cleanup_evidence
     write_result
     result_exit_code
     exit "$?"
   fi
 
   if probe_readiness "$assigned_port"; then
-    RESULT[M14_007_RESULT]=PASS
-    RESULT[M14_007_REASON_CODE]=none
+    if scoped_service_discovery_match "$assigned_port" "$endpoint"; then
+      RESULT[M14_007_RESULT]=PASS
+      RESULT[M14_007_REASON_CODE]=none
+    else
+      RESULT[M14_007_RESULT]=FAIL
+    fi
   else
-    RESULT[M14_007_RESULT]=UNSUPPORTED
+    case "${RESULT[M14_007_REASON_CODE]}" in
+      readiness.route-unsupported)
+        RESULT[M14_007_RESULT]=UNSUPPORTED
+        ;;
+      readiness.connection-failed|readiness.http-not-found|readiness.http-unexpected-status|readiness.response-empty|readiness.response-malformed|readiness.identity-unproven|readiness.timeout)
+        RESULT[M14_007_RESULT]=FAIL
+        ;;
+      *)
+        RESULT[M14_007_RESULT]=FAIL
+        RESULT[M14_007_REASON_CODE]=readiness.probe-not-entered
+        ;;
+    esac
   fi
 
   cleanup_owned_process || {
     RESULT[M14_007_RESULT]=FAIL
     RESULT[M14_007_REASON_CODE]=cleanup.failure
   }
-  if discover_listener "$pid" >/dev/null 2>&1; then
-    RESULT[LISTENER_REMAINING_AFTER_SHUTDOWN]=yes
-    RESULT[M14_007_RESULT]=FAIL
-    RESULT[M14_007_REASON_CODE]=cleanup.listener-remaining
-  else
-    RESULT[LISTENER_REMAINING_AFTER_SHUTDOWN]=no
-  fi
-  if identity_matches "$pid"; then
-    RESULT[ACCEPTANCE_PROCESS_REMAINING]=yes
-    RESULT[ORPHAN_PROCESS_FOUND]=yes
-    RESULT[M14_007_RESULT]=FAIL
-    RESULT[M14_007_REASON_CODE]=cleanup.process-remaining
-  else
-    RESULT[ACCEPTANCE_PROCESS_REMAINING]=no
-    RESULT[ORPHAN_PROCESS_FOUND]=no
-  fi
-  RESULT[SUPERVISED_PROCESS_REAL_HOME_ACCESS]=no
-  RESULT[ENVIRONMENT_RESTORED]=yes
+  finalize_cleanup_evidence
   write_result
   result_exit_code
   exit "$?"
@@ -450,18 +635,20 @@ cleanup() {
   cleanup_owned_process || {
     RESULT[M14_007_RESULT]=FAIL
     RESULT[M14_007_REASON_CODE]=cleanup.failure
+    finalize_cleanup_evidence
     write_result
     exit 1
   }
   rm -rf "$RUNTIME_ROOT"
   RESULT[M14_007_RESULT]=PASS
   RESULT[M14_007_REASON_CODE]=none
-  RESULT[ENVIRONMENT_RESTORED]=yes
+  finalize_cleanup_evidence
   write_result
 }
 
 case "${1:-}" in
   inspect) inspect ;;
+  inspect-readiness-plan) inspect_readiness_plan ;;
   run) run_acceptance ;;
   cleanup) cleanup ;;
   *) usage; exit 1 ;;

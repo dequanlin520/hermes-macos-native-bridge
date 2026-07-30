@@ -5,17 +5,32 @@ public struct HermesAgentStatusDescriptor: Codable, Equatable, Sendable {
   public let agentFamily: String
   public let version: String?
   public let endpointIdentityProven: Bool
+  public let routeCategory: String
+  public let httpStatus: Int?
+  public let responseCategory: String
+  public let attemptCount: Int
+  public let durationMilliseconds: Int
 
   public init(
     responseShape: String,
     agentFamily: String,
     version: String?,
-    endpointIdentityProven: Bool
+    endpointIdentityProven: Bool,
+    routeCategory: String = "status",
+    httpStatus: Int? = nil,
+    responseCategory: String = "unknown",
+    attemptCount: Int = 1,
+    durationMilliseconds: Int = 0
   ) {
     self.responseShape = Self.safeToken(responseShape)
     self.agentFamily = Self.safeToken(agentFamily)
     self.version = version.map(Self.safeToken)
     self.endpointIdentityProven = endpointIdentityProven
+    self.routeCategory = Self.safeToken(routeCategory)
+    self.httpStatus = httpStatus
+    self.responseCategory = Self.safeToken(responseCategory)
+    self.attemptCount = max(0, attemptCount)
+    self.durationMilliseconds = max(0, durationMilliseconds)
   }
 
   private static func safeToken(_ value: String) -> String {
@@ -32,6 +47,12 @@ public struct HermesAgentReadinessResult: Codable, Equatable, Sendable {
   public let reasonCode: String
   public let statusDescriptor: HermesAgentStatusDescriptor?
   public let statusQueryResult: String
+  public let routeCategory: String
+  public let httpStatus: Int?
+  public let responseCategory: String
+  public let attemptCount: Int
+  public let durationMilliseconds: Int
+  public let serviceDiscoveryAttempted: Bool
   public let serviceDiscoveryMatched: Bool
   public let discoveryMismatchReason: String?
 
@@ -41,6 +62,12 @@ public struct HermesAgentReadinessResult: Codable, Equatable, Sendable {
     reasonCode: String,
     statusDescriptor: HermesAgentStatusDescriptor?,
     statusQueryResult: String,
+    routeCategory: String = "unknown",
+    httpStatus: Int? = nil,
+    responseCategory: String = "unknown",
+    attemptCount: Int = 0,
+    durationMilliseconds: Int = 0,
+    serviceDiscoveryAttempted: Bool = false,
     serviceDiscoveryMatched: Bool,
     discoveryMismatchReason: String?
   ) {
@@ -49,6 +76,12 @@ public struct HermesAgentReadinessResult: Codable, Equatable, Sendable {
     self.reasonCode = Self.safeToken(reasonCode)
     self.statusDescriptor = statusDescriptor
     self.statusQueryResult = Self.safeToken(statusQueryResult)
+    self.routeCategory = Self.safeToken(routeCategory)
+    self.httpStatus = httpStatus
+    self.responseCategory = Self.safeToken(responseCategory)
+    self.attemptCount = max(0, attemptCount)
+    self.durationMilliseconds = max(0, durationMilliseconds)
+    self.serviceDiscoveryAttempted = serviceDiscoveryAttempted
     self.serviceDiscoveryMatched = serviceDiscoveryMatched
     self.discoveryMismatchReason = discoveryMismatchReason.map(Self.safeToken)
   }
@@ -75,6 +108,38 @@ public protocol HermesAgentEndpointServiceDiscovering: Sendable {
   func mismatchReason(for endpoint: HermesAgentEndpointDescriptor) -> String
 }
 
+public struct HermesAgentReadinessProbeFailure: Error, Equatable, Sendable {
+  public let reasonCode: String
+  public let routeCategory: String
+  public let httpStatus: Int?
+  public let responseCategory: String
+  public let attemptCount: Int
+  public let durationMilliseconds: Int
+
+  public init(
+    reasonCode: String,
+    routeCategory: String = "unknown",
+    httpStatus: Int? = nil,
+    responseCategory: String = "unknown",
+    attemptCount: Int = 0,
+    durationMilliseconds: Int = 0
+  ) {
+    self.reasonCode = Self.safeToken(reasonCode)
+    self.routeCategory = Self.safeToken(routeCategory)
+    self.httpStatus = httpStatus
+    self.responseCategory = Self.safeToken(responseCategory)
+    self.attemptCount = max(0, attemptCount)
+    self.durationMilliseconds = max(0, durationMilliseconds)
+  }
+
+  private static func safeToken(_ value: String) -> String {
+    let filtered = value.filter {
+      $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "." || $0 == "-" || $0 == "_")
+    }
+    return filtered.isEmpty ? "unknown" : String(filtered.prefix(128))
+  }
+}
+
 public struct HermesAgentReadinessProbe: Sendable {
   private let statusProbe: HermesAgentEndpointStatusProbing
   private let serviceDiscovery: HermesAgentEndpointServiceDiscovering
@@ -98,6 +163,12 @@ public struct HermesAgentReadinessProbe: Sendable {
         reasonCode: ownership.reasonCode,
         statusDescriptor: nil,
         statusQueryResult: "blocked",
+        routeCategory: "unknown",
+        httpStatus: nil,
+        responseCategory: "unknown",
+        attemptCount: 0,
+        durationMilliseconds: 0,
+        serviceDiscoveryAttempted: false,
         serviceDiscoveryMatched: false,
         discoveryMismatchReason: "ownership-unproven"
       )
@@ -106,6 +177,15 @@ public struct HermesAgentReadinessProbe: Sendable {
     let descriptor: HermesAgentStatusDescriptor
     do {
       descriptor = try statusProbe.probeStatus(endpoint: endpoint, timeoutSeconds: timeoutSeconds)
+    } catch let error as HermesAgentReadinessProbeFailure {
+      return failed(
+        reason: error.reasonCode,
+        routeCategory: error.routeCategory,
+        httpStatus: error.httpStatus,
+        responseCategory: error.responseCategory,
+        attemptCount: error.attemptCount,
+        durationMilliseconds: error.durationMilliseconds
+      )
     } catch let error as HermesAgentEndpointDiscoveryError {
       return failed(reason: error.reasonCode)
     } catch {
@@ -116,11 +196,17 @@ public struct HermesAgentReadinessProbe: Sendable {
       return HermesAgentReadinessResult(
         attempted: true,
         status: "blocked",
-        reasonCode: "readiness.agent-identity-mismatch",
+        reasonCode: "readiness.identity-unproven",
         statusDescriptor: descriptor,
         statusQueryResult: "identity-mismatch",
+        routeCategory: descriptor.routeCategory,
+        httpStatus: descriptor.httpStatus,
+        responseCategory: descriptor.responseCategory,
+        attemptCount: descriptor.attemptCount,
+        durationMilliseconds: descriptor.durationMilliseconds,
+        serviceDiscoveryAttempted: false,
         serviceDiscoveryMatched: false,
-        discoveryMismatchReason: "agent-identity-mismatch"
+        discoveryMismatchReason: "identity-unproven"
       )
     }
 
@@ -132,6 +218,12 @@ public struct HermesAgentReadinessProbe: Sendable {
         reasonCode: "discovery.endpoint-mismatch",
         statusDescriptor: descriptor,
         statusQueryResult: "ready",
+        routeCategory: descriptor.routeCategory,
+        httpStatus: descriptor.httpStatus,
+        responseCategory: descriptor.responseCategory,
+        attemptCount: descriptor.attemptCount,
+        durationMilliseconds: descriptor.durationMilliseconds,
+        serviceDiscoveryAttempted: true,
         serviceDiscoveryMatched: false,
         discoveryMismatchReason: serviceDiscovery.mismatchReason(for: endpoint)
       )
@@ -143,18 +235,37 @@ public struct HermesAgentReadinessProbe: Sendable {
       reasonCode: "readiness.ready",
       statusDescriptor: descriptor,
       statusQueryResult: "ready",
+      routeCategory: descriptor.routeCategory,
+      httpStatus: descriptor.httpStatus,
+      responseCategory: descriptor.responseCategory,
+      attemptCount: descriptor.attemptCount,
+      durationMilliseconds: descriptor.durationMilliseconds,
+      serviceDiscoveryAttempted: true,
       serviceDiscoveryMatched: true,
       discoveryMismatchReason: nil
     )
   }
 
-  private func failed(reason: String) -> HermesAgentReadinessResult {
+  private func failed(
+    reason: String,
+    routeCategory: String = "unknown",
+    httpStatus: Int? = nil,
+    responseCategory: String = "unknown",
+    attemptCount: Int = 1,
+    durationMilliseconds: Int = 0
+  ) -> HermesAgentReadinessResult {
     HermesAgentReadinessResult(
       attempted: true,
       status: "blocked",
       reasonCode: reason,
       statusDescriptor: nil,
       statusQueryResult: "blocked",
+      routeCategory: routeCategory,
+      httpStatus: httpStatus,
+      responseCategory: responseCategory,
+      attemptCount: attemptCount,
+      durationMilliseconds: durationMilliseconds,
+      serviceDiscoveryAttempted: false,
       serviceDiscoveryMatched: false,
       discoveryMismatchReason: nil
     )
@@ -162,12 +273,25 @@ public struct HermesAgentReadinessProbe: Sendable {
 }
 
 public struct HermesHTTPAgentStatusProbe: HermesAgentEndpointStatusProbing {
-  private let fetcher: @Sendable (URL, TimeInterval) throws -> Data
+  public struct HTTPResponse: Equatable, Sendable {
+    public let statusCode: Int
+    public let body: Data
+
+    public init(statusCode: Int, body: Data) {
+      self.statusCode = statusCode
+      self.body = body
+    }
+  }
+
+  private let fetcher: @Sendable (URL, TimeInterval) throws -> HTTPResponse
+  private let clock: @Sendable () -> Date
 
   public init(
-    fetcher: (@Sendable (URL, TimeInterval) throws -> Data)? = nil
+    fetcher: (@Sendable (URL, TimeInterval) throws -> HTTPResponse)? = nil,
+    clock: @escaping @Sendable () -> Date = Date.init
   ) {
     self.fetcher = fetcher ?? HermesHTTPAgentStatusProbe.fetch
+    self.clock = clock
   }
 
   public func probeStatus(endpoint: HermesAgentEndpointDescriptor, timeoutSeconds: TimeInterval) throws
@@ -176,13 +300,70 @@ public struct HermesHTTPAgentStatusProbe: HermesAgentEndpointStatusProbing {
     guard endpoint.listener.transport == .tcp, endpoint.listener.isLoopback,
       let port = endpoint.observedAssignedPort
     else {
-      throw HermesAgentEndpointDiscoveryError.unavailable
+      throw HermesAgentReadinessProbeFailure(
+        reasonCode: "readiness.route-unsupported",
+        routeCategory: "unsupported",
+        responseCategory: "unknown"
+      )
     }
 
     let backend = try HermesBackendEndpoint(port: port)
-    let data = try fetcher(backend.statusURL, timeoutSeconds)
-    guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-      throw HermesAgentEndpointDiscoveryError.unavailable
+    let started = clock()
+    let response: HTTPResponse
+    do {
+      response = try fetcher(backend.statusURL, timeoutSeconds)
+    } catch {
+      throw HermesAgentReadinessProbeFailure(
+        reasonCode: Self.connectionReason(for: error),
+        routeCategory: "status",
+        responseCategory: "connection-failed",
+        attemptCount: 1,
+        durationMilliseconds: Self.durationMilliseconds(since: started, now: clock())
+      )
+    }
+    let duration = Self.durationMilliseconds(since: started, now: clock())
+    let category = Self.responseCategory(body: response.body)
+    guard response.statusCode == 200 else {
+      throw HermesAgentReadinessProbeFailure(
+        reasonCode: response.statusCode == 404
+          ? "readiness.http-not-found"
+          : "readiness.http-unexpected-status",
+        routeCategory: "status",
+        httpStatus: response.statusCode,
+        responseCategory: response.statusCode == 404 ? "not-found" : category,
+        attemptCount: 1,
+        durationMilliseconds: duration
+      )
+    }
+    guard !response.body.isEmpty else {
+      throw HermesAgentReadinessProbeFailure(
+        reasonCode: "readiness.response-empty",
+        routeCategory: "status",
+        httpStatus: response.statusCode,
+        responseCategory: "empty",
+        attemptCount: 1,
+        durationMilliseconds: duration
+      )
+    }
+    guard category != "html" else {
+      throw HermesAgentReadinessProbeFailure(
+        reasonCode: "readiness.response-malformed",
+        routeCategory: "status",
+        httpStatus: response.statusCode,
+        responseCategory: "html",
+        attemptCount: 1,
+        durationMilliseconds: duration
+      )
+    }
+    guard let object = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any] else {
+      throw HermesAgentReadinessProbeFailure(
+        reasonCode: "readiness.response-malformed",
+        routeCategory: "status",
+        httpStatus: response.statusCode,
+        responseCategory: "malformed",
+        attemptCount: 1,
+        durationMilliseconds: duration
+      )
     }
     let hasHermesShape =
       object["version"] is String
@@ -195,20 +376,30 @@ public struct HermesHTTPAgentStatusProbe: HermesAgentEndpointStatusProbing {
         responseShape: "malformed",
         agentFamily: "unknown",
         version: nil,
-        endpointIdentityProven: false
+        endpointIdentityProven: false,
+        routeCategory: "status",
+        httpStatus: response.statusCode,
+        responseCategory: "malformed",
+        attemptCount: 1,
+        durationMilliseconds: duration
       )
     }
     return HermesAgentStatusDescriptor(
       responseShape: "api.status",
       agentFamily: "hermes-agent",
       version: object["version"] as? String,
-      endpointIdentityProven: true
+      endpointIdentityProven: true,
+      routeCategory: "status",
+      httpStatus: response.statusCode,
+      responseCategory: object["version"] is String ? "hermes-status" : "hermes-metadata",
+      attemptCount: 1,
+      durationMilliseconds: duration
     )
   }
 
-  private static func fetch(url: URL, timeout: TimeInterval) throws -> Data {
+  private static func fetch(url: URL, timeout: TimeInterval) throws -> HTTPResponse {
     let semaphore = DispatchSemaphore(value: 0)
-    let outcome = HermesAgentReadinessLockedBox<Result<Data, Error>?>(nil)
+    let outcome = HermesAgentReadinessLockedBox<Result<HTTPResponse, Error>?>(nil)
     let configuration = URLSessionConfiguration.ephemeral
     configuration.timeoutIntervalForRequest = timeout
     configuration.timeoutIntervalForResource = timeout
@@ -216,22 +407,47 @@ public struct HermesHTTPAgentStatusProbe: HermesAgentEndpointStatusProbing {
     let task = session.dataTask(with: url) { data, response, error in
       if let error {
         outcome.set(.failure(error))
-      } else if let http = response as? HTTPURLResponse, http.statusCode == 200, let data {
-        outcome.set(.success(data))
+      } else if let http = response as? HTTPURLResponse {
+        outcome.set(.success(HTTPResponse(statusCode: http.statusCode, body: data ?? Data())))
       } else {
-        outcome.set(.failure(HermesAgentEndpointDiscoveryError.unavailable))
+        outcome.set(.failure(HermesAgentReadinessProbeFailure(reasonCode: "readiness.connection-failed")))
       }
       semaphore.signal()
     }
     task.resume()
     guard semaphore.wait(timeout: .now() + timeout) == .success else {
       task.cancel()
-      throw HermesAgentEndpointDiscoveryError.unavailable
+      throw HermesAgentReadinessProbeFailure(reasonCode: "readiness.timeout")
     }
     guard let result = outcome.value else {
       throw HermesAgentEndpointDiscoveryError.unavailable
     }
     return try result.get()
+  }
+
+  private static func responseCategory(body: Data) -> String {
+    guard !body.isEmpty else { return "empty" }
+    let prefix = String(decoding: body.prefix(256), as: UTF8.self)
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .lowercased()
+    if prefix.hasPrefix("<!doctype html") || prefix.hasPrefix("<html") {
+      return "html"
+    }
+    return "unknown"
+  }
+
+  private static func connectionReason(for error: Error) -> String {
+    if let failure = error as? HermesAgentReadinessProbeFailure {
+      return failure.reasonCode
+    }
+    if (error as NSError).domain == NSURLErrorDomain && (error as NSError).code == NSURLErrorTimedOut {
+      return "readiness.timeout"
+    }
+    return "readiness.connection-failed"
+  }
+
+  private static func durationMilliseconds(since start: Date, now: Date) -> Int {
+    max(0, Int((now.timeIntervalSince(start) * 1000).rounded()))
   }
 }
 

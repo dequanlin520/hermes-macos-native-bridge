@@ -17,8 +17,9 @@ final class HermesDynamicEndpointAcceptanceTests: XCTestCase {
     let script = try read("Scripts/m14_007_dynamic_endpoint_readiness_acceptance.sh")
     let mapper = try extractFunction("result_exit_code", from: script)
 
-    XCTAssertTrue(script.contains("usage: $SCRIPT_NAME inspect|run|cleanup"))
+    XCTAssertTrue(script.contains("usage: $SCRIPT_NAME inspect|inspect-readiness-plan|run|cleanup"))
     XCTAssertTrue(script.contains("inspect)"))
+    XCTAssertTrue(script.contains("inspect-readiness-plan)"))
     XCTAssertTrue(script.contains("run)"))
     XCTAssertTrue(script.contains("cleanup)"))
     XCTAssertTrue(mapper.contains("PASS) return 0"))
@@ -42,6 +43,7 @@ final class HermesDynamicEndpointAcceptanceTests: XCTestCase {
   func testInspectIsReadOnly() throws {
     let script = try read("Scripts/m14_007_dynamic_endpoint_readiness_acceptance.sh")
     let inspect = try extractFunction("inspect", from: script)
+    let plan = try extractFunction("inspect_readiness_plan", from: script)
 
     XCTAssertTrue(inspect.contains("M14-007 read-only inspect"))
     XCTAssertTrue(inspect.contains("dynamic_endpoint_strategy="))
@@ -49,6 +51,16 @@ final class HermesDynamicEndpointAcceptanceTests: XCTestCase {
     XCTAssertTrue(inspect.contains("expected_readiness_mechanism=http-loopback-api-status"))
     XCTAssertFalse(inspect.contains("write_result"))
     XCTAssertFalse(inspect.contains("serve --isolated"))
+    XCTAssertTrue(plan.contains("M14-007 read-only readiness plan"))
+    XCTAssertTrue(plan.contains("detected_hermes_version="))
+    XCTAssertTrue(plan.contains("selected_readiness_mechanism=http-loopback-api-status"))
+    XCTAssertTrue(plan.contains("route_command_category=status"))
+    XCTAssertTrue(plan.contains("hermes_identity_criteria="))
+    XCTAssertTrue(plan.contains("service_discovery_strategy=acceptance-scoped-ownership-proven-endpoint-only"))
+    XCTAssertTrue(plan.contains("retry_timeout_policy="))
+    XCTAssertTrue(plan.contains("blocking_reason="))
+    XCTAssertFalse(plan.contains("write_result"))
+    XCTAssertFalse(plan.contains("serve --isolated"))
   }
 
   func testExactShutdownAndNoBroadOperations() throws {
@@ -79,7 +91,13 @@ final class HermesDynamicEndpointAcceptanceTests: XCTestCase {
       "LISTENER_OWNERSHIP_STATUS",
       "LISTENER_OWNER_RELATIONSHIP",
       "STARTUP_OUTPUT_ENDPOINT_MATCH",
+      "READINESS_PROBE_ROUTE_CATEGORY",
+      "READINESS_HTTP_STATUS",
+      "READINESS_RESPONSE_CATEGORY",
+      "READINESS_ATTEMPT_COUNT",
+      "READINESS_DURATION_MILLISECONDS",
       "HERMES_ENDPOINT_IDENTITY_PROVEN",
+      "SERVICE_DISCOVERY_ATTEMPTED",
       "DISCOVERY_ENDPOINT_MATCH",
       "LISTENER_REMAINING_AFTER_SHUTDOWN",
       "BROAD_STOP_INVOKED",
@@ -94,6 +112,7 @@ final class HermesDynamicEndpointAcceptanceTests: XCTestCase {
     let script = try read("Scripts/m14_007_dynamic_endpoint_readiness_acceptance.sh")
 
     XCTAssertTrue(script.contains("Dynamic endpoint leaked into deterministic result"))
+    XCTAssertTrue(script.contains("Non-PASS result requires stable reason"))
     XCTAssertTrue(script.contains("endpoint-evidence.json"))
     XCTAssertTrue(script.contains("readiness-report.json"))
     XCTAssertTrue(script.contains("privacy-safe-runtime-port-may-appear-in-evidence-only"))
@@ -103,10 +122,64 @@ final class HermesDynamicEndpointAcceptanceTests: XCTestCase {
     let probe = try extractFunction("probe_readiness", from: try read("Scripts/m14_007_dynamic_endpoint_readiness_acceptance.sh"))
 
     XCTAssertTrue(probe.contains("/api/status"))
+    XCTAssertTrue(probe.contains("READINESS_PROBE_ATTEMPTED]=yes"))
+    XCTAssertTrue(probe.contains("READINESS_PROBE_ROUTE_CATEGORY]=status"))
+    XCTAssertTrue(probe.contains("READINESS_HTTP_STATUS"))
+    XCTAssertTrue(probe.contains("READINESS_RESPONSE_CATEGORY"))
+    XCTAssertTrue(probe.contains("READINESS_ATTEMPT_COUNT]=1"))
+    XCTAssertTrue(probe.contains("READINESS_DURATION_MILLISECONDS"))
     XCTAssertTrue(probe.contains("\"version\""))
     XCTAssertTrue(probe.contains("\"auth_required\""))
     XCTAssertTrue(probe.contains("\"gateway_running\""))
+    XCTAssertTrue(probe.contains("readiness.http-not-found"))
+    XCTAssertTrue(probe.contains("readiness.http-unexpected-status"))
+    XCTAssertTrue(probe.contains("readiness.response-empty"))
     XCTAssertTrue(probe.contains("readiness.response-malformed"))
+    XCTAssertTrue(probe.contains("readiness.identity-unproven"))
+    XCTAssertTrue(probe.contains("rm -f \"$body\""))
+    XCTAssertFalse(probe.contains("status-response.json"))
+  }
+
+  func testProvenEndpointAlwaysEntersReadinessBeforeServiceDiscovery() throws {
+    let run = try extractFunction("run_acceptance", from: try read("Scripts/m14_007_dynamic_endpoint_readiness_acceptance.sh"))
+
+    XCTAssertTrue(run.contains("RESULT[LISTENER_DETECTED]"))
+    XCTAssertTrue(run.contains("RESULT[LISTENER_ADDRESS_SCOPE]"))
+    XCTAssertTrue(run.contains("RESULT[LISTENER_OWNERSHIP_STATUS]"))
+    XCTAssertTrue(run.contains("RESULT[ENDPOINT_UNIQUE]"))
+    XCTAssertTrue(run.contains("if probe_readiness \"$assigned_port\"; then"))
+    XCTAssertTrue(run.contains("scoped_service_discovery_match \"$assigned_port\" \"$endpoint\""))
+    XCTAssertLessThan(
+      run.range(of: "if probe_readiness \"$assigned_port\"; then")!.lowerBound,
+      run.range(of: "scoped_service_discovery_match \"$assigned_port\" \"$endpoint\"")!.lowerBound
+    )
+  }
+
+  func testScopedServiceDiscoveryDoesNotGlobalScan() throws {
+    let script = try read("Scripts/m14_007_dynamic_endpoint_readiness_acceptance.sh")
+    let discovery = try extractFunction("scoped_service_discovery_match", from: script)
+
+    XCTAssertTrue(discovery.contains("acceptance-scoped-endpoint-only"))
+    XCTAssertTrue(discovery.contains("global_scan_used=no"))
+    XCTAssertTrue(discovery.contains("RESULT[SERVICE_DISCOVERY_ATTEMPTED]=yes"))
+    XCTAssertTrue(discovery.contains("RESULT[M14_007_REASON_CODE]=discovery.endpoint-mismatch"))
+    XCTAssertFalse(discovery.contains("command -v hermes"))
+    XCTAssertFalse(discovery.contains("lsof"))
+  }
+
+  func testCleanupKeysFinalizedAfterReadinessFailure() throws {
+    let script = try read("Scripts/m14_007_dynamic_endpoint_readiness_acceptance.sh")
+    let finalize = try extractFunction("finalize_cleanup_evidence", from: script)
+    let run = try extractFunction("run_acceptance", from: script)
+
+    XCTAssertTrue(finalize.contains("LISTENER_REMAINING_AFTER_SHUTDOWN"))
+    XCTAssertTrue(finalize.contains("ACCEPTANCE_PROCESS_REMAINING"))
+    XCTAssertTrue(finalize.contains("ORPHAN_PROCESS_FOUND"))
+    XCTAssertTrue(finalize.contains("SUPERVISED_PROCESS_REAL_HOME_ACCESS]=no"))
+    XCTAssertTrue(finalize.contains("ENVIRONMENT_RESTORED]=yes"))
+    XCTAssertTrue(run.contains("finalize_cleanup_evidence"))
+    XCTAssertTrue(run.contains("readiness.connection-failed"))
+    XCTAssertTrue(run.contains("readiness.timeout"))
   }
 
   func testCleanupIsIdempotentAndScoped() throws {
