@@ -191,6 +191,7 @@ public enum HermesBridgeCLICommand: Equatable, Sendable {
   case exportAuditTrustAnchors(URL)
   case exportAudit(URL)
   case capabilities
+  case protocolVersion
   case start
   case stop
   case restart
@@ -315,6 +316,8 @@ public struct HermesBridgeCLIInvocation: Equatable, Sendable {
       self.command = .exportAudit(outputDirectory)
     case "capabilities":
       self.command = .capabilities
+    case "protocol-version":
+      self.command = .protocolVersion
     case "start":
       self.command = .start
     case "stop":
@@ -470,7 +473,6 @@ public struct HermesBridgeControlRunner: Sendable {
 
   public func run(_ invocation: HermesBridgeCLIInvocation) async -> HermesBridgeCLIRunResult {
     let layout = invocation.layout
-    let manager = runtime.manager(layout)
     let xpc = runtime.xpc(layout, invocation.timeout)
     defer {
       Task { await xpc.close() }
@@ -479,6 +481,7 @@ public struct HermesBridgeControlRunner: Sendable {
     do {
       switch invocation.command {
       case .status:
+        let manager = runtime.manager(layout)
         let output = try await statusOutput(manager: manager, xpc: xpc, layout: layout)
         let code: HermesBridgeCLIExitCode =
           output.status == HermesBridgeServiceStatus.notInstalled.rawValue
@@ -574,11 +577,16 @@ public struct HermesBridgeControlRunner: Sendable {
         let values = capabilities.capabilities.map(\.rawValue).sorted()
         return success(
           HermesBridgeControlRenderer.renderCapabilities(values, format: invocation.format))
+      case .protocolVersion:
+        let version = try await xpc.protocolVersion()
+        return success("\(version.version.major).\(version.version.minor)")
       case .start:
+        let manager = runtime.manager(layout)
         try manager.bootstrap()
         let output = try await statusOutput(manager: manager, xpc: xpc, layout: layout)
         return success(HermesBridgeControlRenderer.renderStatus(output, format: invocation.format))
       case .stop:
+        let manager = runtime.manager(layout)
         try manager.stop()
         let output = HermesBridgeCLIStatusOutput(
           status: HermesBridgeServiceStatus.installedStopped.rawValue,
@@ -592,6 +600,7 @@ public struct HermesBridgeControlRunner: Sendable {
         )
         return success(HermesBridgeControlRenderer.renderStatus(output, format: invocation.format))
       case .restart:
+        let manager = runtime.manager(layout)
         let health = try await manager.restart()
         let report = HermesBridgeDoctorReport(checks: [
           HermesBridgeDoctorCheck(
@@ -626,6 +635,7 @@ public struct HermesBridgeControlRunner: Sendable {
         )
         return success(HermesBridgeControlRenderer.renderRequest(output, format: invocation.format))
       case .emergencyStop:
+        let manager = runtime.manager(layout)
         try? await auditStore(layout: layout).append(
           HermesAuditEvent.make(
             kind: .emergencyStopRequested,

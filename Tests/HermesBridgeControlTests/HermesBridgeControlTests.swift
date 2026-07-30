@@ -138,6 +138,34 @@ final class HermesBridgeControlTests: XCTestCase {
     XCTAssertTrue(result.stdout.contains("protocolVersion"))
   }
 
+  func testProtocolVersionOutput() async throws {
+    let result = await runner().run(arguments: ["protocol-version"])
+    XCTAssertEqual(result.exitCode, .success)
+    XCTAssertEqual(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines), "1.8")
+  }
+
+  func testXPCOnlyCommandsDoNotInstantiateServiceManager() async throws {
+    let managerRequested = LockedBool()
+    let runner = HermesBridgeControlRunner(
+      runtime: HermesBridgeControlRuntime(
+        manager: { _ in
+          managerRequested.setTrue()
+          return FakeManager()
+        },
+        xpc: { _, _ in FakeXPC() },
+        lister: { _ in FakeLister(requests: []) },
+        doctor: FakeDoctor(report: HermesBridgeDoctorReport(checks: [])),
+        emergencyStopper: FakeEmergencyStopper(),
+        audit: FakeAuditViewer()
+      )
+    )
+
+    _ = await runner.run(arguments: ["capabilities"])
+    _ = await runner.run(arguments: ["protocol-version"])
+
+    XCTAssertFalse(managerRequested.value)
+  }
+
   func testStartExactServiceOnly() async throws {
     let manager = FakeManager(status: .installedStopped)
     _ = await runner(manager: manager).run(arguments: ["start"])
@@ -447,6 +475,21 @@ final class HermesBridgeControlTests: XCTestCase {
       failureCode: nil,
       failureRetryable: nil
     )
+  }
+}
+
+private final class LockedBool: @unchecked Sendable {
+  private let lock = NSLock()
+  private var storage = false
+
+  var value: Bool {
+    lock.withLock { storage }
+  }
+
+  func setTrue() {
+    lock.withLock {
+      storage = true
+    }
   }
 }
 

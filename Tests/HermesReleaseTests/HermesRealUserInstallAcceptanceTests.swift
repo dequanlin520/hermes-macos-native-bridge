@@ -44,7 +44,8 @@ final class HermesRealUserInstallAcceptanceTests: XCTestCase {
     let collision = try extractFunction("detect_collision", from: script)
 
     XCTAssertTrue(script.contains("PRE_HERMES_HOME_STATE=\"$(path_state \"$REAL_HERMES_HOME\")\""))
-    XCTAssertTrue(script.contains("[[ \"$(path_state \"$REAL_HERMES_HOME\")\" == \"$PRE_HERMES_HOME_STATE\" ]]"))
+    XCTAssertTrue(script.contains("write_real_home_integrity_snapshot \"$INTEGRITY_BEFORE\""))
+    XCTAssertTrue(script.contains("set_real_home_modified_result"))
     XCTAssertFalse(collision.contains("[[ -e \"$REAL_HERMES_HOME\""))
     XCTAssertFalse(collision.contains("[[ -L \"$REAL_HERMES_HOME\""))
     XCTAssertFalse(script.contains("find \"$REAL_HERMES_HOME\""))
@@ -173,6 +174,8 @@ final class HermesRealUserInstallAcceptanceTests: XCTestCase {
     let script = try read("Scripts/m14_002_real_user_install_acceptance.sh")
 
     XCTAssertTrue(script.contains("path_state \"$REAL_HERMES_HOME\""))
+    XCTAssertTrue(script.contains("os.lstat(path)"))
+    XCTAssertTrue(script.contains("os.walk(root, followlinks=False)"))
     XCTAssertFalse(script.contains("cd \"$REAL_HERMES_HOME\""))
     XCTAssertFalse(script.contains("find \"$REAL_HERMES_HOME\""))
     XCTAssertFalse(script.contains("rm -rf \"$REAL_HERMES_HOME\""))
@@ -255,6 +258,111 @@ final class HermesRealUserInstallAcceptanceTests: XCTestCase {
     XCTAssertTrue(script.contains("TEMPORARY_SECRET_REMAINING]=no"))
     XCTAssertTrue(script.contains("M14_002_RESULT]=$([[ \"$pass\" == \"yes\" ]]"))
     XCTAssertTrue(script.contains("PASS || print -r -- FAIL"))
+  }
+
+  func testLaunchAgentCarriesExplicitIsolatedWritableRootConfiguration() throws {
+    let script = try read("Scripts/m14_002_real_user_install_acceptance.sh")
+    let install = try extractFunction("install_app_and_service", from: script)
+
+    XCTAssertTrue(install.contains(#""EnvironmentVariables""#))
+    XCTAssertTrue(install.contains(#""HERMES_BRIDGE_SERVICE_CONFIG": config"#))
+    XCTAssertTrue(install.contains(#""HOME": home"#))
+    XCTAssertTrue(install.contains(#""CFFIXED_USER_HOME": home"#))
+    XCTAssertTrue(install.contains(#""HERMES_HOME": hermes_home"#))
+    XCTAssertTrue(install.contains(#""XDG_CONFIG_HOME": xdg_config"#))
+    XCTAssertTrue(install.contains(#""XDG_CACHE_HOME": xdg_cache"#))
+    XCTAssertTrue(install.contains(#""XDG_DATA_HOME": xdg_data"#))
+    XCTAssertTrue(install.contains(#""XDG_STATE_HOME": xdg_state"#))
+    XCTAssertTrue(install.contains(#""XDG_RUNTIME_DIR": xdg_runtime"#))
+    XCTAssertTrue(script.contains("ISOLATED_HERMES_HOME=\"$RUNTIME_ROOT/hermes-home\""))
+    XCTAssertTrue(script.contains("ISOLATED_XDG_CACHE_HOME=\"$RUNTIME_ROOT/xdg-cache\""))
+  }
+
+  func testTerminalOnlyEnvironmentIsInsufficientForLaunchd() throws {
+    let script = try read("Scripts/m14_002_real_user_install_acceptance.sh")
+    let install = try extractFunction("install_app_and_service", from: script)
+
+    XCTAssertTrue(install.contains(#""EnvironmentVariables""#))
+    XCTAssertFalse(script.contains("export HERMES_BRIDGE_SERVICE_CONFIG"))
+    XCTAssertFalse(script.contains("launchctl setenv"))
+  }
+
+  func testAppServiceAndHelpersUseSameIsolatedRuntimeRoot() throws {
+    let script = try read("Scripts/m14_002_real_user_install_acceptance.sh")
+
+    XCTAssertTrue(script.contains("RUNTIME_ROOT=\"$ARTIFACT_DIR/runtime\""))
+    XCTAssertTrue(script.contains("runtimeRoot\": Path(sys.argv[2]).resolve().as_uri()"))
+    XCTAssertTrue(script.contains("requestStateRoot\": Path(sys.argv[3]).resolve().as_uri()"))
+    XCTAssertTrue(script.contains("--env \"HOME=$ISOLATED_HOME\""))
+    XCTAssertTrue(script.contains("isolated_env_prefix \"$CONTROL_EXECUTABLE\" protocol-version"))
+    XCTAssertTrue(script.contains("isolated_env_prefix swift run --configuration release HermesReleaseAgentPreflight"))
+  }
+
+  func testApplicationSupportAuditLogUpdateAndRuntimeStateAreIsolated() throws {
+    let script = try read("Scripts/m14_002_real_user_install_acceptance.sh")
+
+    XCTAssertTrue(script.contains("HERMES_CONFIG_DIR=\"$RUNTIME_ROOT/HermesBridge\""))
+    XCTAssertTrue(script.contains("RUNTIME_DATA_ROOT=\"$RUNTIME_ROOT/Runtime\""))
+    XCTAssertTrue(script.contains("REQUEST_STATE_ROOT=\"$RUNTIME_ROOT/RequestState\""))
+    XCTAssertTrue(script.contains("LOGS_ROOT=\"$RUNTIME_ROOT/Logs\""))
+    XCTAssertTrue(script.contains("REAL_HERMES_CACHES=\"$HOME/Library/Caches/HermesBridge\""))
+    XCTAssertTrue(script.contains("REAL_HERMES_LOGS=\"$HOME/Library/Logs/HermesBridge\""))
+    XCTAssertTrue(script.contains(#""StandardOutPath": str(Path(logs) / "service.stdout.log")"#))
+  }
+
+  func testLifecycleInstallStateWriteIsNotUsedInRealHome() throws {
+    let script = try read("Scripts/m14_002_real_user_install_acceptance.sh")
+    let install = try extractFunction("install_app_and_service", from: script)
+    let cleanup = try extractFunction("cleanup", from: script)
+
+    XCTAssertFalse(install.contains("HermesBridgeServiceLifecycle"))
+    XCTAssertFalse(install.contains("--install-user-service"))
+    XCTAssertFalse(cleanup.contains("HermesBridgeServiceLifecycle"))
+    XCTAssertFalse(cleanup.contains("purge"))
+  }
+
+  func testIntegritySnapshotDoesNotReadFileContentsAndRedactsHome() throws {
+    let script = try read("Scripts/m14_002_real_user_install_acceptance.sh")
+    let snapshot = try extractFunction("write_real_home_integrity_snapshot", from: script)
+
+    XCTAssertTrue(snapshot.contains("os.lstat(path)"))
+    XCTAssertTrue(snapshot.contains("path.relative_to(root).as_posix()"))
+    XCTAssertTrue(snapshot.contains("category"))
+    XCTAssertTrue(snapshot.contains("followlinks=False"))
+    XCTAssertFalse(snapshot.contains("read_text"))
+    XCTAssertFalse(snapshot.contains("read_bytes"))
+    XCTAssertFalse(snapshot.contains("Data(contentsOf"))
+    XCTAssertFalse(snapshot.contains("/Users/"))
+  }
+
+  func testDetectedRealHomeMutationForcesFail() throws {
+    let script = try read("Scripts/m14_002_real_user_install_acceptance.sh")
+    let finish = try extractFunction("finish_result", from: script)
+    let compare = try extractFunction("set_real_home_modified_result", from: script)
+
+    XCTAssertTrue(compare.contains("RESULT[REAL_HERMES_HOME_MODIFIED]=yes"))
+    XCTAssertTrue(compare.contains("RESULT[REAL_HERMES_HOME_MODIFIED]=no"))
+    XCTAssertTrue(finish.contains("REAL_HERMES_HOME_MODIFIED"))
+    XCTAssertTrue(finish.contains("[[ \"${RESULT[$key]}\" == \"no\" ]] || pass=\"no\""))
+  }
+
+  func testUnchangedRealHomeSnapshotPermitsPass() throws {
+    let script = try read("Scripts/m14_002_real_user_install_acceptance.sh")
+    let compare = try extractFunction("set_real_home_modified_result", from: script)
+
+    XCTAssertTrue(compare.contains("if compare_real_home_integrity_snapshot; then"))
+    XCTAssertTrue(compare.contains("RESULT[REAL_HERMES_HOME_MODIFIED]=no"))
+  }
+
+  func testCleanupDoesNotModifyProtectedPreexistingUserState() throws {
+    let script = try read("Scripts/m14_002_real_user_install_acceptance.sh")
+    let cleanup = try extractFunction("cleanup", from: script)
+
+    XCTAssertFalse(cleanup.contains("rm -rf \"$REAL_HERMES_HOME\""))
+    XCTAssertFalse(cleanup.contains("rm -rf \"$BRIDGE_SUPPORT\""))
+    XCTAssertFalse(cleanup.contains("rm -rf \"$REAL_HERMES_CACHES\""))
+    XCTAssertFalse(cleanup.contains("rm -rf \"$REAL_HERMES_LOGS\""))
+    XCTAssertTrue(cleanup.contains("set_real_home_modified_result"))
   }
 
   func testDocumentationExists() throws {
