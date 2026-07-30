@@ -26,6 +26,7 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
   public let runtimeCommandAPI: HermesRuntimeCommandAPI
   public let isolatedAgentLaunchContract: HermesAgentLaunchContract
   public let isolatedAgentLifecycleCoordinator: HermesAgentLifecycleCoordinator
+  public let isolatedAgentSupervisor: HermesAgentSupervisor
   public let stateStore: FileBackedHermesRequestStateStore
   public let bindingRegistry: ConfigurationBackedHermesRequestBindingRegistry
   public let authorizedRootRegistry: FileBackedHermesAuthorizedRootRegistry
@@ -157,6 +158,7 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
       executableURL: backendConfiguration.executableURL,
       environment: isolatedEnvironment
     )
+    self.isolatedAgentSupervisor = HermesAgentSupervisor()
     let runtimeSupervisor = supervisor
     self.runtimeSessionManager = HermesRuntimeSessionManager(
       backendFactory: {
