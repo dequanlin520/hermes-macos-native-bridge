@@ -24,6 +24,8 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
   public let timelineCollector: HermesTimelineCollector
   public let runtimeSessionManager: HermesRuntimeSessionManager
   public let runtimeCommandAPI: HermesRuntimeCommandAPI
+  public let isolatedAgentLaunchContract: HermesAgentLaunchContract
+  public let isolatedAgentLifecycleCoordinator: HermesAgentLifecycleCoordinator
   public let stateStore: FileBackedHermesRequestStateStore
   public let bindingRegistry: ConfigurationBackedHermesRequestBindingRegistry
   public let authorizedRootRegistry: FileBackedHermesAuthorizedRootRegistry
@@ -132,6 +134,28 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
       startupTimeout: processConfiguration.startupTimeout,
       gracefulShutdownTimeout: processConfiguration.gracefulShutdownTimeout,
       forcedShutdownTimeout: processConfiguration.forcedShutdownTimeout
+    )
+    self.isolatedAgentLaunchContract = HermesAgentLaunchContractSelector.unsupported(
+      version: nil,
+      status: .blocked,
+      reason: "command.surface.not_probed"
+    )
+    let isolatedEnvironment: HermesAgentLaunchEnvironment
+    do {
+      isolatedEnvironment = try HermesAgentLaunchEnvironment.construct(
+        runtimeRoot: resolvedPaths.runtimeRoot.appendingPathComponent(
+          "isolated-agent-lifecycle",
+          isDirectory: true
+        ),
+        inherited: ProcessInfo.processInfo.environment
+      )
+    } catch {
+      throw HermesBridgeCompositionRootError.processConfigurationFailed(Self.safeCode(for: error))
+    }
+    self.isolatedAgentLifecycleCoordinator = HermesAgentLifecycleCoordinator(
+      contract: isolatedAgentLaunchContract,
+      executableURL: backendConfiguration.executableURL,
+      environment: isolatedEnvironment
     )
     let runtimeSupervisor = supervisor
     self.runtimeSessionManager = HermesRuntimeSessionManager(
