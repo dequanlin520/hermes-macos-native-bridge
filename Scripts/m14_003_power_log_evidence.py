@@ -59,8 +59,8 @@ def redact(value):
         value,
         flags=re.I,
     )
-    value = re.sub(r"'[^']{1,100}'", "'<redacted>'", value)
-    value = re.sub(r'"[^"]{1,100}"', '"<redacted>"', value)
+    value = re.sub(r"'[^']*'", "'<redacted>'", value)
+    value = re.sub(r'"[^"]*"', '"<redacted>"', value)
     return value[:240]
 
 
@@ -114,37 +114,43 @@ def classify_event(domain, message):
     lower = combined.lower()
 
     rejects = [
-        ("rejected-darkwake", ["darkwake", "dark wake"]),
         ("rejected-maintenance-wake", ["maintenance", "wake maintenance"]),
         ("rejected-sleepservice", ["sleepservice"]),
         ("rejected-display-sleep", ["display sleep", "display is turned off", "preventuseridledisplaysleep"]),
         ("rejected-display-wake", ["display wake", "displaywake", "display is turned on"]),
+        ("rejected-wake-request", ["wake request", "wakerequest", "wake requested", "scheduled wake"]),
         ("rejected-user-active", ["userisactive"]),
         ("rejected-assertions", ["assertions", "assertion"]),
+        ("rejected-tcpkeepalive", ["tcpkeepalive"]),
     ]
     for reason, needles in rejects:
         if any(needle in lower for needle in needles):
+            if reason == "rejected-tcpkeepalive" and re.search(
+                r"\bSleep\b.*\bEntering DarkWake state\b.*\bSoftware Sleep\b",
+                combined,
+                re.I,
+            ):
+                continue
             return None, reason
 
-    if normalized_domain == "Sleep":
-        if re.search(r"\bEntering Sleep state\b", normalized_message, re.I):
-            return "system-sleep", None
-        if re.fullmatch(r"System Sleep\b.*", normalized_message, re.I):
-            return "system-sleep", None
-        if re.fullmatch(r"Sleep\b.*", normalized_message, re.I):
-            return "system-sleep", None
-    if re.fullmatch(r"System Sleep\b.*", combined, re.I):
+    if re.search(r"\bSleep\b.*\bEntering Sleep state\b", combined, re.I):
+        return "system-sleep", None
+    if re.search(r"\bSleep\b.*\bSleep Entered\b", combined, re.I):
+        return "system-sleep", None
+    if re.search(r"\bSystem Sleep\b", combined, re.I):
+        return "system-sleep", None
+    if re.search(r"\bSleep\b.*\bEntering DarkWake state\b.*\bSoftware Sleep\b", combined, re.I):
         return "system-sleep", None
 
-    if normalized_domain == "Wake":
-        if re.search(r"\bWake from Normal Sleep\b", normalized_message, re.I):
-            return "system-wake", None
-        if re.fullmatch(r"System Wake\b.*", normalized_message, re.I):
-            return "system-wake", None
-        if re.fullmatch(r"Wake\b.*", normalized_message, re.I):
-            return "system-wake", None
-    if re.fullmatch(r"System Wake\b.*", combined, re.I):
+    if re.search(r"\bWake\b.*\bWake from Normal Sleep\b", combined, re.I):
         return "system-wake", None
+    if re.search(r"\bWake\b.*\bDarkWake to FullWake\b", combined, re.I):
+        return "system-wake", None
+    if re.search(r"\bSystem Wake\b", combined, re.I):
+        return "system-wake", None
+
+    if "darkwake" in lower or "dark wake" in lower:
+        return None, "rejected-darkwake"
 
     return None, "rejected-unclassified"
 
@@ -208,15 +214,20 @@ def analyze_lines(lines, prepare_epoch, resume_epoch):
 def validate_events(events):
     ordered_system_events = [event for event in events if event["kind"] in {"system-sleep", "system-wake"}]
     sleep = next((event for event in ordered_system_events if event["kind"] == "system-sleep"), None)
-    wake = next((event for event in ordered_system_events if event["kind"] == "system-wake"), None)
     if ordered_system_events and ordered_system_events[0]["kind"] != "system-sleep":
         fail("invalid-system-event-order")
     if sleep is None:
         fail("system-sleep-missing")
+    wake = next(
+        (
+            event
+            for event in ordered_system_events
+            if event["kind"] == "system-wake" and event["epochSeconds"] > sleep["epochSeconds"]
+        ),
+        None,
+    )
     if wake is None:
         fail("system-wake-missing")
-    if sleep["epochSeconds"] > wake["epochSeconds"]:
-        fail("invalid-system-event-order")
     return sleep, wake
 
 
@@ -304,13 +315,20 @@ def diagnose(args):
     print(f"tolerance_seconds={BOUNDARY_TOLERANCE_SECONDS}")
     for event in analyze_lines(lines, prepare_epoch, resume_epoch):
         rejection = event.get("rejectionReason", "")
+        event_kind = {
+            "system-sleep": "sleep",
+            "system-wake": "wake",
+            "rejected": "rejected",
+            "rejected-out-of-bounds": "rejected",
+        }.get(event["kind"], "unknown")
+        shape = f"{event['domain']} {event['summary']}".strip()
         print(
             "candidate "
-            f"epoch={event['epochSeconds']} "
-            f"kind={event['kind']} "
-            f"rejection={rejection or 'accepted'} "
+            f"event_epoch={event['epochSeconds']} "
+            f"event_kind={event_kind} "
+            f"rejection_reason={rejection or 'accepted'} "
             f"domain={event['domain']} "
-            f"summary={event['summary']}"
+            f"sanitized_message_shape={shape}"
         )
     return 0
 

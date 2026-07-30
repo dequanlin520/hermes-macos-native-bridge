@@ -213,13 +213,18 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
     let helper = try read("Scripts/m14_003_power_log_evidence.py")
 
     XCTAssertTrue(helper.contains("Entering Sleep state"))
+    XCTAssertTrue(helper.contains("Sleep Entered"))
     XCTAssertTrue(helper.contains("System Sleep"))
+    XCTAssertTrue(helper.contains("Entering DarkWake state"))
+    XCTAssertTrue(helper.contains("Software Sleep"))
     XCTAssertTrue(helper.contains("Wake from Normal Sleep"))
+    XCTAssertTrue(helper.contains("DarkWake to FullWake"))
     XCTAssertTrue(helper.contains("System Wake"))
     XCTAssertTrue(helper.contains("rejected-display-sleep"))
     XCTAssertTrue(helper.contains("rejected-display-wake"))
     XCTAssertTrue(helper.contains("rejected-maintenance-wake"))
     XCTAssertTrue(helper.contains("rejected-sleepservice"))
+    XCTAssertTrue(helper.contains("rejected-wake-request"))
     XCTAssertTrue(helper.contains("rejected-user-active"))
     XCTAssertTrue(helper.contains("rejected-assertions"))
     XCTAssertTrue(helper.contains("rejected-darkwake"))
@@ -398,6 +403,35 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
     XCTAssertEqual(result.exitCode, 0, result.combinedOutput)
   }
 
+  func testPowerLogParserAcceptsObservedSoftwareSleepDarkWakeAndFullWakeRows() throws {
+    let log = """
+    2026-07-29 22:38:00 -0700 Sleep               \tEntering DarkWake state due to 'Software Sleep pid=449':TCPKeepAlive=active Using AC (Charge:0%) 52 secs
+    2026-07-29 22:38:52 -0700 Wake                \tDarkWake to FullWake from Deep Idle [CDNVA] : due to HID Activity Using AC (Charge:0%)
+    """
+
+    let result = try runPowerLogVerifier(
+      log: log,
+      checkpointEpoch: 1_785_389_863,
+      resumeEpoch: 1_785_389_953
+    )
+
+    XCTAssertEqual(result.exitCode, 0, result.combinedOutput)
+    let evidence = try XCTUnwrap(result.evidence)
+    XCTAssertEqual(evidence["systemSleepEpochSeconds"] as? Int, 1_785_389_880)
+    XCTAssertEqual(evidence["systemWakeEpochSeconds"] as? Int, 1_785_389_932)
+  }
+
+  func testPowerLogParserAcceptsSleepEnteredAndSystemRowsWithoutExactDomainShape() throws {
+    let log = """
+    2026-07-30 04:33:34 UTC Sleep/Wake UUID       \tSleep Entered [CDNVA]
+    2026-07-30 04:33:39 UTC Kernel Client         \tSystem Wake from sleep
+    """
+
+    let result = try runPowerLogVerifier(log: log)
+
+    XCTAssertEqual(result.exitCode, 0, result.combinedOutput)
+  }
+
   func testPowerLogParserIsLocaleIndependent() throws {
     let log = """
     2026-07-30 04:33:34 UTC Sleep Entering Sleep state
@@ -411,7 +445,7 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
 
   func testPowerLogRejectsDarkWakeMaintenanceDisplayAndAssertionRows() throws {
     let log = """
-    2026-07-30 04:33:34 UTC Sleep Entering DarkWake state due to 'Software Sleep pid=449'
+    2026-07-30 04:33:34 UTC Sleep Entering DarkWake state due to 'Network Wake'
     2026-07-30 04:33:35 UTC Assertions PID 354(powerd) Created PreventSystemSleep "secret-process"
     2026-07-30 04:33:36 UTC Notification Display is turned off
     2026-07-30 04:33:37 UTC Notification Display is turned on
@@ -419,15 +453,31 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
     """
 
     let diagnostic = try runPowerLogDiagnostic(log: log)
-    XCTAssertTrue(diagnostic.combinedOutput.contains("rejection=rejected-darkwake"))
-    XCTAssertTrue(diagnostic.combinedOutput.contains("rejection=rejected-assertions"))
-    XCTAssertTrue(diagnostic.combinedOutput.contains("rejection=rejected-display-sleep"))
-    XCTAssertTrue(diagnostic.combinedOutput.contains("rejection=rejected-display-wake"))
-    XCTAssertTrue(diagnostic.combinedOutput.contains("rejection=rejected-maintenance-wake"))
+    XCTAssertTrue(diagnostic.combinedOutput.contains("rejection_reason=rejected-darkwake"))
+    XCTAssertTrue(diagnostic.combinedOutput.contains("rejection_reason=rejected-assertions"))
+    XCTAssertTrue(diagnostic.combinedOutput.contains("rejection_reason=rejected-display-sleep"))
+    XCTAssertTrue(diagnostic.combinedOutput.contains("rejection_reason=rejected-display-wake"))
+    XCTAssertTrue(diagnostic.combinedOutput.contains("rejection_reason=rejected-maintenance-wake"))
 
     let result = try runPowerLogVerifier(log: log)
     XCTAssertEqual(result.exitCode, 1)
     XCTAssertTrue(result.combinedOutput.contains("system-sleep-missing"))
+  }
+
+  func testPowerLogRejectsWakeRequestsAndDarkWakeOnlyRows() throws {
+    let log = """
+    2026-07-30 04:33:34 UTC Sleep Entering DarkWake state due to 'Software Sleep pid=449':TCPKeepAlive=active
+    2026-07-30 04:33:35 UTC WakeRequests Clients requested wake events
+    2026-07-30 04:33:36 UTC Wake DarkWake from Deep Idle due to Maintenance
+    """
+
+    let diagnostic = try runPowerLogDiagnostic(log: log)
+    XCTAssertTrue(diagnostic.combinedOutput.contains("rejection_reason=rejected-wake-request"))
+    XCTAssertTrue(diagnostic.combinedOutput.contains("rejection_reason=rejected-maintenance-wake"))
+
+    let result = try runPowerLogVerifier(log: log)
+    XCTAssertEqual(result.exitCode, 1)
+    XCTAssertTrue(result.combinedOutput.contains("system-wake-missing"))
   }
 
   func testPowerLogBoundedIntervalRejectsHistoricalAndPostResumeEvents() throws {
@@ -450,6 +500,14 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
     XCTAssertTrue(try runPowerLogVerifier(log: "2026-07-30 04:33:39 UTC Wake Wake from Normal Sleep\n").combinedOutput.contains("invalid-system-event-order"))
     XCTAssertTrue(try runPowerLogVerifier(log: "2026-07-30 04:33:34 UTC Sleep Entering Sleep state\n").combinedOutput.contains("system-wake-missing"))
     XCTAssertTrue(try runPowerLogVerifier(log: "2026-07-30 04:33:34 UTC Assertions PID 1(powerd) Summary UserIsActive\n").combinedOutput.contains("system-sleep-missing"))
+    XCTAssertTrue(
+      try runPowerLogVerifier(
+        log: """
+        2026-07-30 04:33:34 UTC Sleep Entering Sleep state
+        2026-07-30 04:33:34 UTC Wake Wake from Normal Sleep
+        """
+      ).combinedOutput.contains("system-wake-missing")
+    )
   }
 
   func testPowerLogBoundaryInvalidIsReservedForMalformedCheckpointOnly() throws {
@@ -492,12 +550,30 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
     )
 
     XCTAssertEqual(result.exitCode, 0, result.combinedOutput)
-    XCTAssertTrue(result.combinedOutput.contains("candidate epoch=1785386014 kind=system-sleep"))
+    XCTAssertTrue(result.combinedOutput.contains("candidate event_epoch=1785386014 event_kind=sleep"))
+    XCTAssertTrue(result.combinedOutput.contains("sanitized_message_shape=Sleep Entering Sleep state"))
     XCTAssertTrue(result.combinedOutput.contains("/Users/<redacted>"))
     XCTAssertTrue(result.combinedOutput.contains("<uuid>"))
     XCTAssertTrue(result.combinedOutput.contains("pid=<redacted>"))
     XCTAssertFalse(result.combinedOutput.contains("private/token"))
     XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("artifacts/m14-003/result.txt").path))
+  }
+
+  func testPowerEvidenceDiagnosticPrintsSanitizedRejectedCandidates() throws {
+    let diagnostic = try runPowerLogDiagnostic(
+      log: """
+      2026-07-30 04:33:34 UTC Assertions PID 354(powerd) Created PreventSystemSleep "/Users/someone/private/token"
+      malformed row without timestamp
+      """
+    )
+
+    XCTAssertEqual(diagnostic.exitCode, 0, diagnostic.combinedOutput)
+    XCTAssertTrue(diagnostic.combinedOutput.contains("candidate event_epoch=1785386014 event_kind=rejected"))
+    XCTAssertTrue(diagnostic.combinedOutput.contains("rejection_reason=rejected-assertions"))
+    XCTAssertTrue(diagnostic.combinedOutput.contains("sanitized_message_shape=Assertions PID <redacted> Created PreventSystemSleep"))
+    XCTAssertFalse(diagnostic.combinedOutput.contains("/Users/someone"))
+    XCTAssertFalse(diagnostic.combinedOutput.contains("private/token"))
+    XCTAssertFalse(diagnostic.combinedOutput.contains("malformed row without timestamp"))
   }
 
   func testPowerEvidenceDiagnosticReportsMalformedCheckpointWithoutTraceback() throws {
