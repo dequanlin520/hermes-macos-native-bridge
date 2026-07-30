@@ -17,9 +17,10 @@ final class HermesIsolatedAgentSupervisorAcceptanceTests: XCTestCase {
     let script = try read("Scripts/m14_006_isolated_agent_supervisor_acceptance.sh")
     let mapper = try extractFunction("result_exit_code", from: script)
 
-    XCTAssertTrue(script.contains("usage: $SCRIPT_NAME inspect|inspect-launch-plan|run|cleanup"))
+    XCTAssertTrue(script.contains("usage: $SCRIPT_NAME inspect|inspect-launch-plan|inspect-launch-syntax|run|cleanup"))
     XCTAssertTrue(script.contains("inspect)"))
     XCTAssertTrue(script.contains("inspect-launch-plan)"))
+    XCTAssertTrue(script.contains("inspect-launch-syntax)"))
     XCTAssertTrue(script.contains("run)"))
     XCTAssertTrue(script.contains("cleanup)"))
     XCTAssertTrue(mapper.contains("PASS) return 0"))
@@ -52,10 +53,31 @@ final class HermesIsolatedAgentSupervisorAcceptanceTests: XCTestCase {
     XCTAssertTrue(printer.contains("launch_permitted=yes"))
     XCTAssertTrue(printer.contains("exact_cli_shutdown_required=no"))
     XCTAssertTrue(printer.contains("supervisor_strategy=bridge-exact-pid"))
-    XCTAssertTrue(printer.contains("launch_argument_identifiers=subcommand.serve,flag.isolated"))
+    XCTAssertTrue(printer.contains("launch_argument_identifiers=subcommand.serve,flag.isolated,flag.port.auto"))
     XCTAssertFalse(launchPlan.contains("write_result"))
     XCTAssertFalse(launchPlan.contains("write_launch_descriptor"))
     XCTAssertFalse(launchPlan.contains("cleanup_owned_process"))
+  }
+
+  func testInspectLaunchSyntaxIsReadOnly() throws {
+    let script = try read("Scripts/m14_006_isolated_agent_supervisor_acceptance.sh")
+    let inspect = try extractFunction("inspect_launch_syntax", from: script)
+
+    XCTAssertTrue(inspect.contains("help_output_for \"$executable\" --help"))
+    XCTAssertTrue(inspect.contains("help_output_for \"$executable\" serve --help"))
+    XCTAssertTrue(inspect.contains("detected_version="))
+    XCTAssertTrue(inspect.contains("advertised_serve_syntax="))
+    XCTAssertTrue(inspect.contains("required_argument_identifiers="))
+    XCTAssertTrue(inspect.contains("optional_argument_identifiers_relevant_to_isolation="))
+    XCTAssertTrue(inspect.contains("foreground_daemon_behavior_advertised="))
+    XCTAssertTrue(inspect.contains("isolated_configuration_requirements="))
+    XCTAssertTrue(inspect.contains("expected_immediate_exit_risks="))
+    XCTAssertTrue(inspect.contains("launch_readiness_mechanism="))
+    XCTAssertTrue(inspect.contains("blocking_reason="))
+    XCTAssertFalse(inspect.contains("write_result"))
+    XCTAssertFalse(inspect.contains("write_launch_descriptor"))
+    XCTAssertFalse(inspect.contains("cleanup_owned_process"))
+    XCTAssertFalse(inspect.contains(" serve --isolated"))
   }
 
   func testInspectIsReadOnly() throws {
@@ -87,10 +109,13 @@ final class HermesIsolatedAgentSupervisorAcceptanceTests: XCTestCase {
 
     XCTAssertTrue(cleanup.contains("/bin/kill -TERM \"$pid\""))
     XCTAssertTrue(cleanup.contains("/bin/kill -KILL \"$pid\""))
-    XCTAssertTrue(launch.contains("\"$executable\" serve --isolated"))
+    XCTAssertTrue(launch.contains("\"$executable\" serve --isolated --port 0"))
     XCTAssertTrue(launch.contains("pid=$!"))
+    XCTAssertTrue(launch.contains("PROVISIONAL_IDENTITY_FILE"))
     XCTAssertTrue(launch.contains("persist_identity_for_pid \"$pid\""))
     XCTAssertTrue(launch.contains("identity_matches \"$pid\""))
+    XCTAssertTrue(launch.contains("observe_direct_descendants \"$pid\""))
+    XCTAssertTrue(launch.contains("adopt_proven_child_after_launcher_exit \"$pid\""))
     XCTAssertFalse(script.contains("pkill"))
     XCTAssertFalse(script.contains("killall"))
     XCTAssertFalse(script.contains("kill -- -"))
@@ -110,6 +135,15 @@ final class HermesIsolatedAgentSupervisorAcceptanceTests: XCTestCase {
       "SERVICE_OWNED_SUPERVISOR_USED",
       "SERVICE_OWNED_DISCOVERY_USED",
       "LAUNCH_ATTEMPTED",
+      "LAUNCH_CHILD_EXITED",
+      "LAUNCH_CHILD_EXIT_CODE",
+      "LAUNCH_CHILD_SIGNAL",
+      "LAUNCH_DURATION_MILLISECONDS",
+      "LAUNCH_STDOUT_CATEGORY",
+      "LAUNCH_STDERR_CATEGORY",
+      "DESCENDANT_OBSERVED_BEFORE_EXIT",
+      "LISTENER_OBSERVED_BEFORE_EXIT",
+      "EXECUTABLE_IDENTITY_OBSERVED",
       "BROAD_STOP_INVOKED",
       "SUPERVISOR_REASON_CODE",
       "SUPERVISOR_REASON_PHASE",
@@ -136,7 +170,7 @@ final class HermesIsolatedAgentSupervisorAcceptanceTests: XCTestCase {
     XCTAssertTrue(reason.contains("executable.unavailable"))
     XCTAssertTrue(reason.contains("version.unsupported"))
     XCTAssertTrue(reason.contains("isolated-command.not-advertised"))
-    XCTAssertTrue(reason.contains("isolated-environment.invalid"))
+    XCTAssertTrue(reason.contains("launch.environment-invalid"))
     XCTAssertTrue(reason.contains("print -r -- \"none\""))
     XCTAssertFalse(reason.contains("LAUNCH_CONTRACT_STATUS"))
     XCTAssertFalse(reason.contains("LAUNCH_CONTRACT_REASON"))
@@ -153,6 +187,60 @@ final class HermesIsolatedAgentSupervisorAcceptanceTests: XCTestCase {
     XCTAssertTrue(script.contains("\"reasonCode\": result.get(\"SUPERVISOR_REASON_CODE\""))
     XCTAssertTrue(script.contains("\"reasonPhase\": result.get(\"SUPERVISOR_REASON_PHASE\""))
     XCTAssertTrue(script.contains("\"detailCategory\": result.get(\"SUPERVISOR_DETAIL_CATEGORY\""))
+  }
+
+  func testImmediateExitEvidenceAndPreciseReasonsArePersisted() throws {
+    let script = try read("Scripts/m14_006_isolated_agent_supervisor_acceptance.sh")
+    let launch = try extractFunction("attempt_supervisor_launch", from: script)
+    let classifier = try extractFunction("classify_immediate_exit_reason", from: script)
+
+    XCTAssertTrue(launch.contains("LAUNCH_CHILD_EXITED"))
+    XCTAssertTrue(launch.contains("LAUNCH_CHILD_EXIT_CODE"))
+    XCTAssertTrue(launch.contains("LAUNCH_CHILD_SIGNAL"))
+    XCTAssertTrue(launch.contains("LAUNCH_DURATION_MILLISECONDS"))
+    XCTAssertTrue(launch.contains("LAUNCH_STDOUT_CATEGORY"))
+    XCTAssertTrue(launch.contains("LAUNCH_STDERR_CATEGORY"))
+    XCTAssertTrue(script.contains("DESCENDANT_OBSERVED_BEFORE_EXIT"))
+    XCTAssertTrue(script.contains("LISTENER_OBSERVED_BEFORE_EXIT"))
+    XCTAssertTrue(launch.contains("EXECUTABLE_IDENTITY_OBSERVED"))
+    for reason in [
+      "launch.argument-missing",
+      "launch.configuration-missing",
+      "launch.environment-invalid",
+      "launch.process-table-race",
+      "launch.launcher-child-handoff",
+      "launch.exited-zero-no-service",
+      "launch.exited-nonzero",
+      "launch.signaled",
+      "launch.stderr-indicates-unsupported",
+      "launch.unknown-immediate-exit",
+    ] {
+      XCTAssertTrue(script.contains(reason), reason)
+    }
+    XCTAssertFalse(script.contains("launch.exited-before-identity"))
+    XCTAssertTrue(classifier.contains("missing-required-argument"))
+    XCTAssertTrue(classifier.contains("missing-configuration"))
+  }
+
+  func testOutputCategoryRedactionRecognizesSensitiveAndBindShapes() throws {
+    let script = try read("Scripts/m14_006_isolated_agent_supervisor_acceptance.sh")
+    let categorizer = try extractFunction("category_for_output_file", from: script)
+
+    XCTAssertTrue(categorizer.contains("address already in use"))
+    XCTAssertTrue(categorizer.contains("bind-address-in-use"))
+    XCTAssertTrue(categorizer.contains("redacted-sensitive-shape"))
+    XCTAssertTrue(categorizer.contains("unsupported-argument"))
+    XCTAssertTrue(categorizer.contains("missing-configuration"))
+  }
+
+  func testDocumentedLaunchFailureProducesFailNotGenericBlocked() throws {
+    let script = try read("Scripts/m14_006_isolated_agent_supervisor_acceptance.sh")
+    let run = try extractFunction("run_acceptance", from: script)
+
+    XCTAssertTrue(run.contains("RESULT[SUPERVISOR_COMPATIBILITY_LEVEL]=FAIL"))
+    XCTAssertTrue(run.contains("RESULT[M14_006_RESULT]=FAIL"))
+    XCTAssertTrue(run.contains("result_exit_code"))
+    XCTAssertFalse(run.contains("launch.exited-before-identity"))
   }
 
   func testArtifactsAreRedactedAndIgnored() throws {

@@ -12,6 +12,8 @@ REPORT_FILE="$ARTIFACT_DIR/supervisor-report.json"
 LAUNCH_DESCRIPTOR_FILE="$EVIDENCE_DIR/launch-descriptor.json"
 INSPECT_REPORT_FILE="$EVIDENCE_DIR/production-inspect.env"
 OWNED_IDENTITY_FILE="$RUNTIME_ROOT/owned-process.identity"
+PROVISIONAL_IDENTITY_FILE="$RUNTIME_ROOT/provisional-process.identity"
+OBSERVED_DESCENDANT_FILE="$RUNTIME_ROOT/observed-descendant.identity"
 
 typeset -A RESULT
 typeset -A INSPECT_VALUES
@@ -26,6 +28,15 @@ ORDERED_KEYS=(
   HERMES_VERSION
   ISOLATED_COMMAND_ADVERTISED
   LAUNCH_ATTEMPTED
+  LAUNCH_CHILD_EXITED
+  LAUNCH_CHILD_EXIT_CODE
+  LAUNCH_CHILD_SIGNAL
+  LAUNCH_DURATION_MILLISECONDS
+  LAUNCH_STDOUT_CATEGORY
+  LAUNCH_STDERR_CATEGORY
+  DESCENDANT_OBSERVED_BEFORE_EXIT
+  LISTENER_OBSERVED_BEFORE_EXIT
+  EXECUTABLE_IDENTITY_OBSERVED
   BROAD_STOP_INVOKED
   ISOLATED_ENVIRONMENT_VALID
   REAL_HERMES_HOME_MODIFIED
@@ -55,7 +66,7 @@ ORDERED_KEYS=(
 )
 
 usage() {
-  print -u2 "usage: $SCRIPT_NAME inspect|inspect-launch-plan|run|cleanup"
+  print -u2 "usage: $SCRIPT_NAME inspect|inspect-launch-plan|inspect-launch-syntax|run|cleanup"
   print -u2 "run requires HERMES_M14_006_ACCEPTANCE=YES"
 }
 
@@ -70,6 +81,15 @@ set_default_results() {
     HERMES_VERSION unknown
     ISOLATED_COMMAND_ADVERTISED no
     LAUNCH_ATTEMPTED no
+    LAUNCH_CHILD_EXITED no
+    LAUNCH_CHILD_EXIT_CODE unknown
+    LAUNCH_CHILD_SIGNAL unknown
+    LAUNCH_DURATION_MILLISECONDS 0
+    LAUNCH_STDOUT_CATEGORY not-captured
+    LAUNCH_STDERR_CATEGORY not-captured
+    DESCENDANT_OBSERVED_BEFORE_EXIT no
+    LISTENER_OBSERVED_BEFORE_EXIT no
+    EXECUTABLE_IDENTITY_OBSERVED no
     BROAD_STOP_INVOKED no
     ISOLATED_ENVIRONMENT_VALID unknown
     REAL_HERMES_HOME_MODIFIED unknown
@@ -161,6 +181,16 @@ topology_path.write_text(json.dumps({
     "topologyStatus": result.get("PROCESS_TOPOLOGY_STATUS", "unknown"),
     "rootStarted": result.get("SUPERVISOR_ROOT_STARTED", "no"),
     "identityCaptured": result.get("PROCESS_IDENTITY_CAPTURED", "no"),
+    "provisionalIdentityCaptured": result.get("PROCESS_IDENTITY_CAPTURED", "no"),
+    "executableIdentityObserved": result.get("EXECUTABLE_IDENTITY_OBSERVED", "no"),
+    "launchChildExited": result.get("LAUNCH_CHILD_EXITED", "no"),
+    "launchChildExitCode": result.get("LAUNCH_CHILD_EXIT_CODE", "unknown"),
+    "launchChildSignal": result.get("LAUNCH_CHILD_SIGNAL", "unknown"),
+    "launchDurationMilliseconds": result.get("LAUNCH_DURATION_MILLISECONDS", "0"),
+    "launchStdoutCategory": result.get("LAUNCH_STDOUT_CATEGORY", "unknown"),
+    "launchStderrCategory": result.get("LAUNCH_STDERR_CATEGORY", "unknown"),
+    "descendantObservedBeforeExit": result.get("DESCENDANT_OBSERVED_BEFORE_EXIT", "no"),
+    "listenerObservedBeforeExit": result.get("LISTENER_OBSERVED_BEFORE_EXIT", "no"),
     "identityValidatedBeforeSignal": result.get("PROCESS_IDENTITY_VALIDATED_BEFORE_SIGNAL", "no"),
     "reasonCode": result.get("SUPERVISOR_REASON_CODE", "unknown"),
     "reasonPhase": result.get("SUPERVISOR_REASON_PHASE", "preflight"),
@@ -172,6 +202,15 @@ report_path.write_text(json.dumps({
     "compatibilityLevel": result.get("SUPERVISOR_COMPATIBILITY_LEVEL", "BLOCKED"),
     "result": result.get("M14_006_RESULT", "FAIL"),
     "launchAttempted": result.get("LAUNCH_ATTEMPTED", "no"),
+    "launchChildExited": result.get("LAUNCH_CHILD_EXITED", "no"),
+    "launchChildExitCode": result.get("LAUNCH_CHILD_EXIT_CODE", "unknown"),
+    "launchChildSignal": result.get("LAUNCH_CHILD_SIGNAL", "unknown"),
+    "launchDurationMilliseconds": result.get("LAUNCH_DURATION_MILLISECONDS", "0"),
+    "launchStdoutCategory": result.get("LAUNCH_STDOUT_CATEGORY", "unknown"),
+    "launchStderrCategory": result.get("LAUNCH_STDERR_CATEGORY", "unknown"),
+    "descendantObservedBeforeExit": result.get("DESCENDANT_OBSERVED_BEFORE_EXIT", "no"),
+    "listenerObservedBeforeExit": result.get("LISTENER_OBSERVED_BEFORE_EXIT", "no"),
+    "executableIdentityObserved": result.get("EXECUTABLE_IDENTITY_OBSERVED", "no"),
     "reasonCode": result.get("SUPERVISOR_REASON_CODE", "unknown"),
     "reasonPhase": result.get("SUPERVISOR_REASON_PHASE", "preflight"),
     "detailCategory": result.get("SUPERVISOR_DETAIL_CATEGORY", "unknown"),
@@ -280,14 +319,74 @@ m14006_blocking_reason() {
     return 0
   fi
   if [[ "${RESULT[ISOLATED_ENVIRONMENT_VALID]}" != yes ]]; then
-    print -r -- "isolated-environment.invalid"
+    print -r -- "launch.environment-invalid"
     return 0
   fi
   print -r -- "none"
 }
 
 resolve_hermes_executable() {
+  if [[ -n "${HERMES_M14_006_HERMES_EXECUTABLE_OVERRIDE:-}" ]]; then
+    print -r -- "$HERMES_M14_006_HERMES_EXECUTABLE_OVERRIDE"
+    return 0
+  fi
   command -v hermes 2>/dev/null || return 1
+}
+
+now_milliseconds() {
+  /usr/bin/python3 - <<'PY'
+import time
+print(int(time.time() * 1000))
+PY
+}
+
+category_for_output_file() {
+  local file="$1"
+  /usr/bin/python3 - "$file" <<'PY'
+import re
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+data = path.read_bytes()[:4096] if path.exists() else b""
+text = data.decode("utf-8", "replace").lower()
+if not text.strip():
+    print("empty")
+elif "address already in use" in text or "errno 48" in text:
+    print("bind-address-in-use")
+elif "missing" in text and ("config" in text or "configuration" in text):
+    print("missing-configuration")
+elif "required" in text and ("argument" in text or "option" in text):
+    print("missing-required-argument")
+elif "no such option" in text or "unrecognized" in text or "unknown option" in text:
+    print("unsupported-argument")
+elif "usage:" in text or "options:" in text:
+    print("usage-or-help")
+elif "traceback" in text or "exception" in text:
+    print("exception")
+elif re.search(r"(token|secret|password|bearer)\s*[=:]", text):
+    print("redacted-sensitive-shape")
+else:
+    print("nonempty-other")
+PY
+}
+
+classify_immediate_exit_reason() {
+  local exit_code="$1" signal="$2" stderr_category="$3"
+  if [[ "$stderr_category" == missing-required-argument ]]; then
+    print -r -- "launch.argument-missing"
+  elif [[ "$stderr_category" == missing-configuration ]]; then
+    print -r -- "launch.configuration-missing"
+  elif [[ "$stderr_category" == unsupported-argument ]]; then
+    print -r -- "launch.stderr-indicates-unsupported"
+  elif [[ "$signal" != none && "$signal" != unknown ]]; then
+    print -r -- "launch.signaled"
+  elif [[ "$exit_code" == 0 ]]; then
+    print -r -- "launch.exited-zero-no-service"
+  elif [[ "$exit_code" == <-> ]]; then
+    print -r -- "launch.exited-nonzero"
+  else
+    print -r -- "launch.unknown-immediate-exit"
+  fi
 }
 
 print_launch_plan() {
@@ -301,8 +400,115 @@ print_launch_plan() {
   print -r -- "isolated_command_advertised=${RESULT[ISOLATED_COMMAND_ADVERTISED]}"
   print -r -- "exact_cli_shutdown_required=no"
   print -r -- "supervisor_strategy=bridge-exact-pid"
-  print -r -- "launch_argument_identifiers=subcommand.serve,flag.isolated"
+  print -r -- "launch_argument_identifiers=subcommand.serve,flag.isolated,flag.port.auto"
   print -r -- "isolated_environment_validity=${RESULT[ISOLATED_ENVIRONMENT_VALID]}"
+  print -r -- "blocking_reason=$reason"
+}
+
+help_output_for() {
+  local executable="$1"
+  shift
+  local temp_root exit_status
+  temp_root="$(mktemp -d "${TMPDIR:-/tmp}/m14-006-help.XXXXXX")" || return 1
+  (
+    env -i \
+      HOME="$temp_root/home" \
+      HERMES_HOME="$temp_root/hermes-home" \
+      XDG_CONFIG_HOME="$temp_root/xdg-config" \
+      XDG_STATE_HOME="$temp_root/xdg-state" \
+      XDG_CACHE_HOME="$temp_root/xdg-cache" \
+      TMPDIR="$temp_root/tmp" \
+      PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
+      LANG="C" \
+      "$executable" "$@" </dev/null 2>&1
+  )
+  exit_status=$?
+  rm -rf "$temp_root"
+  return "$exit_status"
+}
+
+syntax_identifiers_from_help() {
+  /usr/bin/python3 -c '
+import re
+import sys
+text = sys.stdin.read()
+flags = sorted(set(re.findall(r"(?<![\w-])--[A-Za-z][A-Za-z0-9-]*", text)))
+ids = []
+for flag in flags:
+    name = flag[2:].replace("-", "_")
+    if name in {"isolated", "host", "bind", "port", "foreground", "no_daemon", "state_dir", "profile", "status", "config"}:
+        ids.append("flag." + name)
+print(",".join(ids) if ids else "none")
+'
+}
+
+required_identifiers_from_help() {
+  /usr/bin/python3 -c '
+import re
+import sys
+text = sys.stdin.read().lower()
+required = []
+for line in text.splitlines():
+    if "required" not in line:
+        continue
+    for flag in re.findall(r"(?<![\w-])--[a-z][a-z0-9-]*", line):
+        required.append("flag." + flag[2:].replace("-", "_"))
+print(",".join(sorted(set(required))) if required else "none-advertised")
+'
+}
+
+usage_shape_from_help() {
+  /usr/bin/python3 -c '
+import sys
+text = sys.stdin.read()
+for line in text.splitlines():
+    stripped = line.strip()
+    if stripped.lower().startswith(("usage:", "usage ")):
+        print(stripped[:240])
+        break
+else:
+    print("usage-line-not-advertised")
+'
+}
+
+inspect_launch_syntax() {
+  local executable root_help serve_help reason optional_ids required_ids usage_shape
+  set_default_results
+  production_inspect_readonly
+  executable="$(resolve_hermes_executable 2>/dev/null || true)"
+  if [[ -z "$executable" ]]; then
+    reason="executable.unavailable"
+    root_help=""
+    serve_help=""
+  else
+    root_help="$(help_output_for "$executable" --help || true)"
+    serve_help="$(help_output_for "$executable" serve --help || true)"
+    RESULT[ISOLATED_ENVIRONMENT_VALID]=yes
+    reason="$(m14006_blocking_reason)"
+  fi
+  usage_shape="$(print -r -- "$serve_help" | usage_shape_from_help)"
+  required_ids="$(print -r -- "$serve_help" | required_identifiers_from_help)"
+  optional_ids="$(print -r -- "$serve_help" | syntax_identifiers_from_help)"
+  print -r -- "detected_version=${RESULT[HERMES_VERSION]}"
+  print -r -- "advertised_serve_syntax=$usage_shape"
+  print -r -- "required_argument_identifiers=$required_ids"
+  print -r -- "optional_argument_identifiers_relevant_to_isolation=$optional_ids"
+  if print -r -- "$serve_help" | /usr/bin/grep -Eiq -- '--foreground|--no-daemon|foreground'; then
+    print -r -- "foreground_daemon_behavior_advertised=yes"
+  else
+    print -r -- "foreground_daemon_behavior_advertised=not-advertised"
+  fi
+  if print -r -- "$serve_help" | /usr/bin/grep -Eiq -- 'HERMES_HOME|--isolated|XDG_|state|config'; then
+    print -r -- "isolated_configuration_requirements=isolated-environment"
+  else
+    print -r -- "isolated_configuration_requirements=not-advertised"
+  fi
+  print -r -- "expected_immediate_exit_risks=bind-address-in-use,missing-required-argument,missing-configuration,unsupported-argument"
+  if print -r -- "$root_help$serve_help" | /usr/bin/grep -Eiq -- 'status|health|/api/status'; then
+    print -r -- "launch_readiness_mechanism=status-or-loopback-readiness"
+  else
+    print -r -- "launch_readiness_mechanism=not-advertised"
+  fi
   print -r -- "blocking_reason=$reason"
 }
 
@@ -318,7 +524,7 @@ Path(sys.argv[1]).write_text(json.dumps({
     "redaction": "privacy-safe",
     "executableFamily": sys.argv[2],
     "semanticVersion": sys.argv[3],
-    "argumentIdentifiers": ["subcommand.serve", "flag.isolated"],
+    "argumentIdentifiers": ["subcommand.serve", "flag.isolated", "flag.port.auto"],
     "isolatedEnvironmentValidationStatus": sys.argv[4],
     "runIdentifierCategory": "m14-006-run",
     "timeoutPolicy": {
@@ -331,7 +537,7 @@ PY
 }
 
 attempt_supervisor_launch() {
-  local executable pid
+  local executable pid start_ms deadline_ms now_ms wait_status duration reason
   executable="$(resolve_hermes_executable)" || {
     set_reason executable.unavailable preflight executable-discovery
     return 3
@@ -345,6 +551,9 @@ attempt_supervisor_launch() {
   fi
 
   RESULT[LAUNCH_ATTEMPTED]=yes
+  RESULT[LAUNCH_STDOUT_CATEGORY]=empty
+  RESULT[LAUNCH_STDERR_CATEGORY]=empty
+  start_ms="$(now_milliseconds)"
   (
     ulimit -f 128
     env -i \
@@ -356,7 +565,7 @@ attempt_supervisor_launch() {
       TMPDIR="$RUNTIME_ROOT/tmp" \
       PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
       LANG="C" \
-      "$executable" serve --isolated \
+      "$executable" serve --isolated --port 0 \
       </dev/null >"$RUNTIME_ROOT/stdout.log" 2>"$RUNTIME_ROOT/stderr.log"
   ) &
   pid=$!
@@ -365,15 +574,58 @@ attempt_supervisor_launch() {
     return 3
   fi
   RESULT[SUPERVISOR_ROOT_STARTED]=yes
-  persist_identity_for_pid "$pid"
+  print -r -- "$pid" > "$PROVISIONAL_IDENTITY_FILE"
+  RESULT[PROCESS_IDENTITY_CAPTURED]=provisional
+  deadline_ms=$(( start_ms + 300 ))
+  while true; do
+    persist_identity_for_pid "$pid"
+    if [[ -s "$OWNED_IDENTITY_FILE" ]] && identity_matches "$pid"; then
+      RESULT[PROCESS_IDENTITY_CAPTURED]=complete
+      RESULT[EXECUTABLE_IDENTITY_OBSERVED]=yes
+      break
+    fi
+    if ! kill -0 "$pid" 2>/dev/null; then
+      break
+    fi
+    now_ms="$(now_milliseconds)"
+    (( now_ms >= deadline_ms )) && break
+    sleep 0.03
+  done
+  observe_direct_descendants "$pid"
+  observe_loopback_listener
   if identity_matches "$pid"; then
     RESULT[PROCESS_IDENTITY_CAPTURED]=yes
     RESULT[PROCESS_TOPOLOGY_STATUS]=foreground-single-process
     return 0
   fi
-  RESULT[PROCESS_TOPOLOGY_STATUS]=blocked
-  set_reason launch.exited-before-identity launch process-identity
-  return 3
+  if kill -0 "$pid" 2>/dev/null; then
+    RESULT[PROCESS_TOPOLOGY_STATUS]=blocked
+    set_reason launch.process-table-race launch process-identity
+    return 1
+  fi
+  wait "$pid"
+  wait_status=$?
+  duration=$(( $(now_milliseconds) - start_ms ))
+  RESULT[LAUNCH_DURATION_MILLISECONDS]="$duration"
+  RESULT[LAUNCH_CHILD_EXITED]=yes
+  if (( wait_status >= 128 )); then
+    RESULT[LAUNCH_CHILD_EXIT_CODE]=unknown
+    RESULT[LAUNCH_CHILD_SIGNAL]=$(( wait_status - 128 ))
+  else
+    RESULT[LAUNCH_CHILD_EXIT_CODE]="$wait_status"
+    RESULT[LAUNCH_CHILD_SIGNAL]=none
+  fi
+  RESULT[LAUNCH_STDOUT_CATEGORY]="$(category_for_output_file "$RUNTIME_ROOT/stdout.log")"
+  RESULT[LAUNCH_STDERR_CATEGORY]="$(category_for_output_file "$RUNTIME_ROOT/stderr.log")"
+  if adopt_proven_child_after_launcher_exit "$pid"; then
+    RESULT[PROCESS_TOPOLOGY_STATUS]=launcher-exited-child-remains
+    set_reason launch.launcher-child-handoff launch process-topology
+    return 0
+  fi
+  RESULT[PROCESS_TOPOLOGY_STATUS]=process-exited
+  reason="$(classify_immediate_exit_reason "${RESULT[LAUNCH_CHILD_EXIT_CODE]}" "${RESULT[LAUNCH_CHILD_SIGNAL]}" "${RESULT[LAUNCH_STDERR_CATEGORY]}")"
+  set_reason "$reason" launch immediate-exit
+  return 1
 }
 
 validate_isolated_environment() {
@@ -410,6 +662,41 @@ persist_identity_for_pid() {
   local pid="$1"
   mkdir -p "$RUNTIME_ROOT"
   /bin/ps -p "$pid" -o pid=,ppid=,pgid=,uid=,comm= 2>/dev/null | /usr/bin/sed 's/^ *//' > "$OWNED_IDENTITY_FILE"
+}
+
+observe_direct_descendants() {
+  local pid="$1"
+  /bin/ps -axo pid=,ppid=,pgid=,uid=,comm= 2>/dev/null | /usr/bin/awk -v root="$pid" '$2 == root { print; found = 1; exit } END { exit(found ? 0 : 1) }' > "$OBSERVED_DESCENDANT_FILE"
+  if [[ $? -eq 0 ]]; then
+    RESULT[DESCENDANT_OBSERVED_BEFORE_EXIT]=yes
+  fi
+}
+
+observe_loopback_listener() {
+  if command -v lsof >/dev/null 2>&1 && lsof -nP -iTCP@127.0.0.1 -sTCP:LISTEN >/dev/null 2>&1; then
+    RESULT[LISTENER_OBSERVED_BEFORE_EXIT]=yes
+  fi
+}
+
+adopt_proven_child_after_launcher_exit() {
+  local root_pid="$1" child_line child_pid expected_uid expected_comm current
+  child_line="$(/bin/ps -axo pid=,ppid=,pgid=,uid=,comm= 2>/dev/null | /usr/bin/awk -v root="$root_pid" '$2 == root { print; exit }')"
+  if [[ -z "$child_line" && -s "$OBSERVED_DESCENDANT_FILE" ]]; then
+    child_line="$(cat "$OBSERVED_DESCENDANT_FILE")"
+  fi
+  [[ -n "$child_line" ]] || return 1
+  child_pid="$(print -r -- "$child_line" | /usr/bin/awk '{print $1}')"
+  expected_uid="$(print -r -- "$child_line" | /usr/bin/awk '{print $4}')"
+  expected_comm="$(print -r -- "$child_line" | /usr/bin/awk '{print $5}')"
+  [[ "$child_pid" == <-> && "$child_pid" -gt 1 ]] || return 1
+  current="$(/bin/ps -p "$child_pid" -o pid=,uid=,comm= 2>/dev/null | /usr/bin/sed 's/^ *//')"
+  [[ -n "$current" ]] || return 1
+  [[ "$(print -r -- "$current" | /usr/bin/awk '{print $2}')" == "$expected_uid" ]] || return 1
+  [[ "$(print -r -- "$current" | /usr/bin/awk '{print $3}')" == "$expected_comm" ]] || return 1
+  print -r -- "$child_line" > "$OWNED_IDENTITY_FILE"
+  RESULT[PROCESS_IDENTITY_CAPTURED]=yes
+  RESULT[EXECUTABLE_IDENTITY_OBSERVED]=yes
+  return 0
 }
 
 identity_matches() {
@@ -476,7 +763,7 @@ run_acceptance() {
   else
     RESULT[ISOLATED_ENVIRONMENT_VALID]=no
     RESULT[M14_006_RESULT]=BLOCKED
-    set_reason isolated-environment.invalid preflight isolated-runtime-root
+    set_reason launch.environment-invalid preflight isolated-runtime-root
     write_result
     exit 3
   fi
@@ -497,9 +784,19 @@ run_acceptance() {
     exit 3
   fi
   write_launch_descriptor
-  if ! attempt_supervisor_launch; then
-    RESULT[SUPERVISOR_COMPATIBILITY_LEVEL]=BLOCKED
-    RESULT[M14_006_RESULT]=BLOCKED
+  attempt_supervisor_launch
+  local launch_status=$?
+  if [[ "$launch_status" -ne 0 ]]; then
+    if [[ "${RESULT[SUPERVISOR_REASON_CODE]}" == launch.process-table-race ]]; then
+      RESULT[SUPERVISOR_COMPATIBILITY_LEVEL]=FAIL
+      RESULT[M14_006_RESULT]=FAIL
+    elif [[ "${RESULT[SUPERVISOR_REASON_CODE]}" == launch.launcher-child-handoff ]]; then
+      RESULT[SUPERVISOR_COMPATIBILITY_LEVEL]=UNSUPPORTED
+      RESULT[M14_006_RESULT]=UNSUPPORTED
+    else
+      RESULT[SUPERVISOR_COMPATIBILITY_LEVEL]=FAIL
+      RESULT[M14_006_RESULT]=FAIL
+    fi
     RESULT[REAL_HERMES_HOME_MODIFIED]=no
     RESULT[SUPERVISED_PROCESS_REAL_HOME_ACCESS]=no
     RESULT[EXTERNAL_REAL_HOME_MUTATION_OBSERVED]=no
@@ -508,7 +805,8 @@ run_acceptance() {
     RESULT[ENVIRONMENT_RESTORED]=yes
     cleanup_owned_process
     write_result
-    exit 3
+    result_exit_code
+    exit $?
   fi
   RESULT[READINESS_STATUS]=blocked
   RESULT[SUPERVISOR_COMPATIBILITY_LEVEL]=UNSUPPORTED
@@ -546,6 +844,7 @@ main() {
   case "${1:-}" in
     inspect) inspect ;;
     inspect-launch-plan) inspect_launch_plan ;;
+    inspect-launch-syntax) inspect_launch_syntax ;;
     run) run_acceptance ;;
     cleanup) cleanup ;;
     *) usage; exit 1 ;;

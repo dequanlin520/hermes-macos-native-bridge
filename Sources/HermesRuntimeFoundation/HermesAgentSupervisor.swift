@@ -105,7 +105,7 @@ public struct HermesAgentSupervisorConfiguration: Codable, Equatable, Sendable {
       Self(
         executableURL: executableURL,
         observedVersion: version,
-        isolatedArguments: ["serve", "--isolated"],
+        isolatedArguments: Self.isolatedArguments(commandSurface),
         statusArguments: HermesAgentLaunchContractSelector.advertisedStatus(commandSurface),
         environment: environment,
         runIdentifier: runIdentifier
@@ -117,6 +117,16 @@ public struct HermesAgentSupervisorConfiguration: Codable, Equatable, Sendable {
       $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "." || $0 == "-" || $0 == "_")
     }
     return filtered.isEmpty ? "m14-006" : String(filtered.prefix(96))
+  }
+
+  private static func isolatedArguments(_ commandSurface: HermesAgentCommandSurface) -> [String] {
+    if commandSurface.help(for: "serve").range(
+      of: #"(^|\s)--port(\s|,|\.|$)"#,
+      options: .regularExpression
+    ) != nil {
+      return ["serve", "--isolated", "--port", "0"]
+    }
+    return ["serve", "--isolated"]
   }
 }
 
@@ -161,6 +171,8 @@ public struct HermesAgentSupervisorLaunchDescriptor: Codable, Equatable, Sendabl
     switch arguments {
     case ["serve", "--isolated"]:
       return ["subcommand.serve", "flag.isolated"]
+    case ["serve", "--isolated", "--port", "0"]:
+      return ["subcommand.serve", "flag.isolated", "flag.port.auto"]
     default:
       return ["invocation.syntax.unknown"]
     }
@@ -172,6 +184,7 @@ public struct HermesAgentSupervisorLaunchDescriptor: Codable, Equatable, Sendabl
     }
     return filtered.isEmpty ? "unknown" : String(filtered.prefix(96))
   }
+
 }
 
 public struct HermesAgentSupervisedProcess: Codable, Equatable, Sendable {
@@ -239,12 +252,88 @@ public struct HermesAgentEndpointIdentity: Codable, Equatable, Sendable {
   }
 }
 
+public struct HermesAgentLaunchAttemptEvidence: Codable, Equatable, Sendable {
+  public let childExited: Bool
+  public let childExitCode: Int?
+  public let childSignal: Int?
+  public let durationMilliseconds: Int
+  public let stdoutCategory: String
+  public let stderrCategory: String
+  public let descendantObservedBeforeExit: Bool
+  public let listenerObservedBeforeExit: Bool
+  public let executableIdentityObserved: Bool
+
+  public init(
+    childExited: Bool,
+    childExitCode: Int?,
+    childSignal: Int?,
+    durationMilliseconds: Int,
+    stdoutCategory: String,
+    stderrCategory: String,
+    descendantObservedBeforeExit: Bool,
+    listenerObservedBeforeExit: Bool,
+    executableIdentityObserved: Bool
+  ) {
+    self.childExited = childExited
+    self.childExitCode = childExitCode
+    self.childSignal = childSignal
+    self.durationMilliseconds = max(0, durationMilliseconds)
+    self.stdoutCategory = Self.safeToken(stdoutCategory)
+    self.stderrCategory = Self.safeToken(stderrCategory)
+    self.descendantObservedBeforeExit = descendantObservedBeforeExit
+    self.listenerObservedBeforeExit = listenerObservedBeforeExit
+    self.executableIdentityObserved = executableIdentityObserved
+  }
+
+  public static let notAttempted = Self(
+    childExited: false,
+    childExitCode: nil,
+    childSignal: nil,
+    durationMilliseconds: 0,
+    stdoutCategory: "not-captured",
+    stderrCategory: "not-captured",
+    descendantObservedBeforeExit: false,
+    listenerObservedBeforeExit: false,
+    executableIdentityObserved: false
+  )
+
+  public var immediateExitReasonCode: String {
+    if stderrCategory == "missing-required-argument" {
+      return "launch.argument-missing"
+    }
+    if stderrCategory == "missing-configuration" {
+      return "launch.configuration-missing"
+    }
+    if stderrCategory == "unsupported-argument" {
+      return "launch.stderr-indicates-unsupported"
+    }
+    if childSignal != nil {
+      return "launch.signaled"
+    }
+    if childExitCode == 0 {
+      return "launch.exited-zero-no-service"
+    }
+    if childExitCode != nil {
+      return "launch.exited-nonzero"
+    }
+    return "launch.unknown-immediate-exit"
+  }
+
+  private static func safeToken(_ value: String) -> String {
+    let filtered = value.filter {
+      $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "." || $0 == "-" || $0 == "_")
+    }
+    return filtered.isEmpty ? "unknown" : String(filtered.prefix(96))
+  }
+}
+
 public struct HermesAgentSupervisorResult: Codable, Equatable, Sendable {
   public let compatibilityLevel: HermesAgentSupervisorCompatibilityLevel
   public let reasonCode: String
   public let reasonPhase: HermesAgentSupervisorReasonPhase
   public let detailCategory: String
   public let launchDescriptor: HermesAgentSupervisorLaunchDescriptor
+  public let launchAttemptEvidence: HermesAgentLaunchAttemptEvidence
   public let processTree: HermesAgentProcessTree
   public let endpointIdentity: HermesAgentEndpointIdentity
   public let serviceDiscoveryObserved: Bool
@@ -266,6 +355,7 @@ public struct HermesAgentSupervisorResult: Codable, Equatable, Sendable {
     reasonPhase: HermesAgentSupervisorReasonPhase,
     detailCategory: String,
     launchDescriptor: HermesAgentSupervisorLaunchDescriptor,
+    launchAttemptEvidence: HermesAgentLaunchAttemptEvidence = .notAttempted,
     processTree: HermesAgentProcessTree,
     endpointIdentity: HermesAgentEndpointIdentity,
     serviceDiscoveryObserved: Bool,
@@ -286,6 +376,7 @@ public struct HermesAgentSupervisorResult: Codable, Equatable, Sendable {
     self.reasonPhase = reasonPhase
     self.detailCategory = detailCategory
     self.launchDescriptor = launchDescriptor
+    self.launchAttemptEvidence = launchAttemptEvidence
     self.processTree = processTree
     self.endpointIdentity = endpointIdentity
     self.serviceDiscoveryObserved = serviceDiscoveryObserved
@@ -322,6 +413,11 @@ public protocol HermesAgentSupervisorProcessControlling: Sendable {
   func waitForExit(identity: HermesAgentProcessIdentity, timeout: TimeInterval) -> Bool
   func realHomeAccessObserved(for identities: [HermesAgentProcessIdentity]) -> Bool
   func rawExternalRealHomeMutationObserved() -> Bool
+  func launchAttemptEvidence() -> HermesAgentLaunchAttemptEvidence
+}
+
+public extension HermesAgentSupervisorProcessControlling {
+  func launchAttemptEvidence() -> HermesAgentLaunchAttemptEvidence { .notAttempted }
 }
 
 public final class HermesAgentSupervisor: @unchecked Sendable {
@@ -347,7 +443,9 @@ public final class HermesAgentSupervisor: @unchecked Sendable {
       lock.withLock { currentState = .blocked }
       throw HermesAgentSupervisorError.blocked("version.unsupported")
     }
-    guard configuration.isolatedArguments == ["serve", "--isolated"] else {
+    guard configuration.isolatedArguments == ["serve", "--isolated"]
+      || configuration.isolatedArguments == ["serve", "--isolated", "--port", "0"]
+    else {
       lock.withLock { currentState = .blocked }
       throw HermesAgentSupervisorError.blocked("invocation.syntax.unknown")
     }
@@ -366,8 +464,8 @@ public final class HermesAgentSupervisor: @unchecked Sendable {
       throw HermesAgentSupervisorError.unsupported("topology.ambiguous")
     }
     guard initialTree.topologyStatus != .processExited else {
-      lock.withLock { currentState = .unsupported }
-      throw HermesAgentSupervisorError.unsupported("launch.exited-before-identity")
+      lock.withLock { currentState = .failed }
+      throw HermesAgentSupervisorError.fail(controller.launchAttemptEvidence().immediateExitReasonCode)
     }
 
     let endpoint = controller.waitForReadiness(
@@ -401,6 +499,7 @@ public final class HermesAgentSupervisor: @unchecked Sendable {
       reasonPhase: compatibility == .supported ? .cleanup : .cleanup,
       detailCategory: compatibility == .supported ? "supervision-complete" : "cleanup-or-status",
       launchDescriptor: launchDescriptor,
+      launchAttemptEvidence: controller.launchAttemptEvidence(),
       processTree: initialTree,
       endpointIdentity: endpoint,
       serviceDiscoveryObserved: serviceDiscoveryObserved,
@@ -531,4 +630,5 @@ public final class UnsupportedHermesAgentSupervisorProcessController:
   public func waitForExit(identity _: HermesAgentProcessIdentity, timeout _: TimeInterval) -> Bool { true }
   public func realHomeAccessObserved(for _: [HermesAgentProcessIdentity]) -> Bool { false }
   public func rawExternalRealHomeMutationObserved() -> Bool { false }
+  public func launchAttemptEvidence() -> HermesAgentLaunchAttemptEvidence { .notAttempted }
 }

@@ -24,7 +24,7 @@ final class HermesAgentSupervisorTests: XCTestCase {
     let surface = HermesAgentCommandSurface(
       versionOutput: "Hermes Agent v0.18.2",
       rootHelpOutput: "Commands:\n  serve\n  status\n",
-      subcommandHelp: ["serve": "Usage: serve --isolated", "status": "Usage: status"]
+      subcommandHelp: ["serve": "Usage: serve --isolated --port PORT", "status": "Usage: status"]
     )
 
     let accepted = HermesAgentSupervisorConfiguration.from018CommandSurface(
@@ -56,7 +56,7 @@ final class HermesAgentSupervisorTests: XCTestCase {
       versionOutput: "Hermes Agent v0.18.2",
       rootHelpOutput: "Commands:\n  serve\n  status\n",
       subcommandHelp: [
-        "serve": "Usage: hermes serve --isolated --stop",
+        "serve": "Usage: hermes serve --isolated --port PORT --stop",
         "status": "Usage: hermes status",
       ]
     )
@@ -74,7 +74,7 @@ final class HermesAgentSupervisorTests: XCTestCase {
 
     XCTAssertEqual(m14005Contract.status, .unsupported)
     XCTAssertEqual(m14005Contract.reasonCode, "shutdown.command.not_exact_isolated")
-    XCTAssertEqual(try m14006Configuration.get().isolatedArguments, ["serve", "--isolated"])
+    XCTAssertEqual(try m14006Configuration.get().isolatedArguments, ["serve", "--isolated", "--port", "0"])
   }
 
   func testMissingInvocationSyntaxIsBlockedWithExplicitReason() throws {
@@ -167,6 +167,101 @@ final class HermesAgentSupervisorTests: XCTestCase {
     }
   }
 
+  func testImmediateZeroExitFailsWithPreciseReason() throws {
+    let controller = FixtureSupervisorController(
+      initialTopology: .processExited,
+      launchEvidence: .init(
+        childExited: true,
+        childExitCode: 0,
+        childSignal: nil,
+        durationMilliseconds: 12,
+        stdoutCategory: "empty",
+        stderrCategory: "empty",
+        descendantObservedBeforeExit: false,
+        listenerObservedBeforeExit: false,
+        executableIdentityObserved: true
+      )
+    )
+
+    XCTAssertThrowsError(try HermesAgentSupervisor(controller: controller).supervise(configuration: configuration())) {
+      XCTAssertEqual($0 as? HermesAgentSupervisorError, .fail("launch.exited-zero-no-service"))
+    }
+  }
+
+  func testImmediateNonzeroExitPersistsEvidenceAndFails() throws {
+    let evidence = HermesAgentLaunchAttemptEvidence(
+      childExited: true,
+      childExitCode: 2,
+      childSignal: nil,
+      durationMilliseconds: 7,
+      stdoutCategory: "empty",
+      stderrCategory: "bind-address-in-use",
+      descendantObservedBeforeExit: false,
+      listenerObservedBeforeExit: false,
+      executableIdentityObserved: true
+    )
+    let controller = FixtureSupervisorController(initialTopology: .processExited, launchEvidence: evidence)
+
+    XCTAssertThrowsError(try HermesAgentSupervisor(controller: controller).supervise(configuration: configuration())) {
+      XCTAssertEqual($0 as? HermesAgentSupervisorError, .fail("launch.exited-nonzero"))
+    }
+    XCTAssertEqual(controller.launchAttemptEvidence().childExitCode, 2)
+    XCTAssertEqual(controller.launchAttemptEvidence().durationMilliseconds, 7)
+    XCTAssertEqual(controller.launchAttemptEvidence().stderrCategory, "bind-address-in-use")
+  }
+
+  func testSignalExitFailsWithPreciseReason() throws {
+    let controller = FixtureSupervisorController(
+      initialTopology: .processExited,
+      launchEvidence: .init(
+        childExited: true,
+        childExitCode: nil,
+        childSignal: Int(SIGTERM),
+        durationMilliseconds: 4,
+        stdoutCategory: "empty",
+        stderrCategory: "empty",
+        descendantObservedBeforeExit: false,
+        listenerObservedBeforeExit: false,
+        executableIdentityObserved: true
+      )
+    )
+
+    XCTAssertThrowsError(try HermesAgentSupervisor(controller: controller).supervise(configuration: configuration())) {
+      XCTAssertEqual($0 as? HermesAgentSupervisorError, .fail("launch.signaled"))
+    }
+  }
+
+  func testMissingRequiredArgumentAndConfigurationClassifications() {
+    XCTAssertEqual(
+      HermesAgentLaunchAttemptEvidence(
+        childExited: true,
+        childExitCode: 2,
+        childSignal: nil,
+        durationMilliseconds: 1,
+        stdoutCategory: "empty",
+        stderrCategory: "missing-required-argument",
+        descendantObservedBeforeExit: false,
+        listenerObservedBeforeExit: false,
+        executableIdentityObserved: true
+      ).immediateExitReasonCode,
+      "launch.argument-missing"
+    )
+    XCTAssertEqual(
+      HermesAgentLaunchAttemptEvidence(
+        childExited: true,
+        childExitCode: 1,
+        childSignal: nil,
+        durationMilliseconds: 1,
+        stdoutCategory: "empty",
+        stderrCategory: "missing-configuration",
+        descendantObservedBeforeExit: false,
+        listenerObservedBeforeExit: false,
+        executableIdentityObserved: true
+      ).immediateExitReasonCode,
+      "launch.configuration-missing"
+    )
+  }
+
   func testDaemonizedTopologyIsUnsupported() throws {
     let controller = FixtureSupervisorController(initialTopology: .daemonized)
 
@@ -253,6 +348,7 @@ private final class FixtureSupervisorController: HermesAgentSupervisorProcessCon
   private let realHomeAccess: Bool
   private let externalMutation: Bool
   private let status: String
+  private let launchEvidence: HermesAgentLaunchAttemptEvidence
 
   init(
     endpointRelationship: String = "acceptance-owned-root",
@@ -262,7 +358,8 @@ private final class FixtureSupervisorController: HermesAgentSupervisorProcessCon
     waitResults: [Bool] = [true],
     realHomeAccess: Bool = false,
     externalMutation: Bool = false,
-    status: String = "ready"
+    status: String = "ready",
+    launchEvidence: HermesAgentLaunchAttemptEvidence = .notAttempted
   ) {
     self.endpointRelationship = endpointRelationship
     self.initialTopology = initialTopology
@@ -272,6 +369,7 @@ private final class FixtureSupervisorController: HermesAgentSupervisorProcessCon
     self.realHomeAccess = realHomeAccess
     self.externalMutation = externalMutation
     self.status = status
+    self.launchEvidence = launchEvidence
   }
 
   func launchIsolatedAgent(configuration _: HermesAgentSupervisorConfiguration) throws
@@ -341,6 +439,7 @@ private final class FixtureSupervisorController: HermesAgentSupervisorProcessCon
 
   func realHomeAccessObserved(for _: [HermesAgentProcessIdentity]) -> Bool { realHomeAccess }
   func rawExternalRealHomeMutationObserved() -> Bool { externalMutation }
+  func launchAttemptEvidence() -> HermesAgentLaunchAttemptEvidence { launchEvidence }
 }
 
 private func identity(

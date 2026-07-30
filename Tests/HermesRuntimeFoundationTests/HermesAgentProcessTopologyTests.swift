@@ -83,6 +83,37 @@ final class HermesAgentProcessTopologyTests: XCTestCase {
       ))
   }
 
+  func testRootExitsBeforeFullIdentityStillAllowsProvisionalLineageProof() {
+    let root = identity(pid: 100, uid: 501, start: "10.0", run: "run")
+    let child = identity(pid: 101, ppid: 100, uid: 501, start: "10.2", run: "run")
+
+    XCTAssertEqual(
+      HermesAgentProcessTopology.classify(
+        root: nil,
+        descendants: [child],
+        launcherExited: true,
+        unprovenChildRemains: false
+      ),
+      .launcherExitedChildRemains
+    )
+    XCTAssertTrue(HermesAgentProcessTopology.isProvenDescendant(child, parent: root))
+  }
+
+  func testUnrelatedChildIsNeverProvenDescendant() {
+    let root = identity(pid: 100, uid: 501, start: "10.0", run: "run")
+
+    XCTAssertFalse(
+      HermesAgentProcessTopology.isProvenDescendant(
+        identity(pid: 101, ppid: 99, uid: 501, start: "10.2", run: "run"),
+        parent: root
+      ))
+    XCTAssertFalse(
+      HermesAgentProcessTopology.isProvenDescendant(
+        identity(pid: 101, ppid: 100, uid: 502, start: "10.2", run: "run"),
+        parent: root
+      ))
+  }
+
   func testPIDReuseUIDAndStartTimeMismatchesAreRejectedByFixtureValidator() {
     let validator = FixtureIdentityValidator(valid: [identity(pid: 100, uid: 501, start: "10.0")])
 
