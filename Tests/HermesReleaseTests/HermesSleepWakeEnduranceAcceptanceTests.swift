@@ -262,12 +262,61 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
 
     XCTAssertTrue(helper.contains("ProcessInfo.processInfo.systemUptime"))
     XCTAssertTrue(helper.contains("monotonicUptime"))
+    XCTAssertTrue(helper.contains("recorderInstanceIdentifier"))
+    XCTAssertTrue(helper.contains("eventSequenceNumber"))
+    XCTAssertTrue(helper.contains("currentExecutablePath"))
     XCTAssertTrue(verify.contains("run-id-mismatch"))
     XCTAssertTrue(verify.contains("ready_index < sleep_index < wake_index"))
     XCTAssertTrue(verify.contains("invalid-event-order"))
     XCTAssertTrue(verify.contains("invalid-uptime-evidence"))
+    XCTAssertTrue(verify.contains("evidence-invalid"))
+    XCTAssertTrue(verify.contains("recorderInstanceIdentifier"))
+    XCTAssertTrue(verify.contains("eventSequenceNumber"))
+    XCTAssertTrue(verify.contains("currentExecutablePath"))
     XCTAssertTrue(verify.contains("wake[\"monotonicUptime\"] < sleep[\"monotonicUptime\"]"))
     XCTAssertFalse(helper.contains("Date().timeIntervalSince"))
+  }
+
+  func testResumeAcceptsRecorderReplacementUnderExactLaunchdLabel() throws {
+    let script = try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh")
+    let validate = try extractFunction("validate_resume_recorder_identity", from: script)
+    let process = try extractFunction("validate_recorder_process_identity", from: script)
+    let plist = try extractFunction("validate_recorder_plist_contract", from: script)
+
+    XCTAssertTrue(script.contains("RECORDER_EXECUTABLE=\"/usr/bin/swift\""))
+    XCTAssertTrue(validate.contains("launchctl print \"$SERVICE_DOMAIN/$RECORDER_LABEL\""))
+    XCTAssertTrue(validate.contains("recorder_pid_from_launchctl"))
+    XCTAssertTrue(validate.contains("\"$launchd_pid\" == \"$RECORDER_PID\""))
+    XCTAssertTrue(validate.contains("RECORDER_PID=\"$launchd_pid\""))
+    XCTAssertTrue(validate.contains("write_checkpoint \"resume\" \"recorder-restarted\""))
+    XCTAssertTrue(process.contains("current_uid=\"$(id -u)\""))
+    XCTAssertTrue(process.contains("[[ \"$PARSED_UID\" == \"$current_uid\" ]]"))
+    XCTAssertTrue(process.contains("expected_executable_path"))
+    XCTAssertTrue(process.contains("currentExecutablePath"))
+    XCTAssertTrue(process.contains("[[ \"$PARSED_COMM\" == \"$expected_executable_path\""))
+    XCTAssertTrue(plist.contains("plist.get(\"Label\") != label"))
+    XCTAssertTrue(plist.contains("arguments != expected"))
+    XCTAssertTrue(plist.contains("run_id"))
+    XCTAssertTrue(plist.contains("evidence"))
+    XCTAssertFalse(validate.contains("pgrep"))
+    XCTAssertFalse(process.contains("pgrep"))
+  }
+
+  func testResumeUsesPersistedEvidenceNotPrepareTimeRecorderPIDContinuity() throws {
+    let script = try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh")
+    let resume = try extractFunction("resume", from: script)
+    let evidence = try extractFunction("verify_recorder_evidence", from: script)
+    let ready = try extractFunction("verify_recorder_ready", from: script)
+
+    XCTAssertTrue(ready.contains("RECORDER_FAILURE_REASON=\"recorder-not-ready\""))
+    XCTAssertTrue(evidence.contains("recorder-never-ready"))
+    XCTAssertTrue(evidence.contains("will-sleep-missing"))
+    XCTAssertTrue(evidence.contains("wake-missing"))
+    XCTAssertTrue(resume.contains("validate_resume_recorder_identity"))
+    XCTAssertTrue(resume.contains("verify_recorder_evidence"))
+    XCTAssertTrue(resume.contains("recorder-never-ready|will-sleep-missing|wake-missing"))
+    XCTAssertFalse(evidence.contains("kill -0 \"$RECORDER_PID\""))
+    XCTAssertFalse(resume.contains("verify_recorder_ready"))
   }
 
   func testStaleCheckpointAndDuplicateResumeRejected() throws {
@@ -354,7 +403,36 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
     XCTAssertTrue(record.contains("root_pgid=\"$PARSED_PGID\""))
     XCTAssertTrue(record.contains("enumerate_current_user_process_group \"$root_pgid\""))
     XCTAssertTrue(record.contains("seen_pids"))
+    XCTAssertTrue(record.contains("seen_roots"))
+    XCTAssertTrue(record.contains("duplicate real Hermes root PID"))
     XCTAssertTrue(record.contains("for root_pid in \"${roots[@]}\""))
+  }
+
+  func testThreeRootPIDCompletenessDiagnosticsAndRepresentation() throws {
+    let script = try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh")
+    let record = try extractFunction("record_real_hermes_quiescence", from: script)
+    let diagnostics = try extractFunction("print_quiescence_diagnostics", from: script)
+    let prepare = try extractFunction("prepare", from: script)
+    let checkpoint = try extractFunction("write_checkpoint", from: script)
+
+    XCTAssertTrue(record.contains("ROOT_PIDS_EXPECTED=${#roots[@]}"))
+    XCTAssertTrue(record.contains("ROOT_PIDS_VALIDATED=$(( ROOT_PIDS_VALIDATED + 1 ))"))
+    XCTAssertTrue(record.contains("ROOT_PIDS_REPRESENTED="))
+    XCTAssertTrue(record.contains("QUIESCED_MEMBER_COUNT=${#REAL_HERMES_RECORDED_PIDS[@]}"))
+    XCTAssertTrue(record.contains("QUIESCENCE_COMPLETE=yes"))
+    XCTAssertTrue(record.contains("missing represented root PID"))
+    XCTAssertTrue(record.contains("\"isRoot\": pid_int in supplied_root_set"))
+    XCTAssertTrue(checkpoint.contains("\"operatorProvidedRootPids\": [record[\"pid\"]"))
+    XCTAssertTrue(diagnostics.contains("ROOT_PIDS_EXPECTED=$ROOT_PIDS_EXPECTED"))
+    XCTAssertTrue(diagnostics.contains("ROOT_PIDS_VALIDATED=$ROOT_PIDS_VALIDATED"))
+    XCTAssertTrue(diagnostics.contains("ROOT_PIDS_REPRESENTED=$ROOT_PIDS_REPRESENTED"))
+    XCTAssertTrue(diagnostics.contains("QUIESCED_MEMBER_COUNT=$QUIESCED_MEMBER_COUNT"))
+    XCTAssertTrue(diagnostics.contains("QUIESCENCE_COMPLETE=$QUIESCENCE_COMPLETE"))
+    XCTAssertTrue(prepare.contains("print_quiescence_diagnostics"))
+    XCTAssertLessThan(
+      try XCTUnwrap(prepare.range(of: "print_quiescence_diagnostics")?.lowerBound),
+      try XCTUnwrap(prepare.range(of: "RESULT[WAITING_FOR_MANUAL_SLEEP]=yes")?.lowerBound)
+    )
   }
 
   func testCurrentUIDEnforcementAndUnrelatedProcessExclusion() throws {
@@ -391,6 +469,7 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
     let checkpoint = try extractFunction("write_checkpoint", from: script)
 
     XCTAssertTrue(stop.contains("/bin/kill -STOP \"$pid\""))
+    XCTAssertTrue(stop.contains("update_real_hermes_pid_suspended_checkpoint \"$pid\""))
     XCTAssertTrue(stop.contains("verify_real_hermes_suspended"))
     XCTAssertTrue(stop.contains("update_real_hermes_suspended_checkpoint"))
     XCTAssertTrue(checkpoint.contains("\"realHermesQuiescence\""))
@@ -415,6 +494,19 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
     XCTAssertFalse(script.contains("killall"))
     XCTAssertFalse(script.contains("pkill"))
     XCTAssertFalse(script.contains("sudo "))
+  }
+
+  func testPassRequiresQuiescenceCheckpointAndRealHomeIntegrity() throws {
+    let script = try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh")
+    let resume = try extractFunction("resume", from: script)
+    let verify = try extractFunction("verify_real_hermes_quiescence_complete", from: script)
+    let finish = try extractFunction("finish_result", from: script)
+
+    XCTAssertTrue(resume.contains("verify_real_hermes_quiescence_complete"))
+    XCTAssertTrue(verify.contains("suspendedByM14003"))
+    XCTAssertTrue(verify.contains("real-hermes-quiescence-incomplete"))
+    XCTAssertTrue(finish.contains("REAL_HERMES_HOME_MODIFIED"))
+    XCTAssertTrue(finish.contains("ENVIRONMENT_RESTORED"))
   }
 
   func testPrepareFailureAfterInstallUsesLiveExactCleanupState() throws {
