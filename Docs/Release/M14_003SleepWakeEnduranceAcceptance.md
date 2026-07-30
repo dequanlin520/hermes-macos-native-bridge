@@ -131,6 +131,21 @@ for the requested run ID when it has a valid power boundary, otherwise the
 latest matching privacy-safe diagnostic checkpoint under
 `artifacts/m14-003/diagnostics/`.
 
+## Read-Only Diagnostic Finalization
+
+After a completed real run, use replay finalization to recompute only the
+real-home attribution verdict and final result without another sleep/wake cycle:
+
+```sh
+Scripts/m14_003_sleep_wake_endurance_acceptance.sh finalize-diagnostic-run
+```
+
+This mode does not require opt-in. It loads the latest matching preserved
+checkpoint/evidence, preserves the already recorded sleep/wake, XPC, lifecycle,
+runtime ownership, and cleanup keys, writes a new `result.txt`, and exits `0`
+only when the attribution-aware result is `PASS`. It does not install, stop,
+signal, launch, sleep, clean, or otherwise modify system state.
+
 ## Cleanup For Interrupted Runs
 
 Use cleanup after prepare failure, terminal closure, sleep interruption, resume
@@ -195,3 +210,30 @@ artifacts/m14-003/result.txt
 ```
 
 Generated artifacts remain ignored by Git under `artifacts/`.
+
+`REAL_HERMES_HOME_MODIFIED` remains a transparent mutation detector. A `yes`
+value means real user Hermes state changed during the acceptance interval; it
+does not by itself identify the writer. Final acceptance uses additional keys:
+
+- `BRIDGE_TOUCHED_REAL_HERMES_HOME`: whether exact Bridge-owned processes or
+  Bridge-owned state paths are attributed to the mutation.
+- `EXTERNAL_HERMES_ACTIVITY_DETECTED`: whether changed relative paths are
+  limited to known external Hermes operational categories, such as cron
+  heartbeat/ticker and account synchronization metadata.
+- `REAL_HOME_ATTRIBUTION_CONFIDENCE`: `high`, `medium`, `low`, or `unknown`
+  confidence in the writer attribution.
+
+M14-003 fails if Bridge is attributed as the writer, attribution is low/unknown
+while real-home changed, isolated Bridge writable roots are not proven, or any
+core sleep/wake, XPC, lifecycle, runtime ownership, or cleanup check fails.
+
+M14-003 may pass with `REAL_HERMES_HOME_MODIFIED=yes` only when Bridge did not
+touch real `~/.hermes`, external Hermes activity is detected, attribution
+confidence is high, LaunchAgent/app/service writable roots are proven isolated
+under `artifacts/m14-003/runtime`, the comparison occurred before recorded
+external Agent `SIGCONT`, and all core checks passed.
+
+Attribution evidence is privacy-safe. The script records changed relative paths
+and metadata categories, exact acceptance-owned targets and PIDs, isolated
+environment roots, phase ordering, and exact-PID open-file observations where
+available. It does not inspect secret file contents.

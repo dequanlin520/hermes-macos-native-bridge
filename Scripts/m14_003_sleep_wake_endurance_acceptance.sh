@@ -13,6 +13,8 @@ EVIDENCE_FILE="$RUNTIME_ROOT/wake-recorder-evidence.jsonl"
 POWER_LOG_EVIDENCE_FILE="$RUNTIME_ROOT/system-power-log-evidence.json"
 POWER_LOG_COMMAND="/usr/bin/pmset"
 PHASE_MARKERS_FILE="$RUNTIME_ROOT/phase-markers.jsonl"
+REAL_HOME_ATTRIBUTION_FILE="$RUNTIME_ROOT/real-home-attribution.json"
+REAL_HOME_OPEN_FILE_EVIDENCE="$RUNTIME_ROOT/bridge-real-home-open-files.jsonl"
 RECORDER_READY_FILE="$RUNTIME_ROOT/wake-recorder-ready.json"
 RECORDER_PID_FILE="$RUNTIME_ROOT/wake-recorder.pid"
 RECORDER_SOURCE="$RUNTIME_ROOT/SleepWakeRecorder.swift"
@@ -117,6 +119,9 @@ ORDERED_KEYS=(
   SUDO_USED
   BROAD_PROCESS_KILL_USED
   REAL_HERMES_HOME_MODIFIED
+  BRIDGE_TOUCHED_REAL_HERMES_HOME
+  EXTERNAL_HERMES_ACTIVITY_DETECTED
+  REAL_HOME_ATTRIBUTION_CONFIDENCE
   APP_TARGET_CLEANED
   LAUNCH_AGENT_TARGET_CLEANED
   ACCEPTANCE_PROCESS_REMAINING
@@ -126,7 +131,7 @@ ORDERED_KEYS=(
 )
 
 usage() {
-  print -u2 "usage: $SCRIPT_NAME prepare|resume|cleanup|diagnose-power-evidence|inspect-checkpoint"
+  print -u2 "usage: $SCRIPT_NAME prepare|resume|cleanup|finalize-diagnostic-run|diagnose-power-evidence|inspect-checkpoint"
   print -u2 "prepare and resume require HERMES_SLEEP_WAKE_ACCEPTANCE=YES"
 }
 
@@ -161,6 +166,9 @@ set_default_results() {
     SUDO_USED no
     BROAD_PROCESS_KILL_USED no
     REAL_HERMES_HOME_MODIFIED no
+    BRIDGE_TOUCHED_REAL_HERMES_HOME unknown
+    EXTERNAL_HERMES_ACTIVITY_DETECTED unknown
+    REAL_HOME_ATTRIBUTION_CONFIDENCE unknown
     APP_TARGET_CLEANED skip
     LAUNCH_AGENT_TARGET_CLEANED skip
     ACCEPTANCE_PROCESS_REMAINING skip
@@ -269,10 +277,24 @@ finish_result() {
   [[ "${RESULT[PRE_SLEEP_RESTART_CYCLES_PASSED]}" == "5" ]] || pass="no"
   for key in \
     APP_OWNS_RUNTIME_AFTER_WAKE DUPLICATE_SERVICE_INSTANCE_FOUND WAKE_TIMEOUT_OCCURRED \
-    SUDO_USED BROAD_PROCESS_KILL_USED REAL_HERMES_HOME_MODIFIED \
+    SUDO_USED BROAD_PROCESS_KILL_USED \
     ACCEPTANCE_PROCESS_REMAINING GENERATED_ARTIFACT_TRACKED_BY_GIT; do
     [[ "${RESULT[$key]}" == "no" ]] || pass="no"
   done
+  if [[ "${RESULT[REAL_HERMES_HOME_MODIFIED]}" == "yes" ]]; then
+    [[ "${RESULT[BRIDGE_TOUCHED_REAL_HERMES_HOME]}" == "no" ]] || pass="no"
+    [[ "${RESULT[EXTERNAL_HERMES_ACTIVITY_DETECTED]}" == "yes" ]] || pass="no"
+    [[ "${RESULT[REAL_HOME_ATTRIBUTION_CONFIDENCE]}" == "high" ]] || pass="no"
+  elif [[ "${RESULT[REAL_HERMES_HOME_MODIFIED]}" == "no" ]]; then
+    [[ "${RESULT[BRIDGE_TOUCHED_REAL_HERMES_HOME]}" == "no" ]] || pass="no"
+    [[ "${RESULT[EXTERNAL_HERMES_ACTIVITY_DETECTED]}" == "no" ]] || pass="no"
+    case "${RESULT[REAL_HOME_ATTRIBUTION_CONFIDENCE]}" in
+      high|medium) ;;
+      *) pass="no" ;;
+    esac
+  else
+    pass="no"
+  fi
   case "${RESULT[HERMES_AGENT_STATUS]}" in
     available)
       [[ "${RESULT[AGENT_DEPENDENT_CHECK]}" == "pass" ]] || pass="no"
@@ -564,6 +586,302 @@ sys.exit(1 if changes else 0)
 PY
 }
 
+capture_bridge_real_home_open_file_evidence() {
+  local phase="$1"
+  local pids=()
+  [[ -n "$APP_PID" ]] && pids+=("$APP_PID")
+  [[ -n "$SERVICE_PID" ]] && pids+=("$SERVICE_PID")
+  [[ -n "$RECORDER_PID" ]] && pids+=("$RECORDER_PID")
+  (( ${#pids[@]} > 0 )) || return 0
+
+  /usr/bin/python3 - "$REAL_HOME_OPEN_FILE_EVIDENCE" "$RUN_ID" "$phase" "$REAL_HERMES_HOME" "${pids[@]}" <<'PY'
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+output, run_id, phase, real_home, *pid_values = sys.argv[1:]
+pids = []
+for value in pid_values:
+    if value.isdigit() and int(value) not in pids:
+        pids.append(int(value))
+if not pids:
+    raise SystemExit(0)
+real = Path(real_home).expanduser().resolve()
+records = []
+for pid in pids:
+    try:
+        result = subprocess.run(
+            ["/usr/sbin/lsof", "-Fn", "-p", str(pid)],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=2,
+        )
+    except Exception:
+        records.append({
+            "schemaVersion": 1,
+            "runIdentifier": run_id,
+            "phase": phase,
+            "pid": pid,
+            "observation": "unavailable",
+            "realHermesHomePathOpen": "unknown",
+            "relativePath": None,
+            "epochSeconds": time.time(),
+        })
+        continue
+    matched = False
+    for line in result.stdout.splitlines():
+        if not line.startswith("n/"):
+            continue
+        try:
+            candidate = Path(line[1:]).resolve()
+        except Exception:
+            continue
+        if candidate == real or real in candidate.parents:
+            matched = True
+            rel = "." if candidate == real else candidate.relative_to(real).as_posix()
+            records.append({
+                "schemaVersion": 1,
+                "runIdentifier": run_id,
+                "phase": phase,
+                "pid": pid,
+                "observation": "open-file",
+                "realHermesHomePathOpen": "yes",
+                "relativePath": rel,
+                "epochSeconds": time.time(),
+            })
+    if not matched:
+        records.append({
+            "schemaVersion": 1,
+            "runIdentifier": run_id,
+            "phase": phase,
+            "pid": pid,
+            "observation": "open-file",
+            "realHermesHomePathOpen": "no",
+            "relativePath": None,
+            "epochSeconds": time.time(),
+        })
+path = Path(output)
+path.parent.mkdir(parents=True, exist_ok=True)
+with path.open("a", encoding="utf-8") as handle:
+    for record in records:
+        handle.write(json.dumps(record, sort_keys=True) + "\n")
+    handle.flush()
+    os.fsync(handle.fileno())
+PY
+}
+
+attribute_real_home_changes() {
+  local checkpoint_path="$1"
+  local result_path="$2"
+  /usr/bin/python3 - "$INTEGRITY_CHANGES" "$checkpoint_path" "$PHASE_MARKERS_FILE" \
+    "$REAL_HOME_OPEN_FILE_EVIDENCE" "$REAL_HOME_ATTRIBUTION_FILE" "$RUN_ID" \
+    "$result_path" <<'PY'
+import json
+import os
+import re
+import sys
+import time
+from pathlib import Path
+
+changes_path, checkpoint_path, markers_path, open_file_path, attribution_path, run_id, result_path = sys.argv[1:]
+
+def read_result(path):
+    values = {}
+    result = Path(path)
+    if result.exists():
+        for line in result.read_text(encoding="utf-8").splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                values[key] = value
+    return values
+
+def load_json(path):
+    try:
+        return json.loads(Path(path).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+def read_changes(path):
+    p = Path(path)
+    if not p.exists():
+        return []
+    rows = []
+    for line in p.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        rows.append(line.split("\t", 1)[0])
+    return rows
+
+def classify(path):
+    if path == "hermes-home/.":
+        return "external-operational-container"
+    if re.match(r"^hermes-home/profiles/[^/]+$", path):
+        return "external-operational-container"
+    if re.match(r"^hermes-home/profiles/[^/]+/cron($|/)", path):
+        return "external-cron-heartbeat"
+    if re.match(r"^hermes-home/profiles/[^/]+/weixin/accounts($|/[^/]+@im\.bot\.sync\.json$)", path):
+        return "external-account-sync"
+    if path.startswith(("application-support/", "caches/", "logs/", "preferences/")):
+        return "bridge-state"
+    lowered = path.lower()
+    if any(token in lowered for token in ["bridge", "audit", "update", "runtime", "requeststate"]):
+        return "bridge-state"
+    return "unknown"
+
+def marker_epoch(markers, name):
+    values = [
+        marker.get("epochSeconds")
+        for marker in markers
+        if marker.get("runIdentifier") == run_id and marker.get("marker") == name
+    ]
+    values = [value for value in values if isinstance(value, (int, float)) and not isinstance(value, bool)]
+    return max(values) if values else None
+
+results = read_result(result_path)
+checkpoint = load_json(checkpoint_path)
+changes = read_changes(changes_path)
+categories = [classify(path) for path in changes]
+
+markers = []
+try:
+    for line in Path(markers_path).read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            markers.append(json.loads(line))
+except Exception:
+    markers = checkpoint.get("phaseOrdering", []) if isinstance(checkpoint.get("phaseOrdering"), list) else []
+compare_epoch = marker_epoch(markers, "REAL_HOME_COMPARED_BEFORE_AGENT_RESUME")
+resume_epoch = marker_epoch(markers, "AGENT_RESUME_STARTED")
+comparison_before_sigcont = (
+    compare_epoch is not None and resume_epoch is not None and compare_epoch <= resume_epoch
+)
+
+runtime_root = checkpoint.get("runtimeRoot")
+targets = checkpoint.get("targets", {})
+owned = checkpoint.get("ownedPids", {})
+ownership = checkpoint.get("ownership", {})
+launch_isolated = False
+isolation = checkpoint.get("isolation", {})
+if isinstance(isolation, dict):
+    env = isolation.get("launchAgentEnvironment", {})
+    launch_isolated = (
+        isinstance(env, dict)
+        and env.get("HOME") == "artifacts/m14-003/runtime/Home"
+        and env.get("HERMES_HOME") == "artifacts/m14-003/runtime/hermes-home"
+        and env.get("XDG_CONFIG_HOME") == "artifacts/m14-003/runtime/xdg-config"
+        and env.get("XDG_CACHE_HOME") == "artifacts/m14-003/runtime/xdg-cache"
+        and env.get("XDG_DATA_HOME") == "artifacts/m14-003/runtime/xdg-data"
+        and env.get("XDG_STATE_HOME") == "artifacts/m14-003/runtime/xdg-state"
+        and env.get("XDG_RUNTIME_DIR") == "artifacts/m14-003/runtime/xdg-runtime"
+    )
+else:
+    launch_isolated = False
+if not launch_isolated:
+    launch_isolated = (
+        runtime_root == "artifacts/m14-003/runtime"
+        and results.get("SERVICE_OWNS_RUNTIME_AFTER_WAKE") == "yes"
+        and results.get("APP_OWNS_RUNTIME_AFTER_WAKE") == "no"
+        and ownership.get("launchAgentInstalledByRun") is True
+    )
+
+paths_known = (
+    isinstance(targets, dict)
+    and targets.get("app") == "Applications/Hermes Bridge.app"
+    and targets.get("launchAgent") == "Library/LaunchAgents/com.hermes.bridge.plist"
+    and targets.get("serviceExecutable") == "Applications/Hermes Bridge.app/Contents/Library/HermesBridge/HermesBridgeService"
+)
+pids_known = isinstance(owned, dict) and all(key in owned for key in ["app", "service", "recorder"])
+isolated_roots_proven = runtime_root == "artifacts/m14-003/runtime" and launch_isolated and paths_known and pids_known
+
+bridge_open = "unknown"
+open_records = []
+try:
+    for line in Path(open_file_path).read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            record = json.loads(line)
+            if record.get("runIdentifier") == run_id:
+                open_records.append(record)
+except Exception:
+    open_records = []
+if open_records:
+    values = {record.get("realHermesHomePathOpen") for record in open_records}
+    if "yes" in values:
+        bridge_open = "yes"
+    elif values == {"no"}:
+        bridge_open = "no"
+    elif "unknown" in values:
+        bridge_open = "unknown"
+else:
+    bridge_open = "no" if isolated_roots_proven and paths_known and pids_known else "unknown"
+
+real_modified = "yes" if changes else "no"
+only_external = bool(changes) and all(category.startswith("external-") for category in categories)
+has_bridge = any(category == "bridge-state" for category in categories) or bridge_open == "yes"
+has_unknown = any(category == "unknown" for category in categories) or bridge_open == "unknown"
+
+if has_bridge:
+    bridge_touched = "yes"
+elif has_unknown and real_modified == "yes":
+    bridge_touched = "unknown"
+else:
+    bridge_touched = "no"
+
+if real_modified == "no":
+    external = "no"
+elif only_external:
+    external = "yes"
+elif any(category.startswith("external-") for category in categories):
+    external = "yes"
+else:
+    external = "unknown"
+
+if real_modified == "no" and isolated_roots_proven and comparison_before_sigcont:
+    confidence = "high"
+elif only_external and bridge_touched == "no" and isolated_roots_proven and comparison_before_sigcont:
+    confidence = "high"
+elif has_unknown:
+    confidence = "low"
+elif isolated_roots_proven and not has_bridge:
+    confidence = "medium"
+else:
+    confidence = "unknown"
+
+payload = {
+    "schemaVersion": 1,
+    "runIdentifier": run_id,
+    "createdAtEpochSeconds": int(time.time()),
+    "realHermesHomeModified": real_modified,
+    "bridgeTouchedRealHermesHome": bridge_touched,
+    "externalHermesActivityDetected": external,
+    "realHomeAttributionConfidence": confidence,
+    "changedPathCategories": sorted(set(categories)),
+    "changedPathCount": len(changes),
+    "changedRelativePaths": changes,
+    "bridgeOpenFileObservation": bridge_open,
+    "isolatedBridgeWritableRootsProven": isolated_roots_proven,
+    "launchAgentIsolatedEnvironmentProven": launch_isolated,
+    "comparisonBeforeAgentSIGCONT": comparison_before_sigcont,
+    "bridgeOwnedTargetsKnown": paths_known,
+    "bridgeOwnedPidsKnown": pids_known,
+}
+path = Path(attribution_path)
+path.parent.mkdir(parents=True, exist_ok=True)
+with path.open("w", encoding="utf-8") as handle:
+    json.dump(payload, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+    handle.flush()
+    os.fsync(handle.fileno())
+print(f"REAL_HERMES_HOME_MODIFIED={real_modified}")
+print(f"BRIDGE_TOUCHED_REAL_HERMES_HOME={bridge_touched}")
+print(f"EXTERNAL_HERMES_ACTIVITY_DETECTED={external}")
+print(f"REAL_HOME_ATTRIBUTION_CONFIDENCE={confidence}")
+PY
+}
+
 set_real_home_modified_result() {
   [[ "$REAL_HOME_INTEGRITY_FINALIZED" == "yes" ]] && return 0
   if [[ -r "$INTEGRITY_BEFORE" ]] && compare_real_home_integrity_snapshot; then
@@ -573,6 +891,17 @@ set_real_home_modified_result() {
   fi
   REAL_HOME_INTEGRITY_FINALIZED="yes"
   record_phase_marker "REAL_HOME_COMPARED_BEFORE_AGENT_RESUME" 2>/dev/null || true
+  local attribution_lines line key value
+  attribution_lines=("${(@f)$(attribute_real_home_changes "$CHECKPOINT_FILE" "$RESULT_FILE" 2>/dev/null || true)}")
+  for line in "${attribution_lines[@]}"; do
+    key="${line%%=*}"
+    value="${line#*=}"
+    case "$key" in
+      REAL_HERMES_HOME_MODIFIED|BRIDGE_TOUCHED_REAL_HERMES_HOME|EXTERNAL_HERMES_ACTIVITY_DETECTED|REAL_HOME_ATTRIBUTION_CONFIDENCE)
+        RESULT[$key]="$value"
+        ;;
+    esac
+  done
 }
 
 isolated_env_prefix() {
@@ -1238,6 +1567,9 @@ write_checkpoint() {
     "$APP_EXECUTABLE_REL" "$SERVICE_EXECUTABLE_REL" "$APP_PID" "$SERVICE_PID" "$RECORDER_PID" \
     "$APP_INSTALLED_BY_RUN" "$LAUNCH_AGENT_INSTALLED_BY_RUN" "$SERVICE_BOOTSTRAPPED_BY_RUN" \
     "$RECORDER_BOOTSTRAPPED_BY_RUN" "$RESTART_CYCLES_EXPECTED" "$REAL_HERMES_RECORDS_FILE" \
+    "$ISOLATED_HOME" "$ISOLATED_HERMES_HOME" "$ISOLATED_XDG_CONFIG_HOME" \
+    "$ISOLATED_XDG_CACHE_HOME" "$ISOLATED_XDG_DATA_HOME" "$ISOLATED_XDG_STATE_HOME" \
+    "$ISOLATED_XDG_RUNTIME_DIR" \
     "$POWER_LOG_PREPARE_UTC" "$POWER_LOG_PREPARE_EPOCH" "$POWER_LOG_PREPARE_LOCAL_OFFSET" \
     "$POWER_LOG_PREPARE_UPTIME" "$POWER_LOG_PREPARE_MONOTONIC" <<'PY'
 import json
@@ -1252,6 +1584,8 @@ from pathlib import Path
     service_executable_rel, app_pid, service_pid, recorder_pid, app_installed,
     launch_agent_installed, service_bootstrapped, recorder_bootstrapped,
     restart_cycles_expected, real_hermes_records_path,
+    isolated_home, isolated_hermes_home, isolated_xdg_config, isolated_xdg_cache,
+    isolated_xdg_data, isolated_xdg_state, isolated_xdg_runtime,
     power_log_prepare_utc, power_log_prepare_epoch, power_log_prepare_local_offset,
     power_log_prepare_uptime, power_log_prepare_monotonic,
 ) = sys.argv[1:]
@@ -1317,6 +1651,26 @@ updates = {
     "restartCyclesExpected": int(restart_cycles_expected),
     "resultFile": "artifacts/m14-003/result.txt",
     "runtimeRoot": "artifacts/m14-003/runtime",
+    "isolation": {
+        "launchAgentEnvironment": {
+            "HOME": "artifacts/m14-003/runtime/Home",
+            "CFFIXED_USER_HOME": "artifacts/m14-003/runtime/Home",
+            "HERMES_HOME": "artifacts/m14-003/runtime/hermes-home",
+            "XDG_CONFIG_HOME": "artifacts/m14-003/runtime/xdg-config",
+            "XDG_CACHE_HOME": "artifacts/m14-003/runtime/xdg-cache",
+            "XDG_DATA_HOME": "artifacts/m14-003/runtime/xdg-data",
+            "XDG_STATE_HOME": "artifacts/m14-003/runtime/xdg-state",
+            "XDG_RUNTIME_DIR": "artifacts/m14-003/runtime/xdg-runtime",
+        },
+        "resolvedLaunchAgentEnvironmentUnderRuntimeRoot": all(
+            str(Path(value).resolve()).startswith(str(Path("artifacts/m14-003/runtime").resolve()) + os.sep)
+            for value in [
+                isolated_home, isolated_hermes_home, isolated_xdg_config,
+                isolated_xdg_cache, isolated_xdg_data, isolated_xdg_state,
+                isolated_xdg_runtime,
+            ]
+        ),
+    },
     "wakeEvidence": "artifacts/m14-003/runtime/wake-recorder-evidence.jsonl",
     "systemPowerLogEvidence": "artifacts/m14-003/runtime/system-power-log-evidence.json",
     "wakeRecorderReady": "artifacts/m14-003/runtime/wake-recorder-ready.json",
@@ -1635,6 +1989,83 @@ print(f"quiescence_completeness={'complete' if quiescence_ok else 'incomplete'}"
 print(f"checkpoint_schema_version={data.get('schemaVersion') if typed(data, 'schemaVersion', int) else 'missing'}")
 raise SystemExit(0 if required_ok else 1)
 PY
+}
+
+load_existing_result_file() {
+  [[ -r "$RESULT_FILE" ]] || return 1
+  local assignments
+  assignments="$(/usr/bin/python3 - "$RESULT_FILE" "${ORDERED_KEYS[@]}" <<'PY'
+import shlex
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+allowed = set(sys.argv[2:])
+values = {}
+for line in path.read_text(encoding="utf-8").splitlines():
+    if not line.strip() or "=" not in line:
+        continue
+    key, value = line.split("=", 1)
+    if key in allowed and key not in values:
+        values[key] = value
+for key, value in values.items():
+    print(f"RESULT[{key}]={shlex.quote(value)}")
+PY
+)" || return 1
+  eval "$assignments"
+}
+
+finalize_diagnostic_run() {
+  trap - EXIT
+  trap - INT TERM HUP
+  set_default_results
+  mkdir -p "$ARTIFACT_DIR" "$RUNTIME_ROOT"
+  load_existing_result_file || {
+    RESULT[M14_003_RESULT]=FAIL
+    write_result
+    FINISHED="yes"
+    result_exit_code
+    exit $?
+  }
+
+  local requested_run_id checkpoint_path attribution_lines line key value
+  requested_run_id="${HERMES_M14_003_RUN_ID:-}"
+  checkpoint_path="$(select_checkpoint_for_read "$requested_run_id")" || checkpoint_path="$CHECKPOINT_FILE"
+  [[ -r "$checkpoint_path" ]] || {
+    RESULT[M14_003_RESULT]=FAIL
+    write_result
+    FINISHED="yes"
+    result_exit_code
+    exit $?
+  }
+  RUN_ID="$(/usr/bin/python3 - "$checkpoint_path" <<'PY'
+import json
+import sys
+from pathlib import Path
+print(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8")).get("runIdentifier", ""))
+PY
+)"
+  [[ -n "$RUN_ID" ]] || {
+    RESULT[M14_003_RESULT]=FAIL
+    write_result
+    FINISHED="yes"
+    result_exit_code
+    exit $?
+  }
+
+  attribution_lines=("${(@f)$(attribute_real_home_changes "$checkpoint_path" "$RESULT_FILE")}") || true
+  for line in "${attribution_lines[@]}"; do
+    key="${line%%=*}"
+    value="${line#*=}"
+    case "$key" in
+      REAL_HERMES_HOME_MODIFIED|BRIDGE_TOUCHED_REAL_HERMES_HOME|EXTERNAL_HERMES_ACTIVITY_DETECTED|REAL_HOME_ATTRIBUTION_CONFIDENCE)
+        RESULT[$key]="$value"
+        ;;
+    esac
+  done
+  finish_result
+  FINISHED="yes"
+  result_exit_code
+  exit $?
 }
 
 build_release_app() {
@@ -2263,6 +2694,8 @@ cleanup_owned_state() {
     [[ -r "$CHECKPOINT_FILE" ]] && load_checkpoint 2>/dev/null || true
   fi
 
+  capture_bridge_real_home_open_file_evidence "pre-cleanup" 2>/dev/null || true
+
   terminate_pid "$APP_PID"
   APP_PID=""
 
@@ -2488,6 +2921,9 @@ main() {
       ;;
     cleanup)
       cleanup_command
+      ;;
+    finalize-diagnostic-run)
+      finalize_diagnostic_run
       ;;
     diagnose-power-evidence)
       trap - EXIT INT TERM HUP

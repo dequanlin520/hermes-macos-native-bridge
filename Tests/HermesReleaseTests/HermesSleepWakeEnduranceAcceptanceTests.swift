@@ -32,6 +32,7 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
     XCTAssertTrue(main.contains("prepare)"))
     XCTAssertTrue(main.contains("resume)"))
     XCTAssertTrue(main.contains("cleanup)"))
+    XCTAssertTrue(main.contains("finalize-diagnostic-run)"))
     XCTAssertTrue(main.contains("OPT_IN_REQUIRED"))
     XCTAssertTrue(main.contains("exit 2"))
   }
@@ -916,6 +917,9 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
     XCTAssertTrue(verify.contains("suspendedByM14003"))
     XCTAssertTrue(verify.contains("real-hermes-quiescence-incomplete"))
     XCTAssertTrue(finish.contains("REAL_HERMES_HOME_MODIFIED"))
+    XCTAssertTrue(finish.contains("BRIDGE_TOUCHED_REAL_HERMES_HOME"))
+    XCTAssertTrue(finish.contains("EXTERNAL_HERMES_ACTIVITY_DETECTED"))
+    XCTAssertTrue(finish.contains("REAL_HOME_ATTRIBUTION_CONFIDENCE"))
     XCTAssertTrue(finish.contains("ENVIRONMENT_RESTORED"))
   }
 
@@ -981,6 +985,151 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
     XCTAssertTrue(compare.contains("RESULT[REAL_HERMES_HOME_MODIFIED]=no"))
     XCTAssertTrue(compare.contains("REAL_HOME_INTEGRITY_FINALIZED"))
     XCTAssertTrue(compare.contains("REAL_HOME_COMPARED_BEFORE_AGENT_RESUME"))
+    XCTAssertTrue(compare.contains("attribute_real_home_changes"))
+  }
+
+  func testAttributionAwareRealHomeDecisionRules() throws {
+    let script = try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh")
+    let finish = try extractFunction("finish_result", from: script)
+    let attribution = try extractFunction("attribute_real_home_changes", from: script)
+
+    XCTAssertTrue(finish.contains("BRIDGE_TOUCHED_REAL_HERMES_HOME]}\" == \"no\""))
+    XCTAssertTrue(finish.contains("EXTERNAL_HERMES_ACTIVITY_DETECTED]}\" == \"yes\""))
+    XCTAssertTrue(finish.contains("REAL_HOME_ATTRIBUTION_CONFIDENCE]}\" == \"high\""))
+    XCTAssertTrue(finish.contains("REAL_HERMES_HOME_MODIFIED]}\" == \"no\""))
+    XCTAssertTrue(attribution.contains("external-cron-heartbeat"))
+    XCTAssertTrue(attribution.contains("external-account-sync"))
+    XCTAssertTrue(attribution.contains("external-operational-container"))
+    XCTAssertTrue(attribution.contains("bridge-state"))
+    XCTAssertTrue(attribution.contains("confidence = \"low\""))
+    XCTAssertTrue(attribution.contains("bridge_touched = \"yes\""))
+    XCTAssertTrue(attribution.contains("mixed Bridge and external") == false)
+  }
+
+  func testWriterAttributionUsesOnlyExactOwnedPIDsAndRelativePaths() throws {
+    let script = try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh")
+    let capture = try extractFunction("capture_bridge_real_home_open_file_evidence", from: script)
+    let cleanup = try extractFunction("cleanup_owned_state", from: script)
+
+    XCTAssertTrue(capture.contains("APP_PID"))
+    XCTAssertTrue(capture.contains("SERVICE_PID"))
+    XCTAssertTrue(capture.contains("RECORDER_PID"))
+    XCTAssertTrue(capture.contains("[\"/usr/sbin/lsof\", \"-Fn\", \"-p\", str(pid)]"))
+    XCTAssertTrue(capture.contains("candidate.relative_to(real).as_posix()"))
+    XCTAssertFalse(capture.contains("pgrep"))
+    XCTAssertFalse(capture.contains("ps -axo"))
+    XCTAssertTrue(cleanup.contains("capture_bridge_real_home_open_file_evidence \"pre-cleanup\""))
+  }
+
+  func testFinalizeDiagnosticRunIsReadOnlyAndPreservesSleepWakeEvidence() throws {
+    let unchangedRunID = "m14-003-finalize-unchanged-\(UUID().uuidString)"
+    try writeFinalizableM14003Run(runID: unchangedRunID, changes: [])
+    let unchanged = try runAcceptanceScript(
+      ["finalize-diagnostic-run"],
+      optIn: false,
+      extraEnvironment: ["HERMES_M14_003_RUN_ID": unchangedRunID]
+    )
+    XCTAssertEqual(unchanged.exitCode, 0, unchanged.combinedOutput)
+    XCTAssertTrue(try read("artifacts/m14-003/result.txt").contains("REAL_HERMES_HOME_MODIFIED=no"))
+
+    let runID = "m14-003-finalize-\(UUID().uuidString)"
+    try writeFinalizableM14003Run(
+      runID: runID,
+      changes: [
+        "hermes-home/profiles/dequan-work/cron/ticker_heartbeat\tfile\tfile\t16\t18\t1\t2",
+        "hermes-home/profiles/dequan-work/weixin/accounts/491b0cd059b4@im.bot.sync.json\tfile\tfile\t131\t131\t1\t2",
+      ]
+    )
+    let checkpoint = root.appendingPathComponent("artifacts/m14-003/runtime/checkpoint.json")
+    let before = try Data(contentsOf: checkpoint)
+
+    let result = try runAcceptanceScript(
+      ["finalize-diagnostic-run"],
+      optIn: false,
+      extraEnvironment: ["HERMES_M14_003_RUN_ID": runID]
+    )
+
+    XCTAssertEqual(result.exitCode, 0, result.combinedOutput)
+    XCTAssertEqual(try Data(contentsOf: checkpoint), before)
+    let resultText = try read("artifacts/m14-003/result.txt")
+    XCTAssertTrue(resultText.contains("REAL_SLEEP_DETECTED=yes"))
+    XCTAssertTrue(resultText.contains("REAL_WAKE_DETECTED=yes"))
+    XCTAssertTrue(resultText.contains("XPC_CONNECTED_AFTER_WAKE=yes"))
+    XCTAssertTrue(resultText.contains("REAL_HERMES_HOME_MODIFIED=yes"))
+    XCTAssertTrue(resultText.contains("BRIDGE_TOUCHED_REAL_HERMES_HOME=no"))
+    XCTAssertTrue(resultText.contains("EXTERNAL_HERMES_ACTIVITY_DETECTED=yes"))
+    XCTAssertTrue(resultText.contains("REAL_HOME_ATTRIBUTION_CONFIDENCE=high"))
+    XCTAssertTrue(resultText.contains("M14_003_RESULT=PASS"))
+  }
+
+  func testFinalizeDiagnosticRunFailsBridgeUnknownMixedAndMissingIsolationCases() throws {
+    let cases: [(String, [String], String)] = [
+      ("bridge", ["application-support/state.db\tabsent\tfile\t0\t1\t1\t2"], "BRIDGE_TOUCHED_REAL_HERMES_HOME=yes"),
+      ("unknown", ["hermes-home/profiles/dequan-work/unknown/state\tfile\tfile\t1\t2\t1\t2"], "REAL_HOME_ATTRIBUTION_CONFIDENCE=low"),
+      ("mixed", [
+        "hermes-home/profiles/dequan-work/cron/ticker_heartbeat\tfile\tfile\t16\t18\t1\t2",
+        "logs/service.log\tabsent\tfile\t0\t1\t1\t2",
+      ], "BRIDGE_TOUCHED_REAL_HERMES_HOME=yes"),
+    ]
+    for testCase in cases {
+      let runID = "m14-003-finalize-\(testCase.0)-\(UUID().uuidString)"
+      try writeFinalizableM14003Run(runID: runID, changes: testCase.1)
+      let result = try runAcceptanceScript(
+        ["finalize-diagnostic-run"],
+        optIn: false,
+        extraEnvironment: ["HERMES_M14_003_RUN_ID": runID]
+      )
+      XCTAssertEqual(result.exitCode, 1, result.combinedOutput)
+      let resultText = try read("artifacts/m14-003/result.txt")
+      XCTAssertTrue(resultText.contains(testCase.2), testCase.0)
+      XCTAssertTrue(resultText.contains("M14_003_RESULT=FAIL"), testCase.0)
+    }
+
+    let missingIsolationRunID = "m14-003-finalize-no-isolation-\(UUID().uuidString)"
+    try writeFinalizableM14003Run(
+      runID: missingIsolationRunID,
+      changes: ["hermes-home/profiles/dequan-work/cron/ticker_heartbeat\tfile\tfile\t16\t18\t1\t2"],
+      runtimeRoot: "artifacts/m14-003/not-runtime"
+    )
+    let missingIsolation = try runAcceptanceScript(
+      ["finalize-diagnostic-run"],
+      optIn: false,
+      extraEnvironment: ["HERMES_M14_003_RUN_ID": missingIsolationRunID]
+    )
+    XCTAssertEqual(missingIsolation.exitCode, 1, missingIsolation.combinedOutput)
+    XCTAssertTrue(try read("artifacts/m14-003/result.txt").contains("M14_003_RESULT=FAIL"))
+  }
+
+  func testComparisonBeforeSIGCONTRequiredForHighConfidenceAttribution() throws {
+    let runID = "m14-003-finalize-order-\(UUID().uuidString)"
+    try writeFinalizableM14003Run(
+      runID: runID,
+      changes: ["hermes-home/profiles/dequan-work/cron/ticker_heartbeat\tfile\tfile\t16\t18\t1\t2"],
+      comparisonBeforeSIGCONT: false
+    )
+
+    let result = try runAcceptanceScript(
+      ["finalize-diagnostic-run"],
+      optIn: false,
+      extraEnvironment: ["HERMES_M14_003_RUN_ID": runID]
+    )
+
+    XCTAssertEqual(result.exitCode, 1, result.combinedOutput)
+    let resultText = try read("artifacts/m14-003/result.txt")
+    XCTAssertTrue(resultText.contains("REAL_HOME_ATTRIBUTION_CONFIDENCE=medium"))
+    XCTAssertTrue(resultText.contains("M14_003_RESULT=FAIL"))
+  }
+
+  func testAttributionDoesNotInspectSecretFileContents() throws {
+    let script = try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh")
+    let attribution = try extractFunction("attribute_real_home_changes", from: script)
+    let snapshot = try extractFunction("write_real_home_integrity_snapshot", from: script)
+
+    XCTAssertTrue(attribution.contains("read_changes"))
+    XCTAssertFalse(attribution.contains("Path(real_home"))
+    XCTAssertFalse(attribution.contains("open(real_home"))
+    XCTAssertFalse(snapshot.contains("read_text"))
+    XCTAssertFalse(snapshot.contains("read_bytes"))
   }
 
   func testRealHomeComparisonOccursBeforeSIGCONTAndIsNotRepeatedAfterResume() throws {
@@ -1057,6 +1206,9 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
       "SUDO_USED",
       "BROAD_PROCESS_KILL_USED",
       "REAL_HERMES_HOME_MODIFIED",
+      "BRIDGE_TOUCHED_REAL_HERMES_HOME",
+      "EXTERNAL_HERMES_ACTIVITY_DETECTED",
+      "REAL_HOME_ATTRIBUTION_CONFIDENCE",
       "APP_TARGET_CLEANED",
       "LAUNCH_AGENT_TARGET_CLEANED",
       "ACCEPTANCE_PROCESS_REMAINING",
@@ -1127,6 +1279,132 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
     let runtime = root.appendingPathComponent("artifacts/m14-003/runtime")
     try? FileManager.default.removeItem(at: runtime.appendingPathComponent("checkpoint.json"))
     try FileManager.default.createDirectory(at: runtime, withIntermediateDirectories: true)
+  }
+
+  private func writeFinalizableM14003Run(
+    runID: String,
+    changes: [String],
+    runtimeRoot: String = "artifacts/m14-003/runtime",
+    comparisonBeforeSIGCONT: Bool = true
+  ) throws {
+    let artifact = root.appendingPathComponent("artifacts/m14-003")
+    let runtime = artifact.appendingPathComponent("runtime")
+    try FileManager.default.createDirectory(at: runtime, withIntermediateDirectories: true)
+    let keys = try extractOrderedKeys(from: try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh"))
+    let base: [String: String] = [
+      "EXPLICIT_OPT_IN_CONFIRMED": "yes",
+      "USER_SCOPE_ONLY": "yes",
+      "COLLISION_CHECK_PASSED": "yes",
+      "RELEASE_APP_BUILT": "yes",
+      "APP_INSTALLED": "yes",
+      "LAUNCH_AGENT_INSTALLED": "yes",
+      "INITIAL_XPC_CONNECTED": "yes",
+      "PRE_SLEEP_RESTART_CYCLES_EXPECTED": "5",
+      "PRE_SLEEP_RESTART_CYCLES_PASSED": "5",
+      "APP_EXIT_LEFT_SERVICE_RUNNING": "yes",
+      "APP_RELAUNCHED_BEFORE_SLEEP": "yes",
+      "PRE_SLEEP_RECONNECT_SUCCEEDED": "yes",
+      "WAITING_FOR_MANUAL_SLEEP": "yes",
+      "REAL_SLEEP_DETECTED": "yes",
+      "REAL_WAKE_DETECTED": "yes",
+      "WAKE_TIMEOUT_OCCURRED": "no",
+      "SERVICE_RUNNING_AFTER_WAKE": "yes",
+      "XPC_CONNECTED_AFTER_WAKE": "yes",
+      "APP_RECONNECTED_AFTER_WAKE": "yes",
+      "SERVICE_OWNS_RUNTIME_AFTER_WAKE": "yes",
+      "APP_OWNS_RUNTIME_AFTER_WAKE": "no",
+      "DUPLICATE_SERVICE_INSTANCE_FOUND": "no",
+      "FINAL_SERVICE_RESTARTED": "yes",
+      "FINAL_RECONNECT_SUCCEEDED": "yes",
+      "HERMES_AGENT_STATUS": "unavailable",
+      "AGENT_DEPENDENT_CHECK": "skip",
+      "SUDO_USED": "no",
+      "BROAD_PROCESS_KILL_USED": "no",
+      "REAL_HERMES_HOME_MODIFIED": changes.isEmpty ? "no" : "yes",
+      "BRIDGE_TOUCHED_REAL_HERMES_HOME": "unknown",
+      "EXTERNAL_HERMES_ACTIVITY_DETECTED": "unknown",
+      "REAL_HOME_ATTRIBUTION_CONFIDENCE": "unknown",
+      "APP_TARGET_CLEANED": "yes",
+      "LAUNCH_AGENT_TARGET_CLEANED": "yes",
+      "ACCEPTANCE_PROCESS_REMAINING": "no",
+      "ENVIRONMENT_RESTORED": "yes",
+      "GENERATED_ARTIFACT_TRACKED_BY_GIT": "no",
+      "M14_003_RESULT": "FAIL",
+    ]
+    let result = keys.map { "\($0)=\(base[$0] ?? "unknown")" }.joined(separator: "\n") + "\n"
+    try result.write(to: artifact.appendingPathComponent("result.txt"), atomically: true, encoding: .utf8)
+    try changes.joined(separator: "\n")
+      .appending(changes.isEmpty ? "" : "\n")
+      .write(to: runtime.appendingPathComponent("real-home-changes.txt"), atomically: true, encoding: .utf8)
+    try "".write(to: runtime.appendingPathComponent("bridge-real-home-open-files.jsonl"), atomically: true, encoding: .utf8)
+
+    let checkpoint: [String: Any] = [
+      "schemaVersion": 1,
+      "runIdentifier": runID,
+      "phase": "cleanup",
+      "status": "cleaned",
+      "createdAtMonotonicUptime": 1.0,
+      "updatedAtEpochSeconds": 1_785_390_000,
+      "serviceDomain": "gui/current-user",
+      "serviceLabel": "com.hermes.bridge",
+      "recorderLabel": "com.hermes.bridge.m14-003.wake-recorder.\(runID)",
+      "targets": [
+        "app": "Applications/Hermes Bridge.app",
+        "launchAgent": "Library/LaunchAgents/com.hermes.bridge.plist",
+        "recorderLaunchAgent": "Library/LaunchAgents/com.hermes.bridge.m14-003.wake-recorder.\(runID).plist",
+        "appExecutable": "Applications/Hermes Bridge.app/Contents/MacOS/HermesBridgeApp",
+        "serviceExecutable": "Applications/Hermes Bridge.app/Contents/Library/HermesBridge/HermesBridgeService",
+      ],
+      "ownedPids": ["app": 111, "service": 222, "recorder": 333],
+      "ownership": [
+        "appInstalledByRun": true,
+        "launchAgentInstalledByRun": true,
+        "serviceBootstrappedByRun": false,
+        "recorderBootstrappedByRun": false,
+      ],
+      "restartCyclesExpected": 5,
+      "resultFile": "artifacts/m14-003/result.txt",
+      "runtimeRoot": runtimeRoot,
+      "isolation": [
+        "launchAgentEnvironment": [
+          "HOME": "artifacts/m14-003/runtime/Home",
+          "CFFIXED_USER_HOME": "artifacts/m14-003/runtime/Home",
+          "HERMES_HOME": "artifacts/m14-003/runtime/hermes-home",
+          "XDG_CONFIG_HOME": "artifacts/m14-003/runtime/xdg-config",
+          "XDG_CACHE_HOME": "artifacts/m14-003/runtime/xdg-cache",
+          "XDG_DATA_HOME": "artifacts/m14-003/runtime/xdg-data",
+          "XDG_STATE_HOME": "artifacts/m14-003/runtime/xdg-state",
+          "XDG_RUNTIME_DIR": "artifacts/m14-003/runtime/xdg-runtime",
+        ],
+      ],
+      "wakeEvidence": "artifacts/m14-003/runtime/wake-recorder-evidence.jsonl",
+      "systemPowerLogEvidence": "artifacts/m14-003/runtime/system-power-log-evidence.json",
+      "wakeRecorderReady": "artifacts/m14-003/runtime/wake-recorder-ready.json",
+      "realHomeSnapshotBefore": "artifacts/m14-003/runtime/real-home-before.snapshot",
+      "realHermesQuiescence": ["operatorProvidedRootPids": [], "records": []],
+      "powerLogCheckpoint": [
+        "runIdentifier": runID,
+        "epochSeconds": 1_785_386_012,
+        "utcISO8601": "2026-07-30T04:33:32Z",
+        "localTimezoneOffset": "+0000",
+        "systemUptime": 100.0,
+        "createdAtMonotonic": 100.0,
+      ],
+    ]
+    let checkpointData = try JSONSerialization.data(withJSONObject: checkpoint, options: [.sortedKeys, .prettyPrinted])
+    try checkpointData.write(to: runtime.appendingPathComponent("checkpoint.json"), options: .atomic)
+
+    let compare = comparisonBeforeSIGCONT ? 1_785_390_010.0 : 1_785_390_030.0
+    let resume = 1_785_390_020.0
+    let markers: [[String: Any]] = [
+      ["schemaVersion": 1, "runIdentifier": runID, "marker": "REAL_HOME_COMPARED_BEFORE_AGENT_RESUME", "epochSeconds": compare, "utc": "2026-07-30T05:00:10Z"],
+      ["schemaVersion": 1, "runIdentifier": runID, "marker": "AGENT_RESUME_STARTED", "epochSeconds": resume, "utc": "2026-07-30T05:00:20Z"],
+    ]
+    let markerText = try markers.map { marker -> String in
+      let data = try JSONSerialization.data(withJSONObject: marker, options: [.sortedKeys])
+      return String(data: data, encoding: .utf8) ?? "{}"
+    }.joined(separator: "\n") + "\n"
+    try markerText.write(to: runtime.appendingPathComponent("phase-markers.jsonl"), atomically: true, encoding: .utf8)
   }
 
   private func runAcceptanceScript(
