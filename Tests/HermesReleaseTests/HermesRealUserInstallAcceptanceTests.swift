@@ -260,6 +260,28 @@ final class HermesRealUserInstallAcceptanceTests: XCTestCase {
     XCTAssertTrue(script.contains("PASS || print -r -- FAIL"))
   }
 
+  func testFinalExitCodeIsDerivedFromFinalResult() throws {
+    let script = try read("Scripts/m14_002_real_user_install_acceptance.sh")
+    let mapper = try extractFunction("result_exit_code", from: script)
+
+    XCTAssertTrue(mapper.contains("PASS) return 0"))
+    XCTAssertTrue(mapper.contains("OPT_IN_REQUIRED) return 2"))
+    XCTAssertTrue(mapper.contains("BLOCKED) return 3"))
+    XCTAssertTrue(mapper.contains("FAIL) return 1"))
+    XCTAssertTrue(script.contains("finish_result\n  FINISHED=\"yes\"\n  result_exit_code"))
+  }
+
+  func testFailResultCanNeverMapToZeroExit() throws {
+    let script = try read("Scripts/m14_002_real_user_install_acceptance.sh")
+    let mapper = try extractFunction("result_exit_code", from: script)
+    let failRange = try XCTUnwrap(mapper.range(of: "FAIL) return 1"))
+    let passRange = try XCTUnwrap(mapper.range(of: "PASS) return 0"))
+
+    XCTAssertLessThan(passRange.lowerBound, failRange.lowerBound)
+    XCTAssertFalse(mapper.contains("FAIL) return 0"))
+    XCTAssertFalse(mapper.contains("*) return 0"))
+  }
+
   func testLaunchAgentCarriesExplicitIsolatedWritableRootConfiguration() throws {
     let script = try read("Scripts/m14_002_real_user_install_acceptance.sh")
     let install = try extractFunction("install_app_and_service", from: script)
@@ -354,6 +376,24 @@ final class HermesRealUserInstallAcceptanceTests: XCTestCase {
     XCTAssertTrue(compare.contains("RESULT[REAL_HERMES_HOME_MODIFIED]=no"))
   }
 
+  func testRealHomeMutationDiagnosticsAreMetadataOnly() throws {
+    let script = try read("Scripts/m14_002_real_user_install_acceptance.sh")
+    let compare = try extractFunction("compare_real_home_integrity_snapshot", from: script)
+    let diagnostics = try extractFunction("emit_real_home_mutation_diagnostics", from: script)
+
+    XCTAssertTrue(compare.contains("before_row[\"type\"]"))
+    XCTAssertTrue(compare.contains("after_row[\"type\"]"))
+    XCTAssertTrue(compare.contains("before_row[\"size\"]"))
+    XCTAssertTrue(compare.contains("after_row[\"size\"]"))
+    XCTAssertTrue(compare.contains("before_row[\"mtime_ns\"]"))
+    XCTAssertTrue(compare.contains("after_row[\"mtime_ns\"]"))
+    XCTAssertTrue(diagnostics.contains("relative_path={rel}"))
+    XCTAssertTrue(diagnostics.contains("before_type={before_type} after_type={after_type}"))
+    XCTAssertTrue(diagnostics.contains("before_size={before_size} after_size={after_size}"))
+    XCTAssertTrue(diagnostics.contains("before_mtime_ns={before_mtime} after_mtime_ns={after_mtime}"))
+    XCTAssertFalse(diagnostics.contains("/Users/"))
+  }
+
   func testCleanupDoesNotModifyProtectedPreexistingUserState() throws {
     let script = try read("Scripts/m14_002_real_user_install_acceptance.sh")
     let cleanup = try extractFunction("cleanup", from: script)
@@ -374,6 +414,107 @@ final class HermesRealUserInstallAcceptanceTests: XCTestCase {
     XCTAssertTrue(doc.contains("~/Library/LaunchAgents/com.hermes.bridge.plist"))
     XCTAssertTrue(doc.contains("Agent Unavailable"))
     XCTAssertTrue(doc.contains("Manual Recovery"))
+  }
+
+  func testQuiesceRequiresExactRootPID() throws {
+    let harness = try QuiesceHarness(root: root)
+    let missing = try harness.run(arguments: [])
+    let nonNumeric = try harness.run(arguments: ["abc"])
+
+    XCTAssertNotEqual(missing.status, 0)
+    XCTAssertTrue(missing.stderr.contains("usage:"))
+    XCTAssertNotEqual(nonNumeric.status, 0)
+    XCTAssertTrue(nonNumeric.stderr.contains("root Hermes PID must be numeric"))
+  }
+
+  func testQuiesceRequiresCurrentUserOwnership() throws {
+    let harness = try QuiesceHarness(root: root)
+    let result = try harness.run(arguments: ["100"], environment: ["HERMES_TEST_ROOT_UID": "999"])
+
+    XCTAssertNotEqual(result.status, 0)
+    XCTAssertTrue(result.stderr.contains("root process is not owned by the current user"))
+    XCTAssertEqual(try harness.killLog(), "")
+  }
+
+  func testQuiesceEnumeratesExactPGIDIncludesChildrenAndExcludesUnrelatedPGID() throws {
+    let harness = try QuiesceHarness(root: root)
+    let result = try harness.run(arguments: ["100"])
+
+    XCTAssertEqual(result.status, 0)
+    XCTAssertTrue(result.stdout.contains("100\t1\t700\tHermes"))
+    XCTAssertTrue(result.stdout.contains("101\t100\t700\tHermes Helper"))
+    XCTAssertFalse(result.stdout.contains("102\t1\t800"))
+    XCTAssertEqual(try harness.acceptanceInvocations(), 1)
+  }
+
+  func testQuiesceRejectsAnotherUIDProcessGroupMember() throws {
+    let harness = try QuiesceHarness(root: root)
+    let result = try harness.run(arguments: ["100"], environment: ["HERMES_TEST_OTHER_UID_MEMBER": "YES"])
+
+    XCTAssertNotEqual(result.status, 0)
+    XCTAssertTrue(result.stderr.contains("process-group member 103 is not owned by the current user"))
+    XCTAssertEqual(try harness.killLog(), "")
+  }
+
+  func testQuiesceRefusesIfRootExitsBeforeSuspension() throws {
+    let harness = try QuiesceHarness(root: root)
+    let result = try harness.run(arguments: ["100"], environment: ["HERMES_TEST_ROOT_GONE_AFTER_ENUM": "YES"])
+
+    XCTAssertNotEqual(result.status, 0)
+    XCTAssertTrue(result.stderr.contains("supplied root process exited before suspension"))
+    XCTAssertEqual(try harness.killLog(), "")
+  }
+
+  func testQuiesceStopContSymmetryAndAcceptanceOnce() throws {
+    let harness = try QuiesceHarness(root: root)
+    let result = try harness.run(arguments: ["100"])
+    let signals = try harness.killLog().split(separator: "\n").map(String.init)
+
+    XCTAssertEqual(result.status, 0)
+    XCTAssertEqual(signals, ["-STOP 100", "-STOP 101", "-CONT 100", "-CONT 101"])
+    XCTAssertEqual(try harness.acceptanceInvocations(), 1)
+  }
+
+  func testQuiesceInterruptCleanupContinuesRecordedPids() throws {
+    let harness = try QuiesceHarness(root: root)
+    let result = try harness.run(arguments: ["100"], environment: ["HERMES_TEST_ACCEPTANCE_SLEEP": "YES"], interruptAfter: 0.5)
+    let signals = try harness.killLog().split(separator: "\n").map(String.init)
+
+    XCTAssertNotEqual(result.status, 0)
+    XCTAssertTrue(signals.contains("-STOP 100"))
+    XCTAssertTrue(signals.contains("-STOP 101"))
+    XCTAssertTrue(signals.contains("-CONT 100"))
+    XCTAssertTrue(signals.contains("-CONT 101"))
+    XCTAssertEqual(try harness.acceptanceInvocations(), 1)
+  }
+
+  func testQuiesceDoesNotUseBroadPrivilegedCommands() throws {
+    let script = try read("Scripts/m14_002_quiesce_real_hermes.zsh")
+
+    XCTAssertFalse(script.contains("pkill"))
+    XCTAssertFalse(script.contains("killall"))
+    XCTAssertFalse(script.contains("sudo"))
+    XCTAssertFalse(script.contains("\"-$"))
+    XCTAssertTrue(script.contains("\"$KILL_BIN\" -STOP \"$pid\""))
+    XCTAssertTrue(script.contains("\"$KILL_BIN\" -CONT \"$pid\""))
+  }
+
+  func testQuiescePropagatesFailExitCode() throws {
+    let harness = try QuiesceHarness(root: root)
+    let result = try harness.run(arguments: ["100"], environment: ["HERMES_TEST_ACCEPTANCE_EXIT": "1"])
+
+    XCTAssertEqual(result.status, 1)
+    XCTAssertEqual(try harness.acceptanceInvocations(), 1)
+    XCTAssertTrue(try harness.killLog().contains("-CONT 100"))
+  }
+
+  func testQuiescePropagatesPassExitCode() throws {
+    let harness = try QuiesceHarness(root: root)
+    let result = try harness.run(arguments: ["100"], environment: ["HERMES_TEST_ACCEPTANCE_EXIT": "0"])
+
+    XCTAssertEqual(result.status, 0)
+    XCTAssertEqual(try harness.acceptanceInvocations(), 1)
+    XCTAssertTrue(try harness.killLog().contains("-CONT 101"))
   }
 
   private func extractOrderedKeys(from script: String) throws -> [String] {
@@ -412,5 +553,130 @@ final class HermesRealUserInstallAcceptanceTests: XCTestCase {
     }
     XCTFail("Unterminated function \(name)")
     return ""
+  }
+
+  private struct CommandResult {
+    let status: Int32
+    let stdout: String
+    let stderr: String
+  }
+
+  private final class QuiesceHarness {
+    let directory: URL
+    let root: URL
+    let ps: URL
+    let kill: URL
+    let acceptance: URL
+    let killLogURL: URL
+    let acceptanceLog: URL
+
+    init(root: URL) throws {
+      self.root = root
+      directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("hermes-quiesce-tests-\(UUID().uuidString)")
+      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+      ps = directory.appendingPathComponent("ps")
+      kill = directory.appendingPathComponent("kill")
+      acceptance = directory.appendingPathComponent("acceptance.zsh")
+      killLogURL = directory.appendingPathComponent("kill.log")
+      acceptanceLog = directory.appendingPathComponent("acceptance.log")
+      try writeExecutable(ps, contents: Self.fakePS)
+      try writeExecutable(kill, contents: Self.fakeKill)
+      try writeExecutable(acceptance, contents: Self.fakeAcceptance)
+    }
+
+    func run(
+      arguments: [String],
+      environment extraEnvironment: [String: String] = [:],
+      interruptAfter: TimeInterval? = nil
+    ) throws -> CommandResult {
+      let process = Process()
+      process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+      process.arguments = [root.appendingPathComponent("Scripts/m14_002_quiesce_real_hermes.zsh").path] + arguments
+      var environment = ProcessInfo.processInfo.environment
+      environment["HERMES_M14_002_PS"] = ps.path
+      environment["HERMES_M14_002_KILL"] = kill.path
+      environment["HERMES_M14_002_ACCEPTANCE_SCRIPT"] = acceptance.path
+      environment["HERMES_M14_002_CURRENT_UID"] = "501"
+      environment["HERMES_QUIESCE_REAL_AGENT"] = "YES"
+      environment["HERMES_TEST_KILL_LOG"] = killLogURL.path
+      environment["HERMES_TEST_ACCEPTANCE_LOG"] = acceptanceLog.path
+      environment["HERMES_TEST_ROOT_SEEN"] = directory.appendingPathComponent("root-seen").path
+      for (key, value) in extraEnvironment {
+        environment[key] = value
+      }
+      process.environment = environment
+
+      let stdout = Pipe()
+      let stderr = Pipe()
+      process.standardOutput = stdout
+      process.standardError = stderr
+      try process.run()
+      if let interruptAfter {
+        Thread.sleep(forTimeInterval: interruptAfter)
+        process.interrupt()
+      }
+      process.waitUntilExit()
+      return CommandResult(
+        status: process.terminationStatus,
+        stdout: String(data: stdout.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? "",
+        stderr: String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+      )
+    }
+
+    func killLog() throws -> String {
+      guard FileManager.default.fileExists(atPath: killLogURL.path) else { return "" }
+      return try String(contentsOf: killLogURL, encoding: .utf8)
+    }
+
+    func acceptanceInvocations() throws -> Int {
+      guard FileManager.default.fileExists(atPath: acceptanceLog.path) else { return 0 }
+      return try String(contentsOf: acceptanceLog, encoding: .utf8)
+        .split(separator: "\n")
+        .count
+    }
+
+    private func writeExecutable(_ url: URL, contents: String) throws {
+      try contents.write(to: url, atomically: true, encoding: .utf8)
+      try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+    }
+
+    private static let fakePS = """
+      #!/bin/zsh
+      uid="${HERMES_TEST_CURRENT_UID:-501}"
+      root_uid="${HERMES_TEST_ROOT_UID:-$uid}"
+      if [[ "$*" == *" -p 100"* ]]; then
+        if [[ "${HERMES_TEST_ROOT_GONE:-}" == "YES" ]]; then exit 0; fi
+        if [[ "${HERMES_TEST_ROOT_GONE_AFTER_ENUM:-}" == "YES" && -f "$HERMES_TEST_ROOT_SEEN" ]]; then exit 0; fi
+        print -r -- " 100 1 700 $root_uid /tmp/Hermes"
+        print -r -- seen > "$HERMES_TEST_ROOT_SEEN"
+        exit 0
+      fi
+      if [[ "$*" == *"-axo"* ]]; then
+        print -r -- " 100 1 700 $uid /tmp/Hermes"
+        print -r -- " 101 100 700 $uid /tmp/Hermes Helper"
+        print -r -- " 102 1 800 $uid /tmp/Other"
+        if [[ "${HERMES_TEST_OTHER_UID_MEMBER:-}" == "YES" ]]; then
+          print -r -- " 103 100 700 999 /tmp/Intruder"
+        fi
+        exit 0
+      fi
+      exit 1
+      """
+
+    private static let fakeKill = """
+      #!/bin/zsh
+      print -r -- "$*" >> "$HERMES_TEST_KILL_LOG"
+      exit 0
+      """
+
+    private static let fakeAcceptance = """
+      #!/bin/zsh
+      print -r -- "acceptance" >> "$HERMES_TEST_ACCEPTANCE_LOG"
+      if [[ "${HERMES_TEST_ACCEPTANCE_SLEEP:-}" == "YES" ]]; then
+        sleep 5
+      fi
+      exit "${HERMES_TEST_ACCEPTANCE_EXIT:-0}"
+      """
   }
 }

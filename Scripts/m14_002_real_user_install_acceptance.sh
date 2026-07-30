@@ -167,6 +167,16 @@ write_result() {
   validate_result_contract
 }
 
+result_exit_code() {
+  case "${RESULT[M14_002_RESULT]}" in
+    PASS) return 0 ;;
+    OPT_IN_REQUIRED) return 2 ;;
+    BLOCKED) return 3 ;;
+    FAIL) return 1 ;;
+    *) return 1 ;;
+  esac
+}
+
 finish_result() {
   if [[ "${RESULT[M14_002_RESULT]}" == "OPT_IN_REQUIRED" \
     || "${RESULT[M14_002_RESULT]}" == "BLOCKED" ]]; then
@@ -310,8 +320,13 @@ def keyed(lines):
     result = {}
     for line in lines:
         parts = line.split("\t")
-        if len(parts) >= 2:
-            result[(parts[0], parts[1])] = line
+        if len(parts) >= 5:
+            result[(parts[0], parts[1])] = {
+                "type": parts[2],
+                "size": parts[3],
+                "mtime_ns": parts[4],
+                "line": line,
+            }
     return result
 
 b = keyed(before)
@@ -320,9 +335,41 @@ changes = []
 for key in sorted(set(b) | set(a)):
     if b.get(key) != a.get(key):
         category, rel = key
-        changes.append(f"{category}/{rel}")
+        before_row = b.get(key, {"type": "absent", "size": "0", "mtime_ns": "0"})
+        after_row = a.get(key, {"type": "absent", "size": "0", "mtime_ns": "0"})
+        changes.append("\t".join([
+            f"{category}/{rel}",
+            before_row["type"],
+            after_row["type"],
+            before_row["size"],
+            after_row["size"],
+            before_row["mtime_ns"],
+            after_row["mtime_ns"],
+        ]))
 changes_path.write_text("\n".join(changes) + ("\n" if changes else ""), encoding="utf-8")
 sys.exit(1 if changes else 0)
+PY
+}
+
+emit_real_home_mutation_diagnostics() {
+  [[ -s "$INTEGRITY_CHANGES" ]] || return 0
+  /usr/bin/python3 - "$INTEGRITY_CHANGES" <<'PY'
+import sys
+from pathlib import Path
+
+for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
+    parts = line.split("\t")
+    if len(parts) != 7:
+        continue
+    rel, before_type, after_type, before_size, after_size, before_mtime, after_mtime = parts
+    print(
+        "real_home_change "
+        f"relative_path={rel} "
+        f"before_type={before_type} after_type={after_type} "
+        f"before_size={before_size} after_size={after_size} "
+        f"before_mtime_ns={before_mtime} after_mtime_ns={after_mtime}",
+        file=sys.stderr,
+    )
 PY
 }
 
@@ -331,6 +378,7 @@ set_real_home_modified_result() {
     RESULT[REAL_HERMES_HOME_MODIFIED]=no
   else
     RESULT[REAL_HERMES_HOME_MODIFIED]=yes
+    emit_real_home_mutation_diagnostics
   fi
 }
 
@@ -815,6 +863,7 @@ main() {
   validate_final_residue
   finish_result
   FINISHED="yes"
+  result_exit_code
 }
 
 main "$@"
