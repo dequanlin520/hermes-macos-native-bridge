@@ -16,6 +16,7 @@ import HermesOperations
 import HermesPolicy
 import HermesPrivacy
 import HermesRecovery
+import HermesReporting
 import HermesSearch
 import HermesSettings
 import HermesTimeline
@@ -54,6 +55,7 @@ public final class HermesAppClientGraph: @unchecked Sendable {
   public let healthCenter: HermesHealthCenter
   public let operationsCenter: HermesOperationsCenter
   public let analyticsCenter: HermesAnalyticsCenter
+  public let reportingCenter: HermesReportingCenter
   public let navigationActions = HermesAppNavigationActions()
 
   private let shutdownHandler: @Sendable () async -> Void
@@ -76,6 +78,7 @@ public final class HermesAppClientGraph: @unchecked Sendable {
     healthCenter: HermesHealthCenter? = nil,
     operationsCenter: HermesOperationsCenter? = nil,
     analyticsCenter: HermesAnalyticsCenter? = nil,
+    reportingCenter: HermesReportingCenter? = nil,
     shutdownHandler: (@Sendable () async -> Void)? = nil
   ) {
     self.runtimeClient = runtimeClient
@@ -158,6 +161,12 @@ public final class HermesAppClientGraph: @unchecked Sendable {
       complianceCenter: self.complianceCenter,
       healthCenter: self.healthCenter,
       operationsCenter: self.operationsCenter
+    )
+    self.reportingCenter = reportingCenter ?? Self.makeReportingCenter(
+      healthCenter: self.healthCenter,
+      operationsCenter: self.operationsCenter,
+      analyticsCenter: self.analyticsCenter,
+      complianceCenter: self.complianceCenter
     )
     self.shutdownHandler = shutdownHandler ?? {
       await runtimeClient.invalidate()
@@ -418,6 +427,109 @@ public final class HermesAppClientGraph: @unchecked Sendable {
       )
     )
   }
+
+  private static func makeReportingCenter(
+    healthCenter: HermesHealthCenter,
+    operationsCenter: HermesOperationsCenter,
+    analyticsCenter: HermesAnalyticsCenter,
+    complianceCenter: HermesComplianceCenter
+  ) -> HermesReportingCenter {
+    HermesReportingCenter(
+      inputs: HermesReportingCenterInputs(
+        healthSummary: {
+          let health = await healthCenter.snapshot()
+          return HermesReportDomainSummary(
+            title: "Health",
+            state: reportingState(for: health.overallState.rawValue),
+            summary: "overall \(health.overallState.rawValue)",
+            details: [
+              health.system.summary,
+              "runtime \(health.runtime.runtimeStatusSummary), sessions \(health.runtime.sessionAvailabilitySummary), backend \(health.runtime.backendAvailabilitySummary)",
+              "\(health.operational.recentFailuresSummary), recovery \(health.operational.recoveryStatus), update \(health.operational.updateStatus)",
+              "policy \(health.compliance.policyStatus), privacy \(health.compliance.privacyStatus), audit \(health.compliance.auditStatus)",
+            ]
+          )
+        },
+        operationsSummary: {
+          let operations = await operationsCenter.snapshot()
+          return HermesReportDomainSummary(
+            title: "Operations",
+            state: reportingState(for: operations.overallState.rawValue),
+            summary: "overall \(operations.overallState.rawValue)",
+            details: [
+              operations.runtime.summary,
+              operations.events.summary,
+              operations.release.summary,
+              operations.governance.summary,
+            ]
+          )
+        },
+        analyticsSummary: {
+          let analytics = await analyticsCenter.snapshot()
+          return HermesReportDomainSummary(
+            title: "Analytics",
+            state: reportingState(for: analytics.overallState.rawValue),
+            summary: "overall \(analytics.overallState.rawValue)",
+            details: [
+              analytics.runtime.summary,
+              analytics.operations.summary,
+              analytics.governance.summary,
+            ]
+          )
+        },
+        complianceSummary: {
+          let compliance = await complianceCenter.snapshot()
+          return HermesReportDomainSummary(
+            title: "Compliance",
+            state: reportingState(for: compliance.overallState.rawValue),
+            summary: "overall \(compliance.overallState.rawValue)",
+            details: [
+              compliance.security.summary,
+              compliance.privacy.summary,
+              compliance.policy.summary,
+              compliance.release.summary,
+            ]
+          )
+        },
+        auditSummary: {
+          let compliance = await complianceCenter.snapshot()
+          return HermesReportDomainSummary(
+            title: "Audit",
+            state: compliance.auditEvidence.readOnly ? .ready : .attentionRequired,
+            summary: "\(compliance.auditEvidence.recentEventCount) audit events",
+            details: compliance.auditEvidence.recentEvidence.map { "\($0.source.rawValue) \($0.summary)" }
+          )
+        }
+      ),
+      historyStore: HermesReportFileHistoryStore(directory: reportingHistoryDirectory())
+    )
+  }
+
+  private static func reportingState(for value: String) -> HermesReportingState {
+    let lowercased = value.lowercased()
+    if lowercased.contains("unavailable") || lowercased.contains("unreliable")
+      || lowercased.contains("failed") || lowercased.contains("disconnected")
+    {
+      return .unavailable
+    }
+    if lowercased.contains("attention") || lowercased.contains("degraded")
+      || lowercased.contains("critical") || lowercased.contains("blocked")
+    {
+      return .attentionRequired
+    }
+    if lowercased.contains("unknown") {
+      return .unknown
+    }
+    return .ready
+  }
+
+  private static func reportingHistoryDirectory() -> URL {
+    let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+      ?? FileManager.default.temporaryDirectory
+    return base
+      .appendingPathComponent("Hermes", isDirectory: true)
+      .appendingPathComponent("Reports", isDirectory: true)
+  }
 }
 
 @MainActor
@@ -484,6 +596,9 @@ public final class HermesAppCompositionRoot: ObservableObject {
     }
     clientGraph.navigationActions.openAnalyticsCenter = { [weak windowCoordinator] in
       windowCoordinator?.open(.analytics)
+    }
+    clientGraph.navigationActions.openReportingCenter = { [weak windowCoordinator] in
+      windowCoordinator?.open(.reporting)
     }
     clientGraph.navigationActions.openRecovery = { [weak clientGraph, weak windowCoordinator] issue in
       Task { @MainActor in
@@ -586,6 +701,9 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
           },
           openAnalyticsCenter: {
             clientGraph.navigationActions.openAnalyticsCenter()
+          },
+          openReportingCenter: {
+            clientGraph.navigationActions.openReportingCenter()
           }
         )
       )
@@ -714,6 +832,9 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
           },
           openAnalyticsCenter: {
             clientGraph.navigationActions.openAnalyticsCenter()
+          },
+          openReportingCenter: {
+            clientGraph.navigationActions.openReportingCenter()
           }
         )
       )
@@ -774,6 +895,21 @@ public struct HermesProductionNativeUIWindowFactory: HermesNativeUIWindowFactory
           },
           openOperationsCenter: {
             clientGraph.navigationActions.openOperationsCenter()
+          },
+          openReportingCenter: {
+            clientGraph.navigationActions.openReportingCenter()
+          }
+        )
+      )
+    case .reporting:
+      controller = HermesReportingWindowController(
+        viewModel: HermesReportingViewModel(
+          center: clientGraph.reportingCenter,
+          openSettings: {
+            clientGraph.navigationActions.openSettings()
+          },
+          openAdministrationCenter: {
+            clientGraph.navigationActions.openAdministrationCenter()
           }
         )
       )
@@ -824,6 +960,7 @@ public final class HermesAppNavigationActions {
   public var openHealthCenter: () -> Void = {}
   public var openOperationsCenter: () -> Void = {}
   public var openAnalyticsCenter: () -> Void = {}
+  public var openReportingCenter: () -> Void = {}
   public var openRecovery: (HermesRecoveryIssueCategory) -> Void = { _ in }
 
   public init() {}

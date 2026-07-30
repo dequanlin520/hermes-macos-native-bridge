@@ -225,6 +225,11 @@ public struct HermesAdministrationWindow: View {
       } label: {
         Label("Analytics", systemImage: "chart.xyaxis.line")
       }
+      Button {
+        viewModel.openReportingCenter()
+      } label: {
+        Label("Reporting", systemImage: "doc.text.magnifyingglass")
+      }
       Spacer()
       Button {
         viewModel.refresh()

@@ -161,6 +161,11 @@ public struct HermesAnalyticsWindow: View {
       } label: {
         Label("Operations", systemImage: "command.circle")
       }
+      Button {
+        viewModel.openReportingCenter()
+      } label: {
+        Label("Reporting", systemImage: "doc.text.magnifyingglass")
+      }
       Spacer()
       Button {
         viewModel.refresh()
