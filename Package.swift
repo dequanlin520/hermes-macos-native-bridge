@@ -125,6 +125,10 @@ let package = Package(
       targets: ["HermesBridgeAppExecutable"]
     ),
     .executable(
+      name: "HermesReleaseAgentPreflight",
+      targets: ["HermesReleaseAgentPreflight"]
+    ),
+    .executable(
       name: "HermesBridgeAppAcceptanceHarness",
       targets: ["HermesBridgeAppAcceptanceHarness"]
     ),
@@ -268,6 +272,10 @@ let package = Package(
     .executableTarget(
       name: "HermesBridgeAppExecutable",
       dependencies: ["HermesBridgeApp"]
+    ),
+    .executableTarget(
+      name: "HermesReleaseAgentPreflight",
+      dependencies: ["HermesBridgeService", "HermesRuntimeFoundation"]
     ),
     .target(
       name: "HermesBridgeAppAcceptanceSupport",
