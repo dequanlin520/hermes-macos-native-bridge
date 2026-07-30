@@ -44,8 +44,70 @@ final class HermesAgentSupervisorTests: XCTestCase {
       runIdentifier: "run"
     )
     XCTAssertThrowsError(try rejected.get()) {
-      XCTAssertEqual($0 as? HermesAgentSupervisorError, .unsupported("version.out_of_range"))
+      XCTAssertEqual($0 as? HermesAgentSupervisorError, .blocked("version.unsupported"))
     }
+  }
+
+  func testM14005UnsupportedExactShutdownDoesNotBlockM14006LaunchPlan() throws {
+    let environment = try HermesAgentLaunchEnvironment.construct(
+      runtimeRoot: temporaryDirectory.appendingPathComponent("runtime", isDirectory: true)
+    )
+    let surface = HermesAgentCommandSurface(
+      versionOutput: "Hermes Agent v0.18.2",
+      rootHelpOutput: "Commands:\n  serve\n  status\n",
+      subcommandHelp: [
+        "serve": "Usage: hermes serve --isolated --stop",
+        "status": "Usage: hermes status",
+      ]
+    )
+    let m14005Contract = HermesAgentLaunchContractSelector.select(
+      discoveryResult: discoveryResult(version: "0.18.2"),
+      commandSurface: surface
+    )
+    let m14006Configuration = HermesAgentSupervisorConfiguration.from018CommandSurface(
+      executableURL: temporaryDirectory.appendingPathComponent("hermes"),
+      discoveryResult: discoveryResult(version: "0.18.2"),
+      commandSurface: surface,
+      environment: environment,
+      runIdentifier: "run"
+    )
+
+    XCTAssertEqual(m14005Contract.status, .unsupported)
+    XCTAssertEqual(m14005Contract.reasonCode, "shutdown.command.not_exact_isolated")
+    XCTAssertEqual(try m14006Configuration.get().isolatedArguments, ["serve", "--isolated"])
+  }
+
+  func testMissingInvocationSyntaxIsBlockedWithExplicitReason() throws {
+    let environment = try HermesAgentLaunchEnvironment.construct(
+      runtimeRoot: temporaryDirectory.appendingPathComponent("runtime", isDirectory: true)
+    )
+    let surface = HermesAgentCommandSurface(
+      versionOutput: "Hermes Agent v0.18.2",
+      rootHelpOutput: "Commands:\n  run\n",
+      subcommandHelp: ["run": "Usage: run"]
+    )
+
+    let configuration = HermesAgentSupervisorConfiguration.from018CommandSurface(
+      executableURL: temporaryDirectory.appendingPathComponent("hermes"),
+      discoveryResult: discoveryResult(version: "0.18.2"),
+      commandSurface: surface,
+      environment: environment,
+      runIdentifier: "run"
+    )
+
+    XCTAssertThrowsError(try configuration.get()) {
+      XCTAssertEqual($0 as? HermesAgentSupervisorError, .blocked("invocation.syntax.unknown"))
+    }
+  }
+
+  func testLaunchDescriptorIsPrivacySafeAndUsesArgumentIdentifiers() throws {
+    let descriptor = HermesAgentSupervisorLaunchDescriptor.privacySafe(configuration: try configuration())
+    let encoded = String(data: try JSONEncoder().encode(descriptor), encoding: .utf8) ?? ""
+
+    XCTAssertEqual(descriptor.argumentIdentifiers, ["subcommand.serve", "flag.isolated"])
+    XCTAssertFalse(encoded.contains(temporaryDirectory.path))
+    XCTAssertFalse(encoded.contains("serve --isolated"))
+    XCTAssertFalse(encoded.contains("token"))
   }
 
   func testEndpointOwnershipProofIsRequiredBeyondProcessExistence() throws {
@@ -53,7 +115,7 @@ final class HermesAgentSupervisorTests: XCTestCase {
     let supervisor = HermesAgentSupervisor(controller: controller)
 
     XCTAssertThrowsError(try supervisor.supervise(configuration: configuration())) {
-      XCTAssertEqual($0 as? HermesAgentSupervisorError, .unsupported("endpoint.ownership_not_proven"))
+      XCTAssertEqual($0 as? HermesAgentSupervisorError, .unsupported("endpoint.ownership-unproven"))
     }
     XCTAssertTrue(controller.signals.contains(.init(pid: 100, signal: SIGTERM)))
     XCTAssertFalse(controller.invocations.contains("serve-stop"))
@@ -101,7 +163,7 @@ final class HermesAgentSupervisorTests: XCTestCase {
     let controller = FixtureSupervisorController(initialTopology: .ambiguousTopology)
 
     XCTAssertThrowsError(try HermesAgentSupervisor(controller: controller).supervise(configuration: configuration())) {
-      XCTAssertEqual($0 as? HermesAgentSupervisorError, .fail("identity.ambiguous_after_launch"))
+      XCTAssertEqual($0 as? HermesAgentSupervisorError, .fail("topology.ambiguous"))
     }
   }
 
@@ -109,7 +171,7 @@ final class HermesAgentSupervisorTests: XCTestCase {
     let controller = FixtureSupervisorController(initialTopology: .daemonized)
 
     XCTAssertThrowsError(try HermesAgentSupervisor(controller: controller).supervise(configuration: configuration())) {
-      XCTAssertEqual($0 as? HermesAgentSupervisorError, .unsupported("topology.daemonized"))
+      XCTAssertEqual($0 as? HermesAgentSupervisorError, .unsupported("topology.ambiguous"))
     }
   }
 

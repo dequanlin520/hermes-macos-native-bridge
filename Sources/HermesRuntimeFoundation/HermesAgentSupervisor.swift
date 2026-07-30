@@ -15,6 +15,16 @@ public enum HermesAgentSupervisorError: Error, Equatable, Sendable {
   case fail(String)
 }
 
+public enum HermesAgentSupervisorReasonPhase: String, Codable, Equatable, Sendable {
+  case preflight
+  case launch
+  case topology
+  case readiness
+  case discovery
+  case shutdown
+  case cleanup
+}
+
 public enum HermesAgentSupervisorState: String, Codable, Equatable, Sendable {
   case idle
   case starting
@@ -80,15 +90,16 @@ public struct HermesAgentSupervisorConfiguration: Codable, Equatable, Sendable {
     let version = discoveryResult.versionInfo.semanticVersion
     let supportedRange = HermesSemanticVersionRange(lowerInclusive: "0.18.0", upperExclusive: "0.19.0")
     guard supportedRange.contains(version) else {
-      return .failure(.unsupported("version.out_of_range"))
+      return .failure(.blocked("version.unsupported"))
     }
-    guard commandSurface.isolatedStartupAdvertised,
-      commandSurface.help(for: "serve").contains("--isolated")
-    else {
-      return .failure(.unsupported("startup.command.not_advertised"))
+    guard commandSurface.advertisesSubcommand("serve") else {
+      return .failure(.blocked("invocation.syntax.unknown"))
     }
-    guard commandSurface.statusMechanismAdvertised else {
-      return .failure(.unsupported("status.command.not_advertised"))
+    guard commandSurface.help(for: "serve").range(
+      of: #"(^|\s)--isolated(\s|,|\.|$)"#,
+      options: .regularExpression
+    ) != nil else {
+      return .failure(.blocked("isolated-command.not-advertised"))
     }
     return .success(
       Self(
@@ -106,6 +117,60 @@ public struct HermesAgentSupervisorConfiguration: Codable, Equatable, Sendable {
       $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "." || $0 == "-" || $0 == "_")
     }
     return filtered.isEmpty ? "m14-006" : String(filtered.prefix(96))
+  }
+}
+
+public struct HermesAgentSupervisorLaunchDescriptor: Codable, Equatable, Sendable {
+  public let executableFamily: String
+  public let semanticVersion: String
+  public let argumentIdentifiers: [String]
+  public let isolatedEnvironmentValidationStatus: String
+  public let runIdentifierCategory: String
+  public let timeoutPolicy: HermesAgentTimeoutPolicy
+
+  public init(
+    executableFamily: String = "hermes-agent",
+    semanticVersion: String,
+    argumentIdentifiers: [String],
+    isolatedEnvironmentValidationStatus: String,
+    runIdentifierCategory: String,
+    timeoutPolicy: HermesAgentTimeoutPolicy
+  ) {
+    self.executableFamily = executableFamily
+    self.semanticVersion = semanticVersion
+    self.argumentIdentifiers = argumentIdentifiers.map(Self.safeToken)
+    self.isolatedEnvironmentValidationStatus = Self.safeToken(isolatedEnvironmentValidationStatus)
+    self.runIdentifierCategory = Self.safeToken(runIdentifierCategory)
+    self.timeoutPolicy = timeoutPolicy
+  }
+
+  public static func privacySafe(
+    configuration: HermesAgentSupervisorConfiguration,
+    isolatedEnvironmentValidationStatus: String = "valid"
+  ) -> Self {
+    Self(
+      semanticVersion: configuration.observedVersion ?? "unknown",
+      argumentIdentifiers: Self.argumentIdentifiers(for: configuration.isolatedArguments),
+      isolatedEnvironmentValidationStatus: isolatedEnvironmentValidationStatus,
+      runIdentifierCategory: "m14-006-run",
+      timeoutPolicy: configuration.timeoutPolicy
+    )
+  }
+
+  private static func argumentIdentifiers(for arguments: [String]) -> [String] {
+    switch arguments {
+    case ["serve", "--isolated"]:
+      return ["subcommand.serve", "flag.isolated"]
+    default:
+      return ["invocation.syntax.unknown"]
+    }
+  }
+
+  private static func safeToken(_ value: String) -> String {
+    let filtered = value.filter {
+      $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "." || $0 == "-" || $0 == "_")
+    }
+    return filtered.isEmpty ? "unknown" : String(filtered.prefix(96))
   }
 }
 
@@ -177,6 +242,9 @@ public struct HermesAgentEndpointIdentity: Codable, Equatable, Sendable {
 public struct HermesAgentSupervisorResult: Codable, Equatable, Sendable {
   public let compatibilityLevel: HermesAgentSupervisorCompatibilityLevel
   public let reasonCode: String
+  public let reasonPhase: HermesAgentSupervisorReasonPhase
+  public let detailCategory: String
+  public let launchDescriptor: HermesAgentSupervisorLaunchDescriptor
   public let processTree: HermesAgentProcessTree
   public let endpointIdentity: HermesAgentEndpointIdentity
   public let serviceDiscoveryObserved: Bool
@@ -195,6 +263,9 @@ public struct HermesAgentSupervisorResult: Codable, Equatable, Sendable {
   public init(
     compatibilityLevel: HermesAgentSupervisorCompatibilityLevel,
     reasonCode: String,
+    reasonPhase: HermesAgentSupervisorReasonPhase,
+    detailCategory: String,
+    launchDescriptor: HermesAgentSupervisorLaunchDescriptor,
     processTree: HermesAgentProcessTree,
     endpointIdentity: HermesAgentEndpointIdentity,
     serviceDiscoveryObserved: Bool,
@@ -212,6 +283,9 @@ public struct HermesAgentSupervisorResult: Codable, Equatable, Sendable {
   ) {
     self.compatibilityLevel = compatibilityLevel
     self.reasonCode = reasonCode
+    self.reasonPhase = reasonPhase
+    self.detailCategory = detailCategory
+    self.launchDescriptor = launchDescriptor
     self.processTree = processTree
     self.endpointIdentity = endpointIdentity
     self.serviceDiscoveryObserved = serviceDiscoveryObserved
@@ -266,33 +340,34 @@ public final class HermesAgentSupervisor: @unchecked Sendable {
   public func supervise(configuration: HermesAgentSupervisorConfiguration) throws -> HermesAgentSupervisorResult {
     guard let version = configuration.observedVersion else {
       lock.withLock { currentState = .blocked }
-      throw HermesAgentSupervisorError.blocked("version.unknown")
+      throw HermesAgentSupervisorError.blocked("version.unsupported")
     }
     guard HermesSemanticVersionRange(lowerInclusive: "0.18.0", upperExclusive: "0.19.0").contains(version)
     else {
-      lock.withLock { currentState = .unsupported }
-      throw HermesAgentSupervisorError.unsupported("version.out_of_range")
+      lock.withLock { currentState = .blocked }
+      throw HermesAgentSupervisorError.blocked("version.unsupported")
     }
     guard configuration.isolatedArguments == ["serve", "--isolated"] else {
-      lock.withLock { currentState = .unsupported }
-      throw HermesAgentSupervisorError.unsupported("startup.command.not_exact_isolated")
+      lock.withLock { currentState = .blocked }
+      throw HermesAgentSupervisorError.blocked("invocation.syntax.unknown")
     }
 
     lock.withLock { currentState = .starting }
+    let launchDescriptor = HermesAgentSupervisorLaunchDescriptor.privacySafe(configuration: configuration)
     let root = try controller.launchIsolatedAgent(configuration: configuration)
     let initialTree = controller.captureProcessTree(root: root)
     guard initialTree.topologyStatus != .ambiguousTopology else {
       lock.withLock { currentState = .failed }
-      throw HermesAgentSupervisorError.fail("identity.ambiguous_after_launch")
+      throw HermesAgentSupervisorError.fail("topology.ambiguous")
     }
     guard initialTree.topologyStatus != .daemonized else {
       _ = try shutdown(root: root, initialTree: initialTree, configuration: configuration)
       lock.withLock { currentState = .unsupported }
-      throw HermesAgentSupervisorError.unsupported("topology.daemonized")
+      throw HermesAgentSupervisorError.unsupported("topology.ambiguous")
     }
     guard initialTree.topologyStatus != .processExited else {
       lock.withLock { currentState = .unsupported }
-      throw HermesAgentSupervisorError.unsupported("topology.process_exited")
+      throw HermesAgentSupervisorError.unsupported("launch.exited-before-identity")
     }
 
     let endpoint = controller.waitForReadiness(
@@ -303,7 +378,7 @@ public final class HermesAgentSupervisor: @unchecked Sendable {
     guard endpoint.ownershipProven else {
       _ = try shutdown(root: root, initialTree: initialTree, configuration: configuration)
       lock.withLock { currentState = .unsupported }
-      throw HermesAgentSupervisorError.unsupported("endpoint.ownership_not_proven")
+      throw HermesAgentSupervisorError.unsupported("endpoint.ownership-unproven")
     }
     let serviceDiscoveryObserved = controller.serviceDiscoveryMatches(
       endpoint: endpoint,
@@ -322,7 +397,10 @@ public final class HermesAgentSupervisor: @unchecked Sendable {
     lock.withLock { currentState = remaining || realHomeAccess ? .failed : .stopped }
     return HermesAgentSupervisorResult(
       compatibilityLevel: compatibility,
-      reasonCode: compatibility == .supported ? "supervisor.supported" : "supervisor.partial_or_failed",
+      reasonCode: compatibility == .supported ? "supervisor.supported" : "supervisor.partial-or-failed",
+      reasonPhase: compatibility == .supported ? .cleanup : .cleanup,
+      detailCategory: compatibility == .supported ? "supervision-complete" : "cleanup-or-status",
+      launchDescriptor: launchDescriptor,
       processTree: initialTree,
       endpointIdentity: endpoint,
       serviceDiscoveryObserved: serviceDiscoveryObserved,

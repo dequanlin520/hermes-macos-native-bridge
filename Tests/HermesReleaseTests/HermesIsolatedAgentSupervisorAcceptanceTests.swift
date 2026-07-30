@@ -17,8 +17,9 @@ final class HermesIsolatedAgentSupervisorAcceptanceTests: XCTestCase {
     let script = try read("Scripts/m14_006_isolated_agent_supervisor_acceptance.sh")
     let mapper = try extractFunction("result_exit_code", from: script)
 
-    XCTAssertTrue(script.contains("usage: $SCRIPT_NAME inspect|run|cleanup"))
+    XCTAssertTrue(script.contains("usage: $SCRIPT_NAME inspect|inspect-launch-plan|run|cleanup"))
     XCTAssertTrue(script.contains("inspect)"))
+    XCTAssertTrue(script.contains("inspect-launch-plan)"))
     XCTAssertTrue(script.contains("run)"))
     XCTAssertTrue(script.contains("cleanup)"))
     XCTAssertTrue(mapper.contains("PASS) return 0"))
@@ -37,7 +38,24 @@ final class HermesIsolatedAgentSupervisorAcceptanceTests: XCTestCase {
     XCTAssertTrue(run.contains("HERMES_M14_006_ACCEPTANCE:-"))
     XCTAssertTrue(run.contains("!= \"YES\""))
     XCTAssertTrue(run.contains("RESULT[M14_006_RESULT]=OPT_IN_REQUIRED"))
+    XCTAssertTrue(run.contains("set_reason acceptance.opt-in-required preflight operator-confirmation"))
     XCTAssertTrue(run.contains("exit 2"))
+  }
+
+  func testInspectLaunchPlanIsReadOnlyAndDoesNotRequireExactCLIShutdown() throws {
+    let script = try read("Scripts/m14_006_isolated_agent_supervisor_acceptance.sh")
+    let launchPlan = try extractFunction("inspect_launch_plan", from: script)
+    let printer = try extractFunction("print_launch_plan", from: script)
+
+    XCTAssertTrue(launchPlan.contains("production_inspect_readonly"))
+    XCTAssertTrue(launchPlan.contains("validate_isolated_environment"))
+    XCTAssertTrue(printer.contains("launch_permitted=yes"))
+    XCTAssertTrue(printer.contains("exact_cli_shutdown_required=no"))
+    XCTAssertTrue(printer.contains("supervisor_strategy=bridge-exact-pid"))
+    XCTAssertTrue(printer.contains("launch_argument_identifiers=subcommand.serve,flag.isolated"))
+    XCTAssertFalse(launchPlan.contains("write_result"))
+    XCTAssertFalse(launchPlan.contains("write_launch_descriptor"))
+    XCTAssertFalse(launchPlan.contains("cleanup_owned_process"))
   }
 
   func testInspectIsReadOnly() throws {
@@ -65,14 +83,20 @@ final class HermesIsolatedAgentSupervisorAcceptanceTests: XCTestCase {
   func testExactShutdownAndNoBroadKillOrStop() throws {
     let script = try read("Scripts/m14_006_isolated_agent_supervisor_acceptance.sh")
     let cleanup = try extractFunction("cleanup_owned_process", from: script)
+    let launch = try extractFunction("attempt_supervisor_launch", from: script)
 
     XCTAssertTrue(cleanup.contains("/bin/kill -TERM \"$pid\""))
     XCTAssertTrue(cleanup.contains("/bin/kill -KILL \"$pid\""))
+    XCTAssertTrue(launch.contains("\"$executable\" serve --isolated"))
+    XCTAssertTrue(launch.contains("pid=$!"))
+    XCTAssertTrue(launch.contains("persist_identity_for_pid \"$pid\""))
+    XCTAssertTrue(launch.contains("identity_matches \"$pid\""))
     XCTAssertFalse(script.contains("pkill"))
     XCTAssertFalse(script.contains("killall"))
     XCTAssertFalse(script.contains("kill -- -"))
     XCTAssertFalse(script.contains("/bin/kill -TERM -"))
     XCTAssertFalse(script.contains("serve --stop"))
+    XCTAssertFalse(script.contains("sudo"))
   }
 
   func testResultKeysAreUniqueDeterministicAndComplete() throws {
@@ -85,17 +109,50 @@ final class HermesIsolatedAgentSupervisorAcceptanceTests: XCTestCase {
     for required in [
       "SERVICE_OWNED_SUPERVISOR_USED",
       "SERVICE_OWNED_DISCOVERY_USED",
+      "LAUNCH_ATTEMPTED",
       "BROAD_STOP_INVOKED",
+      "SUPERVISOR_REASON_CODE",
+      "SUPERVISOR_REASON_PHASE",
+      "SUPERVISOR_DETAIL_CATEGORY",
       "PROCESS_TOPOLOGY_STATUS",
+      "PROCESS_IDENTITY_VALIDATED_BEFORE_SIGNAL",
       "ENDPOINT_OWNERSHIP_PROVEN",
       "EXACT_ROOT_TERM_USED",
       "EXACT_DESCENDANT_TERM_USED",
       "BROAD_PROCESS_KILL_USED",
       "REAL_HERMES_HOME_MODIFIED",
+      "SUPERVISED_PROCESS_REAL_HOME_ACCESS",
+      "EXTERNAL_REAL_HOME_MUTATION_OBSERVED",
       "SUPERVISOR_COMPATIBILITY_LEVEL",
     ] {
       XCTAssertTrue(keys.contains(required), required)
     }
+  }
+
+  func testM14006LaunchGateIgnoresM14005ExactShutdownUnsupported() throws {
+    let script = try read("Scripts/m14_006_isolated_agent_supervisor_acceptance.sh")
+    let reason = try extractFunction("m14006_blocking_reason", from: script)
+
+    XCTAssertTrue(reason.contains("executable.unavailable"))
+    XCTAssertTrue(reason.contains("version.unsupported"))
+    XCTAssertTrue(reason.contains("isolated-command.not-advertised"))
+    XCTAssertTrue(reason.contains("isolated-environment.invalid"))
+    XCTAssertTrue(reason.contains("print -r -- \"none\""))
+    XCTAssertFalse(reason.contains("LAUNCH_CONTRACT_STATUS"))
+    XCTAssertFalse(reason.contains("LAUNCH_CONTRACT_REASON"))
+    XCTAssertFalse(reason.contains("EXACT_ISOLATED_SHUTDOWN_ADVERTISED"))
+  }
+
+  func testEveryNonPassResultRequiresReasonCodePhaseAndCategory() throws {
+    let script = try read("Scripts/m14_006_isolated_agent_supervisor_acceptance.sh")
+    let validator = try extractFunction("validate_terminal_reason_contract", from: script)
+
+    XCTAssertTrue(validator.contains("SUPERVISOR_REASON_CODE"))
+    XCTAssertTrue(validator.contains("SUPERVISOR_REASON_PHASE"))
+    XCTAssertTrue(validator.contains("SUPERVISOR_DETAIL_CATEGORY"))
+    XCTAssertTrue(script.contains("\"reasonCode\": result.get(\"SUPERVISOR_REASON_CODE\""))
+    XCTAssertTrue(script.contains("\"reasonPhase\": result.get(\"SUPERVISOR_REASON_PHASE\""))
+    XCTAssertTrue(script.contains("\"detailCategory\": result.get(\"SUPERVISOR_DETAIL_CATEGORY\""))
   }
 
   func testArtifactsAreRedactedAndIgnored() throws {
@@ -105,9 +162,11 @@ final class HermesIsolatedAgentSupervisorAcceptanceTests: XCTestCase {
     XCTAssertTrue(gitignore.contains("artifacts/"))
     XCTAssertTrue(script.contains("process-topology.json"))
     XCTAssertTrue(script.contains("supervisor-report.json"))
+    XCTAssertTrue(script.contains("launch-descriptor.json"))
     XCTAssertTrue(script.contains("privacy-safe"))
     XCTAssertTrue(script.contains("git -C \"$ROOT_DIR\" check-ignore -q \"artifacts/m14-006/result.txt\""))
     XCTAssertFalse(script.contains("print -r -- \"$HOME\""))
+    XCTAssertFalse(script.contains("raw command line"))
   }
 
   func testServiceOwnsSupervisorAndUIDoesNot() throws {
