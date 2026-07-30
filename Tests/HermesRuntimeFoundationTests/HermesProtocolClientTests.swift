@@ -38,6 +38,36 @@ final class HermesProtocolClientTests: XCTestCase {
     }
   }
 
+  func testNoAuthenticationAddsNoWebSocketTokenQuery() throws {
+    let endpoint = try HermesBackendEndpoint(port: 19123)
+
+    let url = endpoint.webSocketURL(authentication: .none)
+
+    XCTAssertEqual(url.absoluteString, "ws://127.0.0.1:19123/api/ws")
+    XCTAssertFalse(url.absoluteString.contains("token="))
+  }
+
+  func testNoAuthenticationSendsNoStatusAuthorizationHeader() async throws {
+    HeaderCaptureProtocol.lastHeaders = [:]
+    HeaderCaptureProtocol.responseData = Data(
+      #"{"version":"0.18.2","auth_required":false,"desktop_contract":3,"gateway_running":true}"#.utf8
+    )
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [HeaderCaptureProtocol.self]
+    let session = URLSession(configuration: configuration)
+    let client = HermesProtocolClient(
+      endpoint: try HermesBackendEndpoint(port: 19123),
+      authentication: .none,
+      session: session
+    )
+
+    let status = try await client.fetchStatus()
+
+    XCTAssertEqual(status.authRequired, false)
+    XCTAssertNil(HeaderCaptureProtocol.lastHeaders["X-Hermes-Session-Token"])
+    XCTAssertNil(HeaderCaptureProtocol.lastHeaders["Authorization"])
+  }
+
   func testStatusDecoding() async throws {
     let fixture = try startFixture()
     let client = try client(for: fixture)
@@ -271,6 +301,31 @@ final class HermesProtocolClientTests: XCTestCase {
       return false
     }
   }
+}
+
+private final class HeaderCaptureProtocol: URLProtocol {
+  nonisolated(unsafe)
+  static var lastHeaders: [String: String] = [:]
+  nonisolated(unsafe)
+  static var responseData = Data()
+
+  override class func canInit(with request: URLRequest) -> Bool { true }
+  override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+  override func startLoading() {
+    Self.lastHeaders = request.allHTTPHeaderFields ?? [:]
+    let response = HTTPURLResponse(
+      url: request.url!,
+      statusCode: 200,
+      httpVersion: nil,
+      headerFields: ["Content-Type": "application/json"]
+    )!
+    client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+    client?.urlProtocol(self, didLoad: Self.responseData)
+    client?.urlProtocolDidFinishLoading(self)
+  }
+
+  override func stopLoading() {}
 }
 
 private final class FixtureBackend {

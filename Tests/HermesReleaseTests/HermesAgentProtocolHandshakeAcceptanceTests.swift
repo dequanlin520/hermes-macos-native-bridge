@@ -13,8 +13,9 @@ final class HermesAgentProtocolHandshakeAcceptanceTests: XCTestCase {
     let script = try read("Scripts/m14_008_agent_protocol_handshake_acceptance.sh")
     let mapper = try extractFunction("result_exit_code", from: script)
 
-    XCTAssertTrue(script.contains("usage: $SCRIPT_NAME inspect|run|cleanup"))
+    XCTAssertTrue(script.contains("usage: $SCRIPT_NAME inspect|inspect-request-plan|run|cleanup"))
     XCTAssertTrue(script.contains("inspect)"))
+    XCTAssertTrue(script.contains("inspect-request-plan)"))
     XCTAssertTrue(script.contains("run)"))
     XCTAssertTrue(script.contains("cleanup)"))
     XCTAssertTrue(mapper.contains("PASS) return 0"))
@@ -52,6 +53,22 @@ final class HermesAgentProtocolHandshakeAcceptanceTests: XCTestCase {
     XCTAssertFalse(inspect.contains("serve --isolated"))
   }
 
+  func testInspectRequestPlanIsReadOnlyAndReportsTypedAuthentication() throws {
+    let script = try read(scriptPath)
+    let inspect = try extractFunction("inspect_request_plan", from: script)
+
+    XCTAssertTrue(inspect.contains("authentication_state="))
+    XCTAssertTrue(inspect.contains("credential_action=none"))
+    XCTAssertTrue(inspect.contains("ephemeral_credential_required=no"))
+    XCTAssertTrue(inspect.contains("request_method_category=session-create"))
+    XCTAssertTrue(inspect.contains("safe_synthetic_request_available=yes"))
+    XCTAssertTrue(inspect.contains("status_mechanism=session-status"))
+    XCTAssertTrue(inspect.contains("blocking_reason="))
+    XCTAssertFalse(inspect.contains("write_artifacts"))
+    XCTAssertFalse(inspect.contains("serve --isolated"))
+    XCTAssertFalse(inspect.contains("create_token"))
+  }
+
   func testResultKeysAreUniqueDeterministicAndComplete() throws {
     let keys = try arrayLiteral("ORDERED_KEYS", in: try read(scriptPath))
 
@@ -67,6 +84,15 @@ final class HermesAgentProtocolHandshakeAcceptanceTests: XCTestCase {
       "AUTHENTICATION_REQUIRED",
       "EPHEMERAL_CREDENTIAL_ISOLATED",
       "REQUEST_CAPABILITY",
+      "REQUEST_TRANSPORT",
+      "REQUEST_AUTHENTICATION_MODE",
+      "REQUEST_CONNECTION_ATTEMPTED",
+      "REQUEST_CONNECTION_STATUS",
+      "REQUEST_RPC_METHOD_CATEGORY",
+      "REQUEST_RPC_RESPONSE_CATEGORY",
+      "REQUEST_RPC_ERROR_CODE",
+      "REQUEST_SUBMISSION_DURATION_MILLISECONDS",
+      "REQUEST_REASON_CODE",
       "REQUEST_IDENTITY_CAPTURED",
       "CANCEL_TARGET_IDENTITY_MATCHED",
       "APPROVAL_CAPABILITY",
@@ -93,7 +119,8 @@ final class HermesAgentProtocolHandshakeAcceptanceTests: XCTestCase {
   func testProtocolExerciseUsesServiceOwnedJSONRPCAndSafeSessionRequest() throws {
     let exercise = try extractFunction("exercise_protocol", from: try read(scriptPath))
 
-    XCTAssertTrue(exercise.contains("GET /api/ws?token="))
+    XCTAssertTrue(exercise.contains("target = \"/api/ws\" if auth_mode == \"none\""))
+    XCTAssertTrue(exercise.contains("f\"/api/ws?token={token}\""))
     XCTAssertTrue(exercise.contains("\"session.create\""))
     XCTAssertTrue(exercise.contains("\"session.status\""))
     XCTAssertTrue(exercise.contains("\"session.interrupt\""))
@@ -123,7 +150,18 @@ final class HermesAgentProtocolHandshakeAcceptanceTests: XCTestCase {
     XCTAssertTrue(script.contains("raw-request-identity-omitted"))
     XCTAssertTrue(validate.contains("Raw UUID leaked into deterministic result"))
     XCTAssertTrue(validate.contains("Dynamic port leaked into deterministic result"))
-    XCTAssertTrue(validate.contains("Token-like value leaked into deterministic result"))
+    XCTAssertTrue(validate.contains("meaningful_secret_shape"))
+    XCTAssertTrue(validate.contains("for key, value in values.items()"))
+  }
+
+  func testScannerIgnoresFieldNamesAndBenignDeterministicValues() throws {
+    let validate = try extractFunction("validate_result_contract", from: try read(scriptPath))
+
+    XCTAssertFalse(validate.contains("re.search(r\"[A-Za-z0-9_-]{32,}\", text)"))
+    XCTAssertTrue(validate.contains("allowed_values"))
+    XCTAssertTrue(validate.contains("semantic_version"))
+    XCTAssertTrue(validate.contains("hermes-jsonrpc-websocket"))
+    XCTAssertTrue(validate.contains("Sensitive result value leaked: key-category="))
   }
 
   func testExactShutdownReuseAndNoBroadStop() throws {

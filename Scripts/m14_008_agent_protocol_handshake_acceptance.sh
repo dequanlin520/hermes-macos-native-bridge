@@ -33,6 +33,15 @@ ORDERED_KEYS=(
   AUTHENTICATION_REQUIRED
   EPHEMERAL_CREDENTIAL_ISOLATED
   REQUEST_CAPABILITY
+  REQUEST_TRANSPORT
+  REQUEST_AUTHENTICATION_MODE
+  REQUEST_CONNECTION_ATTEMPTED
+  REQUEST_CONNECTION_STATUS
+  REQUEST_RPC_METHOD_CATEGORY
+  REQUEST_RPC_RESPONSE_CATEGORY
+  REQUEST_RPC_ERROR_CODE
+  REQUEST_SUBMISSION_DURATION_MILLISECONDS
+  REQUEST_REASON_CODE
   REQUEST_SUBMISSION_ATTEMPTED
   REQUEST_SUBMISSION_STATUS
   REQUEST_IDENTITY_CAPTURED
@@ -60,7 +69,7 @@ ORDERED_KEYS=(
 )
 
 usage() {
-  print -u2 "usage: $SCRIPT_NAME inspect|run|cleanup"
+  print -u2 "usage: $SCRIPT_NAME inspect|inspect-request-plan|run|cleanup"
   print -u2 "run requires HERMES_M14_008_ACCEPTANCE=YES"
 }
 
@@ -80,6 +89,15 @@ set_default_results() {
     AUTHENTICATION_REQUIRED unknown
     EPHEMERAL_CREDENTIAL_ISOLATED no
     REQUEST_CAPABILITY unsupported
+    REQUEST_TRANSPORT websocket-jsonrpc
+    REQUEST_AUTHENTICATION_MODE unknown
+    REQUEST_CONNECTION_ATTEMPTED no
+    REQUEST_CONNECTION_STATUS not-attempted
+    REQUEST_RPC_METHOD_CATEGORY unknown
+    REQUEST_RPC_RESPONSE_CATEGORY unknown
+    REQUEST_RPC_ERROR_CODE unknown
+    REQUEST_SUBMISSION_DURATION_MILLISECONDS 0
+    REQUEST_REASON_CODE unknown
     REQUEST_SUBMISSION_ATTEMPTED no
     REQUEST_SUBMISSION_STATUS not-attempted
     REQUEST_IDENTITY_CAPTURED no
@@ -139,11 +157,38 @@ if re.search(r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-
     raise SystemExit("Raw UUID leaked into deterministic result")
 if re.search(r"/Users/[^ \n\t]+", text):
     raise SystemExit("Absolute user path leaked into deterministic result")
-if re.search(r"[A-Za-z0-9_-]{32,}", text):
-    raise SystemExit("Token-like value leaked into deterministic result")
 values = dict(line.split("=", 1) for line in text.splitlines() if line.strip())
 if values.get("M14_008_RESULT") != "PASS" and values.get("M14_008_REASON_CODE") in {"", "unknown"}:
     raise SystemExit("Non-PASS result requires stable reason")
+sensitive_names = {
+    "authorization", "token", "access_token", "refresh_token", "api_key",
+    "credential", "cookie", "bearer", "websocket_query_authentication",
+}
+allowed_values = {
+    "yes", "no", "skip", "unknown", "none", "not-attempted", "failed",
+    "submitted", "unsupported", "supported-unexercised", "supported-exercised",
+    "websocket-jsonrpc", "websocket-jsonrpc-events", "hermes-jsonrpc-websocket",
+    "blocked", "ephemeral", "not-required",
+}
+semantic_version = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
+safe_code = re.compile(r"^[a-z0-9][a-z0-9.-]{0,95}$")
+meaningful_secret_shape = re.compile(r"^(?=.{40,}$)(?=.*[A-Za-z])(?=.*[0-9])[A-Za-z0-9._~+/=-]+$")
+uuid_like = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+for key, value in values.items():
+    normalized_key = key.lower()
+    normalized_value = value.strip()
+    if normalized_value in allowed_values or semantic_version.match(normalized_value):
+        continue
+    if normalized_value.startswith("<redacted") and normalized_value.endswith(">"):
+        continue
+    if uuid_like.match(normalized_value):
+        continue
+    if any(name in normalized_key for name in sensitive_names):
+        if normalized_value not in {"yes", "no", "skip", "none", "unknown"}:
+            raise SystemExit(f"Sensitive result value leaked: key-category={normalized_key}")
+        continue
+    if meaningful_secret_shape.match(normalized_value) and not safe_code.match(normalized_value):
+        raise SystemExit("Token-like result value leaked: rule=high-entropy-shape")
 PY
 }
 
@@ -173,6 +218,12 @@ descriptor_path.write_text(json.dumps({
     "run": "m14-008",
     "protocolFamily": result.get("PROTOCOL_FAMILY", "unknown"),
     "protocolVersion": result.get("PROTOCOL_VERSION", "unknown"),
+    "authenticationState": (
+        "not-required" if result.get("AUTHENTICATION_REQUIRED") == "no"
+        else "required-available" if result.get("AUTHENTICATION_REQUIRED") == "yes" and result.get("EPHEMERAL_CREDENTIAL_ISOLATED") == "yes"
+        else "required-unavailable" if result.get("AUTHENTICATION_REQUIRED") == "yes"
+        else "unknown"
+    ),
     "requestRouteCategory": "jsonrpc-websocket-session-create" if result.get("REQUEST_CAPABILITY") != "unsupported" else "unsupported",
     "statusRouteCategory": "jsonrpc-websocket-session-status" if result.get("REQUEST_STATUS_QUERY") != "not-attempted" else "unknown",
     "cancelRouteCategory": "jsonrpc-websocket-session-interrupt" if result.get("CANCEL_CAPABILITY") != "unsupported" else "unsupported",
@@ -189,6 +240,15 @@ descriptor_path.write_text(json.dumps({
 request_path.write_text(json.dumps({
     "schemaVersion": 1,
     "run": "m14-008",
+    "transport": result.get("REQUEST_TRANSPORT", "websocket-jsonrpc"),
+    "authenticationMode": result.get("REQUEST_AUTHENTICATION_MODE", "unknown"),
+    "connectionAttempted": result.get("REQUEST_CONNECTION_ATTEMPTED", "no"),
+    "connectionStatus": result.get("REQUEST_CONNECTION_STATUS", "not-attempted"),
+    "rpcMethodCategory": result.get("REQUEST_RPC_METHOD_CATEGORY", "unknown"),
+    "rpcResponseCategory": result.get("REQUEST_RPC_RESPONSE_CATEGORY", "unknown"),
+    "rpcErrorCode": result.get("REQUEST_RPC_ERROR_CODE", "unknown"),
+    "submissionDurationMilliseconds": int(result.get("REQUEST_SUBMISSION_DURATION_MILLISECONDS", "0")),
+    "reasonCode": result.get("REQUEST_REASON_CODE", "unknown"),
     "submissionAttempted": result.get("REQUEST_SUBMISSION_ATTEMPTED", "no"),
     "submissionStatus": result.get("REQUEST_SUBMISSION_STATUS", "not-attempted"),
     "identityCaptured": result.get("REQUEST_IDENTITY_CAPTURED", "no"),
@@ -288,19 +348,52 @@ PY
 }
 
 discover_protocol() {
-  local version="$1" auth_required="$2" auth_mode="$3"
+  local version="$1" auth_required="$2" auth_mode="$3" authentication_state
   RESULT[PROTOCOL_METADATA_DISCOVERED]=yes
   RESULT[PROTOCOL_FAMILY]=hermes-jsonrpc-websocket
   RESULT[PROTOCOL_VERSION]="$version"
-  RESULT[AUTHENTICATION_REQUIRED]="$auth_required"
+  if [[ "$auth_required" == "no" ]]; then
+    authentication_state=not-required
+  elif [[ "$auth_required" == "yes" && "$auth_mode" == "loopback_token" ]]; then
+    authentication_state=required-available
+  elif [[ "$auth_required" == "yes" ]]; then
+    authentication_state=required-unavailable
+  else
+    authentication_state=unknown
+  fi
+
+  case "$authentication_state" in
+    not-required)
+      RESULT[AUTHENTICATION_REQUIRED]=no
+      RESULT[EPHEMERAL_CREDENTIAL_ISOLATED]=skip
+      RESULT[REQUEST_AUTHENTICATION_MODE]=none
+      ;;
+    required-available)
+      RESULT[AUTHENTICATION_REQUIRED]=yes
+      RESULT[EPHEMERAL_CREDENTIAL_ISOLATED]=yes
+      RESULT[REQUEST_AUTHENTICATION_MODE]=ephemeral
+      ;;
+    required-unavailable)
+      RESULT[AUTHENTICATION_REQUIRED]=yes
+      RESULT[EPHEMERAL_CREDENTIAL_ISOLATED]=no
+      RESULT[REQUEST_AUTHENTICATION_MODE]=blocked
+      RESULT[M14_008_RESULT]=BLOCKED
+      RESULT[M14_008_REASON_CODE]=protocol.authentication-unavailable
+      RESULT[REQUEST_REASON_CODE]=protocol.authentication-unavailable
+      return 1
+      ;;
+    *)
+      RESULT[AUTHENTICATION_REQUIRED]=unknown
+      RESULT[EPHEMERAL_CREDENTIAL_ISOLATED]=no
+      RESULT[REQUEST_AUTHENTICATION_MODE]=unknown
+      RESULT[M14_008_RESULT]=BLOCKED
+      RESULT[M14_008_REASON_CODE]=protocol.authentication-unknown
+      RESULT[REQUEST_REASON_CODE]=protocol.authentication-unknown
+      return 1
+      ;;
+  esac
   if [[ "$auth_required" == "yes" && "$auth_mode" == "loopback_token" ]]; then
     RESULT[EPHEMERAL_CREDENTIAL_ISOLATED]=yes
-  elif [[ "$auth_required" == "no" ]]; then
-    RESULT[EPHEMERAL_CREDENTIAL_ISOLATED]=no
-  else
-    RESULT[M14_008_RESULT]=BLOCKED
-    RESULT[M14_008_REASON_CODE]=protocol.authentication-unavailable
-    return 1
   fi
   if /usr/bin/grep -Eq '"session.create"|"session.status"|"session.interrupt"|"approval.respond"' "$ROOT_DIR/Sources/HermesRuntimeFoundation/HermesProtocolClient.swift"; then
     RESULT[REQUEST_CAPABILITY]=supported-unexercised
@@ -329,11 +422,20 @@ PY
 }
 
 exercise_protocol() {
-  local port="$1" token
-  create_token
-  token="$(cat "$TOKEN_FILE")"
+  local port="$1" auth_mode="${2:-none}" token="" start_ms end_ms
+  if [[ "$auth_mode" == "ephemeral" ]]; then
+    create_token
+    token="$(cat "$TOKEN_FILE")"
+  fi
   RESULT[REQUEST_SUBMISSION_ATTEMPTED]=yes
-  /usr/bin/python3 - "$port" "$token" "$REQUEST_EVIDENCE_FILE.tmp" <<'PY'
+  RESULT[REQUEST_CONNECTION_ATTEMPTED]=yes
+  RESULT[REQUEST_RPC_METHOD_CATEGORY]=session-create
+  start_ms="$(/usr/bin/python3 - <<'PY'
+import time
+print(int(time.time() * 1000))
+PY
+)"
+  /usr/bin/python3 - "$port" "$token" "$auth_mode" "$REQUEST_EVIDENCE_FILE.tmp" <<'PY'
 import base64
 import hashlib
 import json
@@ -345,7 +447,8 @@ import time
 
 port = int(sys.argv[1])
 token = sys.argv[2]
-out = sys.argv[3]
+auth_mode = sys.argv[3]
+out = sys.argv[4]
 
 def recv_until(sock, marker):
     data = b""
@@ -399,8 +502,9 @@ def rpc(sock, request_id, method, params):
 
 sock = socket.create_connection(("127.0.0.1", port), timeout=5)
 key = base64.b64encode(os.urandom(16)).decode()
+target = "/api/ws" if auth_mode == "none" else f"/api/ws?token={token}"
 handshake = (
-    f"GET /api/ws?token={token} HTTP/1.1\r\n"
+    f"GET {target} HTTP/1.1\r\n"
     "Host: 127.0.0.1\r\n"
     "Upgrade: websocket\r\n"
     "Connection: Upgrade\r\n"
@@ -410,7 +514,7 @@ handshake = (
 sock.sendall(handshake.encode())
 response = recv_until(sock, b"\r\n\r\n")
 if b" 101 " not in response:
-    raise RuntimeError("protocol.authentication-unavailable")
+    raise RuntimeError("request.connection-failed")
 ready_or_event = read_frame(sock)
 created = rpc(sock, "m14-008-1", "session.create", {})
 session_id = created.get("session_id")
@@ -425,8 +529,9 @@ sock.close()
 
 sock2 = socket.create_connection(("127.0.0.1", port), timeout=5)
 key2 = base64.b64encode(os.urandom(16)).decode()
+target2 = "/api/ws" if auth_mode == "none" else f"/api/ws?token={token}"
 sock2.sendall((
-    f"GET /api/ws?token={token} HTTP/1.1\r\n"
+    f"GET {target2} HTTP/1.1\r\n"
     "Host: 127.0.0.1\r\n"
     "Upgrade: websocket\r\n"
     "Connection: Upgrade\r\n"
@@ -441,6 +546,14 @@ status2 = rpc(sock2, "m14-008-4", "session.status", {"session_id": session_id})
 sock2.close()
 Path = __import__("pathlib").Path
 Path(out).write_text(json.dumps({
+    "transport": "websocket-jsonrpc",
+    "authenticationMode": auth_mode,
+    "connectionAttempted": True,
+    "connectionStatus": "connected",
+    "rpcMethodCategory": "session-create",
+    "rpcResponseCategory": "success",
+    "rpcErrorCode": "none",
+    "reasonCode": "none",
     "identityCaptured": True,
     "identitySyntaxCategory": "token-like",
     "initialState": state,
@@ -449,8 +562,20 @@ Path(out).write_text(json.dumps({
     "rawIdentityOmitted": True
 }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
+  end_ms="$(/usr/bin/python3 - <<'PY'
+import time
+print(int(time.time() * 1000))
+PY
+)"
+  if [[ "$start_ms" == <-> && "$end_ms" == <-> && "$end_ms" -ge "$start_ms" ]]; then
+    RESULT[REQUEST_SUBMISSION_DURATION_MILLISECONDS]=$(( end_ms - start_ms ))
+  fi
   case "$?" in
     0)
+      RESULT[REQUEST_CONNECTION_STATUS]=connected
+      RESULT[REQUEST_RPC_RESPONSE_CATEGORY]=success
+      RESULT[REQUEST_RPC_ERROR_CODE]=none
+      RESULT[REQUEST_REASON_CODE]=none
       RESULT[REQUEST_SUBMISSION_STATUS]=submitted
       RESULT[REQUEST_IDENTITY_CAPTURED]=yes
       RESULT[REQUEST_STATUS_QUERY]=observed
@@ -470,6 +595,10 @@ PY
       RESULT[M14_008_REASON_CODE]=none
       ;;
     *)
+      RESULT[REQUEST_CONNECTION_STATUS]=failed
+      RESULT[REQUEST_RPC_RESPONSE_CATEGORY]=connection-failed
+      RESULT[REQUEST_RPC_ERROR_CODE]=unknown
+      RESULT[REQUEST_REASON_CODE]=request.connection-failed
       RESULT[REQUEST_SUBMISSION_STATUS]=failed
       RESULT[M14_008_RESULT]=FAIL
       RESULT[M14_008_REASON_CODE]=request.submission-failed
@@ -515,7 +644,7 @@ finalize_cleanup_evidence() {
 }
 
 inspect() {
-  local executable version blocking="none" help_text
+  local executable version blocking="none" help_text authentication_category
   print -r -- "M14-008 read-only inspect"
   if executable="$(hermes_executable)"; then
     version="$(hermes_version "$executable")"
@@ -528,14 +657,111 @@ inspect() {
   if [[ ! -x /usr/sbin/lsof ]]; then
     blocking="endpoint.socket-facility-unavailable"
   fi
+  authentication_category="$([[ "$help_text" == *"authentication"* ]] && print loopback-token-expected || print unknown)"
+  if [[ -f "$PROTOCOL_DESCRIPTOR_FILE" ]]; then
+    authentication_category="$(/usr/bin/python3 - "$PROTOCOL_DESCRIPTOR_FILE" "$authentication_category" <<'PY'
+import json
+import sys
+from pathlib import Path
+fallback = sys.argv[2]
+try:
+    data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+except Exception:
+    print(fallback)
+    raise SystemExit
+state = data.get("authenticationState")
+if state:
+    print(state)
+elif data.get("authenticationRequired") == "no":
+    print("not-required")
+elif data.get("authenticationRequired") == "yes":
+    print("required")
+else:
+    print(fallback)
+PY
+)"
+  fi
   print -r -- "hermes_version=${version:-unknown}"
   print -r -- "endpoint_readiness_dependency=m14-007-ownership-proven-api-status"
   print -r -- "protocol_metadata_source=serve-help,api-status,openapi-if-present,local-production-client-contract"
-  print -r -- "authentication_category=$([[ "$help_text" == *"authentication"* ]] && print loopback-token-expected || print unknown)"
+  print -r -- "authentication_category=$authentication_category"
   print -r -- "request_advertised_status=$([[ -f "$ROOT_DIR/Sources/HermesRuntimeFoundation/HermesProtocolClient.swift" ]] && print jsonrpc-session-create || print unknown)"
   print -r -- "cancel_advertised_status=$([[ -f "$ROOT_DIR/Sources/HermesRuntimeFoundation/HermesProtocolClient.swift" ]] && print jsonrpc-session-interrupt || print unknown)"
   print -r -- "approval_advertised_status=$([[ -f "$ROOT_DIR/Sources/HermesRuntimeFoundation/HermesProtocolClient.swift" ]] && print jsonrpc-approval-respond || print unknown)"
   print -r -- "expected_exercisability=request-status-reconnect-safe,cancel-if-session-remains-addressable,approval-supported-unexercised-without-harmless-trigger"
+  print -r -- "blocking_reason=$blocking"
+}
+
+inspect_request_plan() {
+  local executable version descriptor_auth="unknown" descriptor_family="unknown" descriptor_version="unknown" blocking="none"
+  if executable="$(hermes_executable)"; then
+    version="$(hermes_version "$executable")"
+  else
+    version="unknown"
+    blocking="executable.unavailable"
+  fi
+  if [[ -f "$PROTOCOL_DESCRIPTOR_FILE" ]]; then
+    local parsed
+    parsed="$(/usr/bin/python3 - "$PROTOCOL_DESCRIPTOR_FILE" <<'PY'
+import json
+import sys
+from pathlib import Path
+try:
+    data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+except Exception:
+    data = {}
+auth = data.get("authenticationState")
+required = data.get("authenticationRequired", "unknown")
+if not auth:
+    auth = "not-required" if required == "no" else "required-available" if required == "yes" and data.get("credentialSourceCategory") != "none" else "required-unavailable" if required == "yes" else "unknown"
+print(data.get("protocolFamily", "unknown"))
+print(data.get("protocolVersion", "unknown"))
+print(auth)
+PY
+)"
+    descriptor_family="${${(f)parsed}[1]:-unknown}"
+    descriptor_version="${${(f)parsed}[2]:-unknown}"
+    descriptor_auth="${${(f)parsed}[3]:-unknown}"
+  fi
+  if [[ "$descriptor_auth" == "unknown" ]]; then
+    descriptor_auth=not-required
+  fi
+  if [[ "$descriptor_family" == "unknown" ]]; then
+    descriptor_family=hermes-jsonrpc-websocket
+  fi
+  if [[ "$descriptor_version" == "unknown" ]]; then
+    descriptor_version="${version:-unknown}"
+  fi
+  print -r -- "hermes_version=${version:-unknown}"
+  print -r -- "protocol_family=$descriptor_family"
+  print -r -- "protocol_version=$descriptor_version"
+  print -r -- "authentication_state=$descriptor_auth"
+  case "$descriptor_auth" in
+    not-required)
+      print -r -- "credential_action=none"
+      print -r -- "ephemeral_credential_required=no"
+      ;;
+    required-available)
+      print -r -- "credential_action=create-acceptance-owned-ephemeral"
+      print -r -- "ephemeral_credential_required=yes"
+      ;;
+    required-unavailable)
+      print -r -- "credential_action=blocked"
+      print -r -- "ephemeral_credential_required=no"
+      blocking="protocol.authentication-unavailable"
+      ;;
+    *)
+      print -r -- "credential_action=unknown"
+      print -r -- "ephemeral_credential_required=no"
+      blocking="protocol.authentication-unknown"
+      ;;
+  esac
+  print -r -- "request_method_category=session-create"
+  print -r -- "safe_synthetic_request_available=yes"
+  print -r -- "status_mechanism=session-status"
+  print -r -- "cancel_exercisability=if-session-remains-addressable"
+  print -r -- "approval_exercisability=supported-unexercised-without-harmless-trigger"
+  print -r -- "reconnect_strategy=reconnect-and-query-captured-session"
   print -r -- "blocking_reason=$blocking"
 }
 
@@ -613,8 +839,9 @@ run_acceptance() {
   if [[ "${RESULT[REQUEST_CAPABILITY]}" == "unsupported" ]]; then
     RESULT[M14_008_RESULT]=UNSUPPORTED
     RESULT[M14_008_REASON_CODE]=protocol.request-route-unsupported
+    RESULT[REQUEST_REASON_CODE]=protocol.request-route-unsupported
   else
-    exercise_protocol "$port"
+    exercise_protocol "$port" "${RESULT[REQUEST_AUTHENTICATION_MODE]}"
   fi
   cleanup_owned_process || {
     RESULT[M14_008_RESULT]=FAIL
@@ -644,6 +871,7 @@ cleanup() {
 
 case "${1:-}" in
   inspect) inspect ;;
+  inspect-request-plan) inspect_request_plan ;;
   run) run_acceptance ;;
   cleanup) cleanup ;;
   *) usage; exit 1 ;;

@@ -28,6 +28,35 @@ public struct HermesAgentProtocolCapability: Codable, Equatable, Sendable {
   }
 }
 
+public enum HermesAgentAuthenticationState: String, Codable, Equatable, Sendable {
+  case notRequired = "not-required"
+  case requiredAvailable = "required-available"
+  case requiredUnavailable = "required-unavailable"
+  case unknown
+
+  public var resultAuthenticationRequired: String {
+    switch self {
+    case .notRequired:
+      return "no"
+    case .requiredAvailable, .requiredUnavailable:
+      return "yes"
+    case .unknown:
+      return "unknown"
+    }
+  }
+
+  public var ephemeralCredentialIsolatedResult: String {
+    switch self {
+    case .notRequired:
+      return "skip"
+    case .requiredAvailable:
+      return "yes"
+    case .requiredUnavailable, .unknown:
+      return "no"
+    }
+  }
+}
+
 public struct HermesAgentProtocolDescriptor: Codable, Equatable, Sendable {
   public let protocolFamily: String
   public let protocolVersion: String
@@ -38,6 +67,7 @@ public struct HermesAgentProtocolDescriptor: Codable, Equatable, Sendable {
   public let authenticationRequired: Bool
   public let authenticationCategory: String
   public let ephemeralCredentialIsolated: Bool
+  public let authenticationState: HermesAgentAuthenticationState
   public let streamingModesAdvertised: [String]
   public let metadataSource: String
 
@@ -51,6 +81,7 @@ public struct HermesAgentProtocolDescriptor: Codable, Equatable, Sendable {
     authenticationRequired: Bool,
     authenticationCategory: String,
     ephemeralCredentialIsolated: Bool,
+    authenticationState: HermesAgentAuthenticationState? = nil,
     streamingModesAdvertised: [String],
     metadataSource: String
   ) {
@@ -63,6 +94,11 @@ public struct HermesAgentProtocolDescriptor: Codable, Equatable, Sendable {
     self.authenticationRequired = authenticationRequired
     self.authenticationCategory = HermesAgentProtocolSanitizer.safeToken(authenticationCategory)
     self.ephemeralCredentialIsolated = ephemeralCredentialIsolated
+    self.authenticationState = authenticationState ?? Self.authenticationState(
+      required: authenticationRequired,
+      category: authenticationCategory,
+      isolated: ephemeralCredentialIsolated
+    )
     self.streamingModesAdvertised = streamingModesAdvertised
       .map { HermesAgentProtocolSanitizer.safeToken($0) }
       .sorted()
@@ -94,6 +130,12 @@ public struct HermesAgentProtocolDescriptor: Codable, Equatable, Sendable {
     let authRequired = (statusObject["auth_required"] as? Bool) ?? false
     let authMode = statusObject["auth_mode"] as? String
     let authCategory = authRequired ? (authMode ?? "required-unspecified") : "none"
+    let authenticationState: HermesAgentAuthenticationState =
+      if authRequired {
+        authMode == "loopback_token" ? .requiredAvailable : .requiredUnavailable
+      } else {
+        .notRequired
+      }
 
     return HermesAgentProtocolDescriptor(
       protocolFamily: hasWebSocket ? "hermes-jsonrpc-websocket" : "hermes-http-status",
@@ -123,6 +165,7 @@ public struct HermesAgentProtocolDescriptor: Codable, Equatable, Sendable {
       authenticationRequired: authRequired,
       authenticationCategory: authCategory,
       ephemeralCredentialIsolated: authRequired && authMode == "loopback_token",
+      authenticationState: authenticationState,
       streamingModesAdvertised: hasWebSocket ? ["websocket-jsonrpc-events"] : [],
       metadataSource: openAPIPaths.isEmpty ? "api-status-and-local-implementation" : "openapi-api-status-and-local-implementation"
     )
@@ -144,9 +187,20 @@ public struct HermesAgentProtocolDescriptor: Codable, Equatable, Sendable {
       authenticationRequired: authenticationRequired,
       authenticationCategory: authenticationCategory,
       ephemeralCredentialIsolated: ephemeralCredentialIsolated,
+      authenticationState: authenticationState,
       streamingModesAdvertised: streamingModesAdvertised,
       metadataSource: metadataSource
     )
+  }
+
+  private static func authenticationState(
+    required: Bool,
+    category: String,
+    isolated: Bool
+  ) -> HermesAgentAuthenticationState {
+    if !required { return .notRequired }
+    if category == "loopback_token" && isolated { return .requiredAvailable }
+    return .requiredUnavailable
   }
 
   private func replacing(
@@ -344,14 +398,32 @@ public struct HermesAgentRequestClientFactory: Sendable {
   public func makeClient(
     descriptor: HermesAgentProtocolDescriptor,
     endpoint: HermesBackendEndpoint,
-    token: HermesBackendSessionToken
+    token: HermesBackendSessionToken? = nil
   ) -> HermesAgentRequestClient<HermesProtocolClient> {
     HermesAgentRequestClient(
       descriptor: descriptor,
       serviceFactory: {
-        HermesProtocolClient(endpoint: endpoint, token: token)
+        HermesProtocolClient(
+          endpoint: endpoint,
+          authentication: Self.protocolAuthentication(for: descriptor, token: token)
+        )
       }
     )
+  }
+
+  private static func protocolAuthentication(
+    for descriptor: HermesAgentProtocolDescriptor,
+    token: HermesBackendSessionToken?
+  ) -> HermesProtocolClientAuthentication {
+    switch descriptor.authenticationState {
+    case .notRequired, .unknown, .requiredUnavailable:
+      return .none
+    case .requiredAvailable:
+      if let token {
+        return .loopbackToken(token)
+      }
+      return .none
+    }
   }
 }
 
@@ -377,6 +449,14 @@ public final class HermesAgentRequestClient<Service: HermesAgentRequestProtocolS
   public func submitSafeSyntheticRequest() async throws -> HermesAgentRequestDescriptor {
     guard descriptor.request.status != .unsupported else {
       throw HermesAgentProtocolError.unsupported("protocol.request-route-unsupported")
+    }
+    switch descriptor.authenticationState {
+    case .notRequired, .requiredAvailable:
+      break
+    case .requiredUnavailable:
+      throw HermesAgentProtocolError.blocked("protocol.authentication-unavailable")
+    case .unknown:
+      throw HermesAgentProtocolError.blocked("protocol.authentication-unknown")
     }
     try await service.connectAndWaitUntilReady(timeout: 5)
     let creation = try await service.createSession()

@@ -22,6 +22,64 @@ final class HermesAgentRequestClientTests: XCTestCase {
     XCTAssertFalse(String(describing: request.identity).contains("session-1"))
   }
 
+  func testNotRequiredAuthenticationSubmitsWithoutCredentialState() async throws {
+    let service = FakeRequestService(statusOutputs: ["idle"])
+    let client = HermesAgentRequestClient(
+      descriptor: descriptor(authenticationState: .notRequired),
+      serviceFactory: { service }
+    )
+
+    _ = try await client.submitSafeSyntheticRequest()
+
+    XCTAssertTrue(service.connected)
+    XCTAssertEqual(service.createdSessions, 1)
+  }
+
+  func testRequiredUnavailableBlocksBeforeRequest() async {
+    let service = FakeRequestService()
+    let client = HermesAgentRequestClient(
+      descriptor: descriptor(authenticationState: .requiredUnavailable),
+      serviceFactory: { service }
+    )
+
+    await XCTAssertThrowsAgentProtocolAsyncError(try await client.submitSafeSyntheticRequest()) {
+      XCTAssertEqual(($0 as? HermesAgentProtocolError)?.reasonCode, "protocol.authentication-unavailable")
+    }
+    XCTAssertFalse(service.connected)
+    XCTAssertEqual(service.createdSessions, 0)
+  }
+
+  func testUnknownAuthenticationBlocksBeforeRequest() async {
+    let service = FakeRequestService()
+    let client = HermesAgentRequestClient(
+      descriptor: descriptor(authenticationState: .unknown),
+      serviceFactory: { service }
+    )
+
+    await XCTAssertThrowsAgentProtocolAsyncError(try await client.submitSafeSyntheticRequest()) {
+      XCTAssertEqual(($0 as? HermesAgentProtocolError)?.reasonCode, "protocol.authentication-unknown")
+    }
+    XCTAssertFalse(service.connected)
+    XCTAssertEqual(service.createdSessions, 0)
+  }
+
+  func testFactoryMapsDescriptorAuthenticationToProtocolClient() throws {
+    let factory = HermesAgentRequestClientFactory()
+    let endpoint = try HermesBackendEndpoint(port: 19123)
+    let unauthenticated = factory.makeClient(
+      descriptor: descriptor(authenticationState: .notRequired),
+      endpoint: endpoint
+    )
+    let authenticated = factory.makeClient(
+      descriptor: descriptor(authenticationState: .requiredAvailable),
+      endpoint: endpoint,
+      token: HermesBackendSessionToken(rawValue: "fixture-token")
+    )
+
+    XCTAssertNotNil(unauthenticated)
+    XCTAssertNotNil(authenticated)
+  }
+
   func testRequestResponseParsingRejectsMissingIdentity() async {
     let service = FakeRequestService(createdSessionID: "")
     let client = HermesAgentRequestClient(descriptor: descriptor(), serviceFactory: { service })
@@ -156,9 +214,11 @@ final class HermesAgentRequestClientTests: XCTestCase {
   }
 
   private func descriptor(
-    approvalStatus: HermesAgentProtocolCapabilityStatus = .supportedUnexercised
+    approvalStatus: HermesAgentProtocolCapabilityStatus = .supportedUnexercised,
+    authenticationState: HermesAgentAuthenticationState = .requiredAvailable
   ) -> HermesAgentProtocolDescriptor {
-    HermesAgentProtocolDescriptor(
+    let requiresAuth = authenticationState != .notRequired && authenticationState != .unknown
+    return HermesAgentProtocolDescriptor(
       protocolFamily: "hermes-jsonrpc-websocket",
       protocolVersion: "0.18.2",
       request: HermesAgentProtocolCapability(
@@ -183,9 +243,10 @@ final class HermesAgentRequestClientTests: XCTestCase {
           ? "protocol.approval-route-unsupported"
           : "protocol.approval-supported-no-harmless-trigger"
       ),
-      authenticationRequired: true,
-      authenticationCategory: "loopback_token",
-      ephemeralCredentialIsolated: true,
+      authenticationRequired: requiresAuth,
+      authenticationCategory: authenticationState == .notRequired ? "none" : "loopback_token",
+      ephemeralCredentialIsolated: authenticationState == .requiredAvailable,
+      authenticationState: authenticationState,
       streamingModesAdvertised: ["websocket-jsonrpc-events"],
       metadataSource: "test"
     )

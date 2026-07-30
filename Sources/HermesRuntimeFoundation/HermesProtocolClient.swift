@@ -48,18 +48,37 @@ public struct HermesBackendEndpoint: Equatable, Sendable, CustomStringConvertibl
     URL(string: "http://\(Self.host):\(port)\(Self.statusPath)")!
   }
 
-  func webSocketURL(token: HermesBackendSessionToken) -> URL {
+  func webSocketURL(authentication: HermesProtocolClientAuthentication) -> URL {
     var components = URLComponents()
     components.scheme = "ws"
     components.host = Self.host
     components.port = port
     components.path = Self.webSocketPath
-    components.queryItems = [URLQueryItem(name: "token", value: token.rawValue)]
+    switch authentication {
+    case .none:
+      components.queryItems = nil
+    case .loopbackToken(let token):
+      components.queryItems = [URLQueryItem(name: "token", value: token.rawValue)]
+    }
     return components.url!
   }
 
   public var description: String {
     "HermesBackendEndpoint(http://\(Self.host):\(port)\(Self.statusPath), ws://\(Self.host):\(port)\(Self.webSocketPath)?token=<redacted>)"
+  }
+}
+
+public enum HermesProtocolClientAuthentication: Equatable, Sendable, CustomStringConvertible {
+  case none
+  case loopbackToken(HermesBackendSessionToken)
+
+  public var description: String {
+    switch self {
+    case .none:
+      return "none"
+    case .loopbackToken:
+      return "loopback-token"
+    }
   }
 }
 
@@ -316,7 +335,7 @@ public enum HermesProtocolClientError: Error, Equatable, Sendable, CustomStringC
 
 public final class HermesProtocolClient: @unchecked Sendable {
   public let endpoint: HermesBackendEndpoint
-  public let token: HermesBackendSessionToken
+  public let authentication: HermesProtocolClientAuthentication
   public let maximumPayloadBytes: Int
   public let maximumPendingRequests: Int
   public let requestTimeout: TimeInterval
@@ -346,7 +365,7 @@ public final class HermesProtocolClient: @unchecked Sendable {
     }
   }()
 
-  public init(
+  public convenience init(
     endpoint: HermesBackendEndpoint,
     token: HermesBackendSessionToken,
     session: URLSession = .shared,
@@ -354,8 +373,26 @@ public final class HermesProtocolClient: @unchecked Sendable {
     maximumPendingRequests: Int = 32,
     requestTimeout: TimeInterval = 5
   ) {
+    self.init(
+      endpoint: endpoint,
+      authentication: .loopbackToken(token),
+      session: session,
+      maximumPayloadBytes: maximumPayloadBytes,
+      maximumPendingRequests: maximumPendingRequests,
+      requestTimeout: requestTimeout
+    )
+  }
+
+  public init(
+    endpoint: HermesBackendEndpoint,
+    authentication: HermesProtocolClientAuthentication,
+    session: URLSession = .shared,
+    maximumPayloadBytes: Int = 256 * 1024,
+    maximumPendingRequests: Int = 32,
+    requestTimeout: TimeInterval = 5
+  ) {
     self.endpoint = endpoint
-    self.token = token
+    self.authentication = authentication
     self.session = session
     self.maximumPayloadBytes = max(1024, maximumPayloadBytes)
     self.maximumPendingRequests = max(1, maximumPendingRequests)
@@ -365,7 +402,9 @@ public final class HermesProtocolClient: @unchecked Sendable {
   public func fetchStatus() async throws -> HermesBackendStatus {
     var request = URLRequest(url: endpoint.statusURL)
     request.httpMethod = "GET"
-    request.setValue(token.rawValue, forHTTPHeaderField: "X-Hermes-Session-Token")
+    if case .loopbackToken(let token) = authentication {
+      request.setValue(token.rawValue, forHTTPHeaderField: "X-Hermes-Session-Token")
+    }
 
     let (data, response): (Data, URLResponse)
     do {
@@ -408,7 +447,7 @@ public final class HermesProtocolClient: @unchecked Sendable {
       }
 
       closed = false
-      let task = session.webSocketTask(with: endpoint.webSocketURL(token: token))
+      let task = session.webSocketTask(with: endpoint.webSocketURL(authentication: authentication))
       webSocketTask = task
       return task
     }
