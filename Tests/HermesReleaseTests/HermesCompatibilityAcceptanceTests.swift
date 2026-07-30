@@ -17,10 +17,11 @@ final class HermesCompatibilityAcceptanceTests: XCTestCase {
     let script = try read("Scripts/m14_004_hermes_compatibility_acceptance.sh")
     let mapper = try extractFunction("result_exit_code", from: script)
 
-    XCTAssertTrue(script.contains("usage: $SCRIPT_NAME inspect|run|cleanup"))
+    XCTAssertTrue(script.contains("usage: $SCRIPT_NAME inspect|run|cleanup|finalize-diagnostic-run"))
     XCTAssertTrue(script.contains("inspect)"))
     XCTAssertTrue(script.contains("run)"))
     XCTAssertTrue(script.contains("cleanup)"))
+    XCTAssertTrue(script.contains("finalize-diagnostic-run)"))
     XCTAssertTrue(mapper.contains("PASS) return 0"))
     XCTAssertTrue(mapper.contains("FAIL) return 1"))
     XCTAssertTrue(mapper.contains("OPT_IN_REQUIRED) return 2"))
@@ -39,16 +40,19 @@ final class HermesCompatibilityAcceptanceTests: XCTestCase {
     XCTAssertTrue(run.contains("exit 2"))
   }
 
-  func testInspectIsReadOnlyAndPlansOnly() throws {
+  func testInspectAndRunShareDiscoveryReportPath() throws {
     let script = try read("Scripts/m14_004_hermes_compatibility_acceptance.sh")
     let inspect = try extractFunction("inspect", from: script)
+    let run = try extractFunction("run_acceptance", from: script)
 
-    XCTAssertFalse(inspect.contains("mkdir"))
     XCTAssertFalse(inspect.contains("write_result"))
     XCTAssertFalse(inspect.contains("write_matrix"))
     XCTAssertFalse(inspect.contains("export_isolated_environment"))
     XCTAssertFalse(inspect.contains("run_version_query"))
-    XCTAssertTrue(inspect.contains("inspect_version_query"))
+    XCTAssertTrue(inspect.contains("discover_agent_report inspect"))
+    XCTAssertTrue(run.contains("discover_agent_report inspect"))
+    XCTAssertTrue(run.contains("discover_agent_report run"))
+    XCTAssertTrue(run.contains("compare_discovery_reports"))
     XCTAssertTrue(inspect.contains("M14-004 read-only inspect"))
     XCTAssertTrue(inspect.contains("planned_environment=HOME,HERMES_HOME,XDG_CONFIG_HOME,XDG_STATE_HOME,XDG_CACHE_HOME,TMPDIR"))
   }
@@ -69,31 +73,49 @@ final class HermesCompatibilityAcceptanceTests: XCTestCase {
 
   func testHermesProbesReceiveOnlyIsolatedEnvironmentDuringRun() throws {
     let script = try read("Scripts/m14_004_hermes_compatibility_acceptance.sh")
-    let version = try extractFunction("run_version_query", from: script)
+    let discovery = try extractFunction("discover_agent_report", from: script)
     let help = try extractFunction("run_help_query", from: script)
 
-    for function in [version, help] {
-      XCTAssertTrue(function.contains("bounded_hermes_probe"))
+    for function in [discovery, help] {
+      XCTAssertTrue(function.contains("bounded_cli_probe"))
       XCTAssertFalse(function.contains("REAL_HERMES_HOME"))
     }
-    let probe = try extractFunction("bounded_hermes_probe", from: script)
+    let probe = try extractFunction("bounded_cli_probe", from: script)
     XCTAssertTrue(probe.contains("\"PATH\": \"/usr/bin:/bin:/usr/sbin:/sbin\""))
-    XCTAssertTrue(probe.contains("\"HOME\", \"HERMES_HOME\", \"XDG_CONFIG_HOME\", \"XDG_STATE_HOME\", \"XDG_CACHE_HOME\", \"TMPDIR\""))
-    XCTAssertTrue(probe.contains("timeout=10"))
-    XCTAssertTrue(probe.contains("[executable, argument]"))
+    XCTAssertTrue(probe.contains("\"HOME\": os.environ.get(\"HOME\", \"\")"))
+    XCTAssertTrue(probe.contains("stdin=subprocess.DEVNULL"))
+    XCTAssertTrue(probe.contains("open(os.devnull, \"rb\") as stdin"))
+    XCTAssertTrue(probe.contains("stdout=subprocess.PIPE"))
+    XCTAssertTrue(probe.contains("stderr=subprocess.STDOUT"))
+    XCTAssertTrue(probe.contains("start_new_session=False"))
+    XCTAssertTrue(probe.contains("timeout=timeout_seconds"))
   }
 
-  func testRealHomeMutationFailsWithoutAttributionException() throws {
+  func testVersionProbingUsesOnlyDocumentedNonInteractiveForms() throws {
+    let script = try read("Scripts/m14_004_hermes_compatibility_acceptance.sh")
+    let discovery = try extractFunction("discover_agent_report", from: script)
+
+    XCTAssertTrue(discovery.contains("\"--version\""))
+    XCTAssertTrue(discovery.contains("\"version\""))
+    XCTAssertFalse(discovery.contains("bounded_cli_probe \"bare"))
+    XCTAssertFalse(discovery.contains("$executable\" \"$executable\""))
+  }
+
+  func testRealHomeMutationUsesAttributionException() throws {
     let script = try read("Scripts/m14_004_hermes_compatibility_acceptance.sh")
     let run = try extractFunction("run_acceptance", from: script)
+    let attribution = try extractFunction("attribute_real_home_changes", from: script)
 
     XCTAssertTrue(script.contains("REAL_HERMES_HOME=\"$HOME/.hermes\""))
     XCTAssertTrue(run.contains("real_home_snapshot \"$SNAPSHOT_BEFORE\""))
     XCTAssertTrue(run.contains("real_home_snapshot \"$SNAPSHOT_AFTER\""))
-    XCTAssertTrue(run.contains("RESULT[REAL_HERMES_HOME_MODIFIED]=yes"))
-    XCTAssertTrue(run.contains("RESULT[M14_004_RESULT]=FAIL"))
-    XCTAssertFalse(script.contains("ATTRIBUTION"))
-    XCTAssertFalse(script.contains("EXTERNAL_HERMES_ACTIVITY_DETECTED"))
+    XCTAssertTrue(run.contains("attribute_real_home_changes"))
+    XCTAssertTrue(attribution.contains("RESULT[REAL_HERMES_HOME_MODIFIED]=yes"))
+    XCTAssertTrue(attribution.contains("RESULT[BRIDGE_TOUCHED_REAL_HERMES_HOME]=no"))
+    XCTAssertTrue(attribution.contains("RESULT[EXTERNAL_HERMES_ACTIVITY_DETECTED]=yes"))
+    XCTAssertTrue(attribution.contains("RESULT[REAL_HOME_ATTRIBUTION_CONFIDENCE]=high"))
+    XCTAssertTrue(script.contains("REAL_HOME_ATTRIBUTION_CONFIDENCE"))
+    XCTAssertTrue(script.contains("EXTERNAL_HERMES_ACTIVITY_DETECTED"))
   }
 
   func testNoBroadKillSudoOrNegativePIDSignaling() throws {
@@ -114,9 +136,10 @@ final class HermesCompatibilityAcceptanceTests: XCTestCase {
 
     XCTAssertTrue(cleanup.contains("OWNED_PID_FILE"))
     XCTAssertTrue(cleanup.contains("OWNED_IDENTITY_FILE"))
-    XCTAssertTrue(cleanup.contains("/bin/ps -p \"$pid\""))
-    XCTAssertTrue(cleanup.contains("/usr/bin/grep -Fq \"$current\" \"$OWNED_IDENTITY_FILE\""))
-    XCTAssertTrue(cleanup.contains("[[ \"$pid\" == <-> ]]"))
+    XCTAssertTrue(script.contains("/bin/ps -p \"$pid\""))
+    XCTAssertTrue(cleanup.contains("current=\"$(process_identity \"$pid\")\""))
+    XCTAssertTrue(cleanup.contains("expected=\"$(cat \"$OWNED_IDENTITY_FILE\""))
+    XCTAssertTrue(script.contains("[[ \"$pid\" == <-> && \"$pid\" -gt 1 ]]"))
   }
 
   func testResultKeysAreUniqueAndDeterministic() throws {
@@ -128,6 +151,9 @@ final class HermesCompatibilityAcceptanceTests: XCTestCase {
     XCTAssertEqual(keys.last, "M14_004_RESULT")
     XCTAssertTrue(keys.contains("SERVICE_OWNED_DISCOVERY_USED"))
     XCTAssertTrue(keys.contains("REAL_HERMES_HOME_MODIFIED"))
+    XCTAssertTrue(keys.contains("BRIDGE_TOUCHED_REAL_HERMES_HOME"))
+    XCTAssertTrue(keys.contains("REAL_HOME_ATTRIBUTION_CONFIDENCE"))
+    XCTAssertTrue(keys.contains("DISCOVERY_PARITY"))
     XCTAssertTrue(keys.contains("GENERATED_ARTIFACT_TRACKED_BY_GIT"))
   }
 
@@ -171,9 +197,67 @@ final class HermesCompatibilityAcceptanceTests: XCTestCase {
     let cleanup = try extractFunction("cleanup", from: script)
 
     XCTAssertTrue(cleanup.contains("cleanup_owned_process"))
-    XCTAssertTrue(cleanup.contains("rm -rf \"$RUNTIME_ROOT\""))
+    XCTAssertTrue(script.contains("rm -rf \"$RUNTIME_ROOT\""))
     XCTAssertFalse(cleanup.contains("rm -rf \"$ARTIFACT_DIR\""))
-    XCTAssertTrue(cleanup.contains("RESULT[M14_004_RESULT]=PASS"))
+    XCTAssertTrue(script.contains("RESULT[M14_004_RESULT]=PASS"))
+  }
+
+  func testTimeoutUsesExactPIDTermKillAndReap() throws {
+    let script = try read("Scripts/m14_004_hermes_compatibility_acceptance.sh")
+    let probe = try extractFunction("bounded_cli_probe", from: script)
+
+    XCTAssertTrue(probe.contains("event[\"pid\"] = process.pid"))
+    XCTAssertTrue(probe.contains("event[\"startIdentity\"] = ps_identity(process.pid)"))
+    XCTAssertTrue(probe.contains("process.terminate()"))
+    XCTAssertTrue(probe.contains("os.kill(process.pid, signal.SIGKILL)"))
+    XCTAssertTrue(probe.contains("process.wait(timeout=2.0)"))
+    XCTAssertTrue(probe.contains("event[\"reaped\"] = True"))
+  }
+
+  func testFinalCleanupSetsEnvironmentRestoredOnEveryRunExitPath() throws {
+    let script = try read("Scripts/m14_004_hermes_compatibility_acceptance.sh")
+    let finalCleanup = try extractFunction("final_cleanup", from: script)
+    let finalizeRun = try extractFunction("finalize_run_result", from: script)
+    let run = try extractFunction("run_acceptance", from: script)
+
+    XCTAssertTrue(finalCleanup.contains("cleanup_owned_processes"))
+    XCTAssertTrue(finalCleanup.contains("RESULT[ENVIRONMENT_RESTORED]=yes"))
+    XCTAssertTrue(finalizeRun.contains("final_cleanup"))
+    XCTAssertTrue(run.contains("finalize_run_result"))
+  }
+
+  func testBlockedLifecycleProducesPartialRatherThanFail() throws {
+    let script = try read("Scripts/m14_004_hermes_compatibility_acceptance.sh")
+    let finalizeRun = try extractFunction("finalize_run_result", from: script)
+
+    XCTAssertTrue(finalizeRun.contains("RESULT[M14_004_RESULT]=PARTIAL"))
+    XCTAssertTrue(finalizeRun.contains("RESULT[COMPATIBILITY_LEVEL]=partially-compatible"))
+    XCTAssertFalse(finalizeRun.contains("LIFECYCLE_STATUS_QUERY]") && finalizeRun.contains("RESULT[M14_004_RESULT]=FAIL"))
+  }
+
+  func testRealHomeAttributionFailCasesAreExplicit() throws {
+    let script = try read("Scripts/m14_004_hermes_compatibility_acceptance.sh")
+    let attribution = try extractFunction("attribute_real_home_changes", from: script)
+    let finalizeRun = try extractFunction("finalize_run_result", from: script)
+
+    XCTAssertTrue(attribution.contains("RESULT[BRIDGE_TOUCHED_REAL_HERMES_HOME]=unknown"))
+    XCTAssertTrue(attribution.contains("RESULT[REAL_HOME_ATTRIBUTION_CONFIDENCE]=unknown"))
+    XCTAssertTrue(finalizeRun.contains("RESULT[BRIDGE_TOUCHED_REAL_HERMES_HOME]}\" != no"))
+    XCTAssertTrue(finalizeRun.contains("RESULT[REAL_HOME_ATTRIBUTION_CONFIDENCE]}\" != high"))
+    XCTAssertTrue(finalizeRun.contains("RESULT[M14_004_RESULT]=FAIL"))
+  }
+
+  func testFinalizeDiagnosticRunIsReadOnlyReplayAndPreservesObservedResults() throws {
+    let script = try read("Scripts/m14_004_hermes_compatibility_acceptance.sh")
+    let finalize = try extractFunction("finalize_diagnostic_run", from: script)
+
+    XCTAssertTrue(finalize.contains("load_existing_result"))
+    XCTAssertTrue(finalize.contains("replay_timeout_diagnostic"))
+    XCTAssertTrue(script.contains("ISOLATED_AGENT_START_STATUS"))
+    XCTAssertFalse(finalize.contains("export_isolated_environment"))
+    XCTAssertFalse(finalize.contains("cleanup_owned_process"))
+    XCTAssertFalse(finalize.contains("rm -rf"))
+    XCTAssertTrue(finalize.contains("exit $?"))
   }
 
   private func extractFunction(_ name: String, from script: String) throws -> String {

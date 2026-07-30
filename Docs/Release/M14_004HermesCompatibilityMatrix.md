@@ -54,14 +54,23 @@ use Keychain records, use sudo, use broad process matching, stop existing real
 Hermes processes, download Hermes, upgrade Hermes, or uninstall Hermes.
 
 Before and after `run`, the script records privacy-safe metadata snapshots of
-the real Hermes home. Any difference sets:
+the real Hermes home. A difference is reported transparently:
 
 ```text
 REAL_HERMES_HOME_MODIFIED=yes
-M14_004_RESULT=FAIL
+BRIDGE_TOUCHED_REAL_HERMES_HOME=yes|no|unknown
+EXTERNAL_HERMES_ACTIVITY_DETECTED=yes|no|unknown
+REAL_HOME_ATTRIBUTION_CONFIDENCE=high|medium|low|unknown
 ```
 
-There are no attribution exceptions in M14-004.
+Because M14-004 must not stop or signal existing real Hermes processes, raw
+real-home mutation is not itself proof that Bridge touched real user state. A
+run may finish `PARTIAL` when all acceptance subprocesses used isolated roots,
+all Bridge-owned PIDs are known, no Bridge-owned PID has a real-home path open,
+generated files remain under `artifacts/m14-004/runtime`, and changed real-home
+paths are limited to recognized external Hermes operational categories. Unknown
+or low-confidence attribution, or any Bridge-owned real-home access, is a
+failure.
 
 ## Compatibility Levels
 
@@ -146,6 +155,12 @@ Cleanup:
 Scripts/m14_004_hermes_compatibility_acceptance.sh cleanup
 ```
 
+Read-only replay/finalization of preserved evidence:
+
+```sh
+Scripts/m14_004_hermes_compatibility_acceptance.sh finalize-diagnostic-run
+```
+
 The acceptance script uses bounded exits:
 
 - `0`: PASS
@@ -170,13 +185,17 @@ artifacts under `artifacts/m14-004`.
 
 - `SERVICE_OWNED_DISCOVERY_USED=yes`
 - `ISOLATED_HOME_USED=yes`
-- `REAL_HERMES_HOME_MODIFIED=no`
+- `BRIDGE_TOUCHED_REAL_HERMES_HOME=no`
+- `REAL_HOME_ATTRIBUTION_CONFIDENCE=high`
 - `ACCEPTANCE_PROCESS_REMAINING=no`
 - `GENERATED_ARTIFACT_TRACKED_BY_GIT=no`
+- `ENVIRONMENT_RESTORED=yes`
 
 `compatibility-matrix.json` is the row-level evidence source. A partial result
 is expected when Hermes can be discovered and queried but the installed CLI does
-not expose a safe isolated Agent lifecycle contract.
+not expose a safe isolated Agent lifecycle contract. A deliberately blocked
+lifecycle capability is not a failure unless it also causes a safety,
+attribution, cleanup, discovery consistency, or evidence integrity violation.
 
 ## Known Limitations
 
