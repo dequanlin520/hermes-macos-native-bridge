@@ -27,6 +27,9 @@ SERVICE_DOMAIN="gui/$(id -u)"
 BRIDGE_SUPPORT="$HOME/Library/Application Support/HermesBridge"
 REAL_HERMES_HOME="$HOME/.hermes"
 RUN_ID="m14-002-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+ACCEPTANCE_LOCK_DIR="${TMPDIR:-/tmp}/com.hermes.bridge.m14-002.acceptance.lock"
+ACCEPTANCE_LOCK_OWNED="no"
+BLOCKED_REASON=""
 
 typeset -A RESULT
 APP_INSTALLED_BY_RUN="no"
@@ -88,7 +91,7 @@ set_default_results() {
     SERVICE_RUNNING no
     XPC_PROTOCOL_1_8_CONNECTED no
     SERVICE_OWNS_RUNTIME no
-    APP_OWNS_RUNTIME yes
+    APP_OWNS_RUNTIME skip
     SERVICE_RESTARTED no
     APP_RECONNECTED_AFTER_RESTART no
     APP_EXIT_LEFT_SERVICE_RUNNING no
@@ -216,6 +219,26 @@ terminate_pid() {
   fi
 }
 
+mark_pre_start_skips() {
+  RESULT[APP_INSTALLED]=skip
+  RESULT[LAUNCH_AGENT_INSTALLED]=skip
+  RESULT[LAUNCH_AGENT_BOOTSTRAPPED]=skip
+  RESULT[APP_LAUNCHED]=skip
+  RESULT[SERVICE_RUNNING]=skip
+  RESULT[XPC_PROTOCOL_1_8_CONNECTED]=skip
+  RESULT[SERVICE_OWNS_RUNTIME]=skip
+  RESULT[APP_OWNS_RUNTIME]=skip
+  RESULT[SERVICE_RESTARTED]=skip
+  RESULT[APP_RECONNECTED_AFTER_RESTART]=skip
+  RESULT[APP_EXIT_LEFT_SERVICE_RUNNING]=skip
+  RESULT[APP_RELAUNCHED]=skip
+  RESULT[FINAL_RECONNECT_SUCCEEDED]=skip
+  RESULT[APP_TARGET_CLEANED]=skip
+  RESULT[LAUNCH_AGENT_TARGET_CLEANED]=skip
+  RESULT[ACCEPTANCE_PROCESS_REMAINING]=skip
+  RESULT[ENVIRONMENT_RESTORED]=skip
+}
+
 pid_for_exact_executable() {
   local expected="$1"
   [[ -n "$expected" ]] || return 0
@@ -277,7 +300,28 @@ cleanup() {
   if [[ "$APP_INSTALLED_BY_RUN" == "yes" && -e "$APP_TARGET" ]]; then
     rm -rf "$APP_TARGET"
   fi
+  if [[ "$ACCEPTANCE_LOCK_OWNED" == "yes" ]]; then
+    rm -rf "$ACCEPTANCE_LOCK_DIR"
+    ACCEPTANCE_LOCK_OWNED="no"
+  fi
   rm -rf "$RUNTIME_ROOT"
+
+  if [[ "$APP_INSTALLED_BY_RUN" == "no" \
+    && "$LAUNCH_AGENT_INSTALLED_BY_RUN" == "no" \
+    && "$SERVICE_BOOTSTRAPPED_BY_RUN" == "no" \
+    && -z "$APP_PID" \
+    && -z "$SERVICE_PID" ]]; then
+    mark_pre_start_skips
+    if [[ "$(path_state "$REAL_HERMES_HOME")" == "$PRE_HERMES_HOME_STATE" ]]; then
+      RESULT[REAL_HERMES_HOME_MODIFIED]=no
+    else
+      RESULT[REAL_HERMES_HOME_MODIFIED]=yes
+    fi
+    RESULT[TEMPORARY_SECRET_REMAINING]=no
+    finish_result
+    FINISHED="yes"
+    return 0
+  fi
 
   if [[ "$APP_INSTALLED_BY_RUN" == "yes" ]]; then
     [[ ! -e "$APP_TARGET" ]] && RESULT[APP_TARGET_CLEANED]=yes || RESULT[APP_TARGET_CLEANED]=no
@@ -332,33 +376,72 @@ assert_user_scope() {
 }
 
 detect_collision() {
-  local blocked="no"
   if [[ -e "$APP_TARGET" || -L "$APP_TARGET" ]]; then
     RESULT[PREEXISTING_APP_FOUND]=yes
-    blocked="yes"
+    BLOCKED_REASON="production app target exists"
+    RESULT[BLOCKED_BY_PREEXISTING_INSTALL]=yes
+    RESULT[M14_002_RESULT]=BLOCKED
+    return 1
   fi
   if [[ -e "$LAUNCH_AGENT_TARGET" || -L "$LAUNCH_AGENT_TARGET" ]]; then
     RESULT[PREEXISTING_LAUNCH_AGENT_FOUND]=yes
-    blocked="yes"
+    BLOCKED_REASON="production LaunchAgent target exists"
+    RESULT[BLOCKED_BY_PREEXISTING_INSTALL]=yes
+    RESULT[M14_002_RESULT]=BLOCKED
+    return 1
   fi
   if /bin/launchctl print "$SERVICE_DOMAIN/$LABEL" >/dev/null 2>&1; then
-    blocked="yes"
-  fi
-  if [[ -e "$BRIDGE_SUPPORT" || -L "$BRIDGE_SUPPORT" ]]; then
-    blocked="yes"
-  fi
-  if [[ -e "$REAL_HERMES_HOME" || -L "$REAL_HERMES_HOME" ]]; then
-    blocked="yes"
+    BLOCKED_REASON="production launchd label already loaded"
+    RESULT[BLOCKED_BY_PREEXISTING_INSTALL]=yes
+    RESULT[M14_002_RESULT]=BLOCKED
+    return 1
   fi
   if [[ -n "$(pid_for_exact_executable "$SERVICE_EXECUTABLE" || true)" ]]; then
-    blocked="yes"
+    BLOCKED_REASON="production process already running"
+    RESULT[BLOCKED_BY_PREEXISTING_INSTALL]=yes
+    RESULT[M14_002_RESULT]=BLOCKED
+    return 1
   fi
-  if [[ "$blocked" == "yes" ]]; then
+  if [[ -n "$(pid_for_exact_executable "$APP_EXECUTABLE" || true)" ]]; then
+    BLOCKED_REASON="production process already running"
     RESULT[BLOCKED_BY_PREEXISTING_INSTALL]=yes
     RESULT[M14_002_RESULT]=BLOCKED
     return 1
   fi
   return 0
+}
+
+acquire_acceptance_lock() {
+  if mkdir "$ACCEPTANCE_LOCK_DIR" 2>/dev/null; then
+    ACCEPTANCE_LOCK_OWNED="yes"
+    print -r -- "$$" > "$ACCEPTANCE_LOCK_DIR/pid"
+    print -r -- "$RUN_ID" > "$ACCEPTANCE_LOCK_DIR/run_id"
+    return 0
+  fi
+
+  local lock_pid=""
+  if [[ -r "$ACCEPTANCE_LOCK_DIR/pid" ]]; then
+    lock_pid="$(head -n 1 "$ACCEPTANCE_LOCK_DIR/pid" 2>/dev/null | tr -cd '0-9')"
+  fi
+  if [[ -n "$lock_pid" ]] && kill -0 "$lock_pid" 2>/dev/null; then
+    BLOCKED_REASON="active acceptance lock exists"
+    RESULT[BLOCKED_BY_PREEXISTING_INSTALL]=yes
+    RESULT[M14_002_RESULT]=BLOCKED
+    return 1
+  fi
+
+  rm -rf "$ACCEPTANCE_LOCK_DIR"
+  if mkdir "$ACCEPTANCE_LOCK_DIR" 2>/dev/null; then
+    ACCEPTANCE_LOCK_OWNED="yes"
+    print -r -- "$$" > "$ACCEPTANCE_LOCK_DIR/pid"
+    print -r -- "$RUN_ID" > "$ACCEPTANCE_LOCK_DIR/run_id"
+    return 0
+  fi
+
+  BLOCKED_REASON="active acceptance lock exists"
+  RESULT[BLOCKED_BY_PREEXISTING_INSTALL]=yes
+  RESULT[M14_002_RESULT]=BLOCKED
+  return 1
 }
 
 build_release_app() {
@@ -492,10 +575,10 @@ reconnect_check() {
 }
 
 discover_agent_status() {
-  local status
-  status="$(swift run --configuration release HermesReleaseAgentPreflight 2>/dev/null | tail -n 1 | tr -d '\r\n' || print -r -- unknown)"
-  case "$status" in
-    available|unavailable|incompatible|unknown) RESULT[HERMES_AGENT_STATUS]="$status" ;;
+  local agent_status
+  agent_status="$(swift run --configuration release HermesReleaseAgentPreflight 2>/dev/null | tail -n 1 | tr -d '\r\n' || print -r -- unknown)"
+  case "$agent_status" in
+    available|unavailable|incompatible|unknown) RESULT[HERMES_AGENT_STATUS]="$agent_status" ;;
     *) RESULT[HERMES_AGENT_STATUS]=unknown ;;
   esac
   if [[ "${RESULT[HERMES_AGENT_STATUS]}" == "available" ]]; then
@@ -531,31 +614,20 @@ main() {
 
   if [[ "${HERMES_REAL_USER_INSTALL_ACCEPTANCE:-}" != "YES" ]]; then
     RESULT[M14_002_RESULT]=OPT_IN_REQUIRED
-    RESULT[APP_INSTALLED]=skip
-    RESULT[LAUNCH_AGENT_INSTALLED]=skip
-    RESULT[LAUNCH_AGENT_BOOTSTRAPPED]=skip
-    RESULT[APP_LAUNCHED]=skip
-    RESULT[SERVICE_RUNNING]=skip
-    RESULT[XPC_PROTOCOL_1_8_CONNECTED]=skip
-    RESULT[SERVICE_OWNS_RUNTIME]=skip
-    RESULT[APP_OWNS_RUNTIME]=skip
-    RESULT[SERVICE_RESTARTED]=skip
-    RESULT[APP_RECONNECTED_AFTER_RESTART]=skip
-    RESULT[APP_EXIT_LEFT_SERVICE_RUNNING]=skip
-    RESULT[APP_RELAUNCHED]=skip
-    RESULT[FINAL_RECONNECT_SUCCEEDED]=skip
-    RESULT[APP_TARGET_CLEANED]=skip
-    RESULT[LAUNCH_AGENT_TARGET_CLEANED]=skip
-    RESULT[ENVIRONMENT_RESTORED]=skip
+    mark_pre_start_skips
     print -u2 "opt-in required: set HERMES_REAL_USER_INSTALL_ACCEPTANCE=YES to run real user-session installation acceptance"
     write_result
     exit 2
   fi
 
   RESULT[EXPLICIT_OPT_IN_CONFIRMED]=yes
+  if [[ "$collision" == "no" ]]; then
+    acquire_acceptance_lock || collision="yes"
+  fi
   if [[ "$collision" == "yes" ]]; then
     RESULT[M14_002_RESULT]=BLOCKED
-    print -u2 "blocked: pre-existing Hermes Bridge install or configuration detected"
+    mark_pre_start_skips
+    print -u2 "blocked: $BLOCKED_REASON"
     write_result
     exit 3
   fi

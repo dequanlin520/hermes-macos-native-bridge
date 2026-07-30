@@ -25,6 +25,7 @@ final class HermesRealUserInstallAcceptanceTests: XCTestCase {
 
   func testCollisionProtection() throws {
     let script = try read("Scripts/m14_002_real_user_install_acceptance.sh")
+    let collision = try extractFunction("detect_collision", from: script)
 
     XCTAssertTrue(script.contains("detect_collision()"))
     XCTAssertTrue(script.contains("PREEXISTING_APP_FOUND]=yes"))
@@ -34,6 +35,96 @@ final class HermesRealUserInstallAcceptanceTests: XCTestCase {
     XCTAssertTrue(script.contains("REAL_HERMES_HOME=\"$HOME/.hermes\""))
     XCTAssertTrue(script.contains("BLOCKED_BY_PREEXISTING_INSTALL]=yes"))
     XCTAssertTrue(script.contains("M14_002_RESULT]=BLOCKED"))
+    XCTAssertFalse(collision.contains("BRIDGE_SUPPORT"))
+    XCTAssertFalse(collision.contains("REAL_HERMES_HOME"))
+  }
+
+  func testExistingRealHermesHomeDoesNotCauseCollisionBlocking() throws {
+    let script = try read("Scripts/m14_002_real_user_install_acceptance.sh")
+    let collision = try extractFunction("detect_collision", from: script)
+
+    XCTAssertTrue(script.contains("PRE_HERMES_HOME_STATE=\"$(path_state \"$REAL_HERMES_HOME\")\""))
+    XCTAssertTrue(script.contains("[[ \"$(path_state \"$REAL_HERMES_HOME\")\" == \"$PRE_HERMES_HOME_STATE\" ]]"))
+    XCTAssertFalse(collision.contains("[[ -e \"$REAL_HERMES_HOME\""))
+    XCTAssertFalse(collision.contains("[[ -L \"$REAL_HERMES_HOME\""))
+    XCTAssertFalse(script.contains("find \"$REAL_HERMES_HOME\""))
+    XCTAssertFalse(script.contains("cat \"$REAL_HERMES_HOME\""))
+    XCTAssertTrue(script.contains("HERMES_CONFIG_DIR=\"$RUNTIME_ROOT/HermesBridge\""))
+  }
+
+  func testExactProductionAppCollisionBlocks() throws {
+    let script = try read("Scripts/m14_002_real_user_install_acceptance.sh")
+    let collision = try extractFunction("detect_collision", from: script)
+
+    XCTAssertTrue(collision.contains("[[ -e \"$APP_TARGET\" || -L \"$APP_TARGET\" ]]"))
+    XCTAssertTrue(collision.contains("BLOCKED_REASON=\"production app target exists\""))
+    XCTAssertTrue(collision.contains("RESULT[PREEXISTING_APP_FOUND]=yes"))
+  }
+
+  func testExactLaunchAgentCollisionBlocks() throws {
+    let script = try read("Scripts/m14_002_real_user_install_acceptance.sh")
+    let collision = try extractFunction("detect_collision", from: script)
+
+    XCTAssertTrue(collision.contains("[[ -e \"$LAUNCH_AGENT_TARGET\" || -L \"$LAUNCH_AGENT_TARGET\" ]]"))
+    XCTAssertTrue(collision.contains("BLOCKED_REASON=\"production LaunchAgent target exists\""))
+    XCTAssertTrue(collision.contains("RESULT[PREEXISTING_LAUNCH_AGENT_FOUND]=yes"))
+  }
+
+  func testExactLoadedProductionLabelCollisionBlocks() throws {
+    let script = try read("Scripts/m14_002_real_user_install_acceptance.sh")
+    let collision = try extractFunction("detect_collision", from: script)
+
+    XCTAssertTrue(collision.contains("launchctl print \"$SERVICE_DOMAIN/$LABEL\""))
+    XCTAssertTrue(collision.contains("BLOCKED_REASON=\"production launchd label already loaded\""))
+  }
+
+  func testExactProductionProcessCollisionBlocks() throws {
+    let script = try read("Scripts/m14_002_real_user_install_acceptance.sh")
+    let collision = try extractFunction("detect_collision", from: script)
+
+    XCTAssertTrue(collision.contains("pid_for_exact_executable \"$SERVICE_EXECUTABLE\""))
+    XCTAssertTrue(collision.contains("pid_for_exact_executable \"$APP_EXECUTABLE\""))
+    XCTAssertTrue(collision.contains("BLOCKED_REASON=\"production process already running\""))
+    XCTAssertFalse(script.contains("ps ax |"))
+  }
+
+  func testActiveAcceptanceLockCollisionBlocks() throws {
+    let script = try read("Scripts/m14_002_real_user_install_acceptance.sh")
+    let lock = try extractFunction("acquire_acceptance_lock", from: script)
+
+    XCTAssertTrue(script.contains("ACCEPTANCE_LOCK_DIR="))
+    XCTAssertTrue(script.contains("ACCEPTANCE_LOCK_OWNED=\"no\""))
+    XCTAssertTrue(lock.contains("mkdir \"$ACCEPTANCE_LOCK_DIR\""))
+    XCTAssertTrue(lock.contains("kill -0 \"$lock_pid\""))
+    XCTAssertTrue(lock.contains("BLOCKED_REASON=\"active acceptance lock exists\""))
+    XCTAssertTrue(script.contains("rm -rf \"$ACCEPTANCE_LOCK_DIR\""))
+  }
+
+  func testBlockedPreflightResultUsesSkipForAppOwnsRuntime() throws {
+    let script = try read("Scripts/m14_002_real_user_install_acceptance.sh")
+
+    XCTAssertTrue(script.contains("APP_OWNS_RUNTIME skip"))
+    XCTAssertTrue(script.contains("mark_pre_start_skips()"))
+    XCTAssertTrue(script.contains("RESULT[APP_OWNS_RUNTIME]=skip"))
+    XCTAssertTrue(script.contains("mark_pre_start_skips\n    print -u2 \"blocked: $BLOCKED_REASON\""))
+  }
+
+  func testBlockerLogContainsSpecificNonSensitiveReason() throws {
+    let script = try read("Scripts/m14_002_real_user_install_acceptance.sh")
+
+    XCTAssertTrue(script.contains("blocked: $BLOCKED_REASON"))
+    XCTAssertTrue(script.contains("production app target exists"))
+    XCTAssertTrue(script.contains("production LaunchAgent target exists"))
+    XCTAssertTrue(script.contains("production launchd label already loaded"))
+    XCTAssertTrue(script.contains("production process already running"))
+    XCTAssertTrue(script.contains("active acceptance lock exists"))
+  }
+
+  func testGenericInstallOrConfigurationDetectedMessageIsProhibited() throws {
+    let script = try read("Scripts/m14_002_real_user_install_acceptance.sh")
+
+    XCTAssertFalse(script.contains("install or configuration detected"))
+    XCTAssertFalse(script.contains("pre-existing Hermes Bridge install or configuration detected"))
   }
 
   func testUserScopePathPolicy() throws {
@@ -101,11 +192,13 @@ final class HermesRealUserInstallAcceptanceTests: XCTestCase {
 
   func testUnavailableAgentSkipSemantics() throws {
     let script = try read("Scripts/m14_002_real_user_install_acceptance.sh")
+    let discovery = try extractFunction("discover_agent_status", from: script)
 
     XCTAssertTrue(script.contains("available|unavailable|incompatible|unknown"))
     XCTAssertTrue(script.contains("RESULT[AGENT_DEPENDENT_CHECK]=skip"))
     XCTAssertTrue(script.contains("HermesReleaseAgentPreflight"))
     XCTAssertTrue(script.contains("unavailable|incompatible|unknown)"))
+    XCTAssertFalse(discovery.contains("local status"))
   }
 
   func testResultKeyCatalogIsCompleteUniqueAndOrdered() throws {
@@ -184,5 +277,32 @@ final class HermesRealUserInstallAcceptanceTests: XCTestCase {
     return script[bodyRange]
       .split { $0 == " " || $0 == "\n" || $0 == "\t" }
       .map(String.init)
+  }
+
+  private func extractFunction(_ name: String, from script: String) throws -> String {
+    let marker = "\(name)() {"
+    guard let start = script.range(of: marker)?.lowerBound else {
+      XCTFail("Missing function \(name)")
+      return ""
+    }
+    var depth = 0
+    var sawOpeningBrace = false
+    var index = start
+    while index < script.endIndex {
+      let character = script[index]
+      if character == "{" {
+        depth += 1
+        sawOpeningBrace = true
+      } else if character == "}" {
+        depth -= 1
+        if sawOpeningBrace && depth == 0 {
+          let end = script.index(after: index)
+          return String(script[start..<end])
+        }
+      }
+      index = script.index(after: index)
+    }
+    XCTFail("Unterminated function \(name)")
+    return ""
   }
 }
