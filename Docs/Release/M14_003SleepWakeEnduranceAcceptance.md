@@ -31,6 +31,8 @@ The script never initiates sleep.
 
 ```sh
 HERMES_SLEEP_WAKE_ACCEPTANCE=YES \
+HERMES_QUIESCE_REAL_AGENT=YES \
+HERMES_REAL_AGENT_ROOT_PIDS="<space-separated real Hermes Agent root PIDs, or empty>" \
 Scripts/m14_003_sleep_wake_endurance_acceptance.sh prepare
 ```
 
@@ -38,8 +40,17 @@ The prepare phase performs collision checks, builds and installs the Release
 app, installs and bootstraps the production `com.hermes.bridge` LaunchAgent,
 establishes XPC protocol `1.8`, executes exactly five service restart/reconnect
 cycles, proves app exit leaves the service running, relaunches the app, writes a
-privacy-safe real-home snapshot, starts a dedicated wake recorder, and creates a
-durable checkpoint under `artifacts/m14-003/runtime/`.
+privacy-safe real-home snapshot, optionally quiesces only explicitly supplied
+real Hermes Agent root process groups, starts a dedicated wake recorder, proves
+the recorder readiness handshake, and creates a durable checkpoint under
+`artifacts/m14-003/runtime/`.
+
+When `HERMES_REAL_AGENT_ROOT_PIDS` is non-empty, `HERMES_QUIESCE_REAL_AGENT=YES`
+is required. The script validates that every supplied root PID and every exact
+current-user PGID member belongs to the current UID, records PID, UID, PGID,
+executable basename, process start time, and suspended state in the checkpoint,
+then sends `SIGSTOP` only to those recorded PIDs. If no real Hermes Agent is
+running, leave `HERMES_REAL_AGENT_ROOT_PIDS` empty.
 
 On success it writes:
 
@@ -57,11 +68,15 @@ After prepare exits `5`, manually put the Mac to sleep using normal system UI or
 hardware controls. Wake the Mac and log back in.
 
 The dedicated project-owned recorder is launched through the user LaunchAgent
-domain and is independent of the initiating terminal. It records
-`NSWorkspace.willSleepNotification`, `NSWorkspace.didWakeNotification`,
-`ProcessInfo.systemUptime` before sleep and after wake, monotonic timestamps,
-the exact recorder PID, and the exact unique recorder label. Wall-clock delay
-alone is rejected as evidence.
+domain and is independent of the initiating terminal. Its primary evidence is
+IOKit system power notification delivery: `kIOMessageSystemWillSleep` is
+persisted and fsynced before `IOAllowPowerChange`, and
+`kIOMessageSystemHasPoweredOn` is persisted after wake. NSWorkspace notifications
+may also be recorded, but they are only secondary corroboration and are
+insufficient by themselves. The recorder writes a ready file only after
+`IORegisterForSystemPower` succeeds, its CFRunLoop is active, the run identifier
+matches, the exact recorder PID is alive, and the evidence destination is
+writable.
 
 ### 3. Resume
 
@@ -71,8 +86,10 @@ Scripts/m14_003_sleep_wake_endurance_acceptance.sh resume
 ```
 
 The resume phase loads the durable checkpoint, verifies the run identifier,
-requires genuine will-sleep and did-wake evidence, rejects wall-clock-only
-evidence, validates monotonic uptime consistency, verifies LaunchAgent/service
+requires IOKit will-sleep and powered-on evidence, rejects NSWorkspace-only or
+wall-clock-only evidence, validates event order and monotonic uptime consistency,
+continues only exact recorded real Hermes Agent PIDs whose PID/UID/PGID/basename
+and process start time still match, verifies LaunchAgent/service
 availability, verifies XPC protocol `1.8`, relaunches or reconnects the app as
 needed, verifies service-owned runtime and app non-ownership, rejects duplicate
 service instances, performs one final controlled service restart, verifies final
@@ -93,6 +110,8 @@ Scripts/m14_003_sleep_wake_endurance_acceptance.sh cleanup
 Cleanup reads `artifacts/m14-003/runtime/checkpoint.json` when present and
 targets only acceptance-owned state:
 
+- Exact recorded real Hermes Agent PIDs, resumed with `SIGCONT` only if PID,
+  UID, PGID, executable basename, and process start time still match.
 - The recorded app PID.
 - The recorded wake-recorder PID.
 - The exact recorded project-owned recorder label.

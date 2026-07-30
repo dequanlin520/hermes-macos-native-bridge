@@ -9,8 +9,11 @@ RELEASE_ROOT="$ARTIFACT_DIR/release"
 RUNTIME_ROOT="$ARTIFACT_DIR/runtime"
 CHECKPOINT_FILE="$RUNTIME_ROOT/checkpoint.json"
 EVIDENCE_FILE="$RUNTIME_ROOT/wake-recorder-evidence.jsonl"
+RECORDER_READY_FILE="$RUNTIME_ROOT/wake-recorder-ready.json"
+RECORDER_PID_FILE="$RUNTIME_ROOT/wake-recorder.pid"
 RECORDER_SOURCE="$RUNTIME_ROOT/SleepWakeRecorder.swift"
 RECORDER_LABEL_PREFIX="com.hermes.bridge.m14-003.wake-recorder"
+RECORDER_FAILURE_REASON=""
 HERMES_CONFIG_DIR="$RUNTIME_ROOT/HermesBridge"
 HERMES_CONFIG_FILE="$HERMES_CONFIG_DIR/configuration.json"
 RUNTIME_DATA_ROOT="$RUNTIME_ROOT/Runtime"
@@ -40,6 +43,9 @@ LABEL="com.hermes.bridge"
 MACH_SERVICE="com.hermes.bridge.xpc"
 SERVICE_DOMAIN="gui/$(id -u)"
 REAL_HERMES_HOME="$HOME/.hermes"
+REAL_HERMES_QUIESCE_OPT_IN="${HERMES_QUIESCE_REAL_AGENT:-}"
+REAL_HERMES_ROOT_PIDS="${HERMES_REAL_AGENT_ROOT_PIDS:-}"
+REAL_HERMES_RECORDS_FILE="$RUNTIME_ROOT/real-hermes-quiescence.json"
 RUN_ID="${HERMES_M14_003_RUN_ID:-m14-003-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
 RECORDER_LABEL="$RECORDER_LABEL_PREFIX.$RUN_ID"
 RECORDER_PLIST_REL="Library/LaunchAgents/$RECORDER_LABEL.plist"
@@ -58,6 +64,7 @@ RECORDER_BOOTSTRAPPED_BY_RUN="no"
 APP_PID=""
 SERVICE_PID=""
 RECORDER_PID=""
+typeset -a REAL_HERMES_RECORDED_PIDS
 INTEGRITY_BEFORE="$RUNTIME_ROOT/real-home-before.snapshot"
 INTEGRITY_AFTER="$RUNTIME_ROOT/real-home-after.snapshot"
 INTEGRITY_CHANGES="$RUNTIME_ROOT/real-home-changes.txt"
@@ -446,6 +453,206 @@ pid_from_launchctl_label() {
     | awk -F= '/^[[:space:]]*pid = / { gsub(/[[:space:]]/, "", $2); print $2; exit }'
 }
 
+typeset PARSED_PID=""
+typeset PARSED_PPID=""
+typeset PARSED_PGID=""
+typeset PARSED_UID=""
+typeset PARSED_PROC_STATE=""
+typeset PARSED_START_TIME=""
+typeset PARSED_COMM=""
+
+parse_process_identity_row() {
+  local line="$1"
+  local fields
+  fields=("${(@z)line}")
+  (( ${#fields[@]} >= 11 )) || return 1
+  PARSED_PID="${fields[1]}"
+  PARSED_PPID="${fields[2]}"
+  PARSED_PGID="${fields[3]}"
+  PARSED_UID="${fields[4]}"
+  PARSED_PROC_STATE="${fields[5]}"
+  PARSED_START_TIME="${(j: :)fields[6,10]}"
+  PARSED_COMM="${(j: :)fields[11,-1]}"
+}
+
+process_identity_row_for_pid() {
+  local pid="$1"
+  /bin/ps -o pid= -o ppid= -o pgid= -o uid= -o stat= -o lstart= -o comm= -p "$pid" 2>/dev/null \
+    | sed '/^[[:space:]]*$/d' | head -n 1
+}
+
+enumerate_current_user_process_group() {
+  local pgid="$1"
+  /bin/ps -axo pid=,ppid=,pgid=,uid=,stat=,lstart=,comm= 2>/dev/null | while IFS= read -r line; do
+    parse_process_identity_row "$line" || continue
+    [[ "$PARSED_PGID" == "$pgid" ]] || continue
+    print -r -- "$PARSED_PID	$PARSED_PPID	$PARSED_PGID	$PARSED_UID	$PARSED_PROC_STATE	$PARSED_START_TIME	${PARSED_COMM:t}"
+  done
+}
+
+write_empty_real_hermes_records() {
+  mkdir -p "$RUNTIME_ROOT"
+  print -r -- "[]" > "$REAL_HERMES_RECORDS_FILE"
+}
+
+record_real_hermes_quiescence() {
+  mkdir -p "$RUNTIME_ROOT"
+  local roots
+  roots=("${(@z)REAL_HERMES_ROOT_PIDS}")
+  if (( ${#roots[@]} == 0 )); then
+    REAL_HERMES_RECORDED_PIDS=()
+    write_empty_real_hermes_records
+    return 0
+  fi
+  [[ "$REAL_HERMES_QUIESCE_OPT_IN" == "YES" ]] || fail "set HERMES_QUIESCE_REAL_AGENT=YES before quiescing real Hermes Agent PIDs"
+
+  local current_uid
+  current_uid="$(id -u)"
+  local records_tsv="$RUNTIME_ROOT/real-hermes-quiescence.tsv"
+  : > "$records_tsv"
+  REAL_HERMES_RECORDED_PIDS=()
+  typeset -A seen_pids
+
+  local root_pid root_line root_pgid member_lines member_line saw_root
+  for root_pid in "${roots[@]}"; do
+    [[ "$root_pid" == <-> ]] || fail "HERMES_REAL_AGENT_ROOT_PIDS must contain numeric PIDs only"
+    root_line="$(process_identity_row_for_pid "$root_pid")"
+    [[ -n "$root_line" ]] || fail "real Hermes root PID $root_pid is not alive"
+    parse_process_identity_row "$root_line" || fail "could not parse real Hermes root PID $root_pid"
+    [[ "$PARSED_PID" == "$root_pid" ]] || fail "real Hermes root PID identity mismatch"
+    [[ "$PARSED_UID" == "$current_uid" ]] || fail "real Hermes root PID $root_pid is not owned by the current UID"
+    root_pgid="$PARSED_PGID"
+    member_lines=("${(@f)$(enumerate_current_user_process_group "$root_pgid")}")
+    (( ${#member_lines[@]} > 0 )) || fail "no process-group members found for real Hermes root PID $root_pid"
+    saw_root="no"
+    for member_line in "${member_lines[@]}"; do
+      local member_pid member_ppid member_pgid member_uid member_proc_state member_start_time member_basename
+      IFS=$'\t' read -r member_pid member_ppid member_pgid member_uid member_proc_state member_start_time member_basename <<< "$member_line"
+      [[ -n "$member_basename" ]] || fail "could not parse real Hermes process-group member"
+      [[ "$member_pgid" == "$root_pgid" ]] || fail "process-group enumeration escaped exact PGID"
+      [[ "$member_uid" == "$current_uid" ]] || fail "process-group member $member_pid is not owned by the current UID"
+      [[ "$member_pid" == "$root_pid" ]] && saw_root="yes"
+      if [[ -z "${seen_pids[$member_pid]:-}" ]]; then
+        seen_pids[$member_pid]=yes
+        REAL_HERMES_RECORDED_PIDS+=("$member_pid")
+        print -r -- "$member_pid	$member_ppid	$member_pgid	$member_uid	$member_proc_state	$member_start_time	$member_basename	$root_pid	$([[ "$member_pid" == "$root_pid" ]] && print -r -- true || print -r -- false)" >> "$records_tsv"
+      fi
+    done
+    [[ "$saw_root" == "yes" ]] || fail "real Hermes root PID $root_pid exited before suspension"
+  done
+
+  /usr/bin/python3 - "$records_tsv" "$REAL_HERMES_RECORDS_FILE" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+records = []
+for line in Path(sys.argv[1]).read_text(encoding="utf-8").splitlines():
+    pid, ppid, pgid, uid, proc_state, start_time, basename, root_pid, is_root = line.split("\t")
+    if "/" in basename:
+        raise SystemExit("executable basename must not be a path")
+    records.append({
+        "pid": int(pid),
+        "ppid": int(ppid),
+        "pgid": int(pgid),
+        "uid": int(uid),
+        "stateBeforeStop": proc_state,
+        "processStartTime": start_time,
+        "executableBasename": basename,
+        "rootPid": int(root_pid),
+        "isRoot": is_root == "true",
+        "suspendedByM14003": False,
+    })
+payload = json.dumps(records, indent=2, sort_keys=True) + "\n"
+path = Path(sys.argv[2])
+with path.open("w", encoding="utf-8") as handle:
+    handle.write(payload)
+    handle.flush()
+    os.fsync(handle.fileno())
+directory_fd = os.open(str(path.parent), os.O_RDONLY)
+try:
+    os.fsync(directory_fd)
+finally:
+    os.close(directory_fd)
+PY
+}
+
+update_real_hermes_suspended_checkpoint() {
+  /usr/bin/python3 - "$REAL_HERMES_RECORDS_FILE" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+path = Path(sys.argv[1])
+records = json.loads(path.read_text(encoding="utf-8"))
+for record in records:
+    record["suspendedByM14003"] = True
+payload = json.dumps(records, indent=2, sort_keys=True) + "\n"
+with path.open("w", encoding="utf-8") as handle:
+    handle.write(payload)
+    handle.flush()
+    os.fsync(handle.fileno())
+PY
+}
+
+process_identity_matches_record() {
+  local pid="$1"
+  local expected_uid="$2"
+  local expected_pgid="$3"
+  local expected_basename="$4"
+  local expected_start_time="$5"
+  local line
+  line="$(process_identity_row_for_pid "$pid")" || return 1
+  [[ -n "$line" ]] || return 1
+  parse_process_identity_row "$line" || return 1
+  [[ "$PARSED_PID" == "$pid" ]] || return 1
+  [[ "$PARSED_UID" == "$expected_uid" ]] || return 1
+  [[ "$PARSED_PGID" == "$expected_pgid" ]] || return 1
+  [[ "${PARSED_COMM:t}" == "$expected_basename" ]] || return 1
+  [[ "$PARSED_START_TIME" == "$expected_start_time" ]] || return 1
+}
+
+verify_real_hermes_suspended() {
+  local pid line
+  for pid in "${REAL_HERMES_RECORDED_PIDS[@]}"; do
+    line="$(process_identity_row_for_pid "$pid")" || return 1
+    parse_process_identity_row "$line" || return 1
+    [[ "$PARSED_PROC_STATE" == *T* ]] || return 1
+  done
+}
+
+stop_real_hermes_recorded_pids() {
+  record_real_hermes_quiescence
+  local pid
+  for pid in "${REAL_HERMES_RECORDED_PIDS[@]}"; do
+    /bin/kill -STOP "$pid" || fail "failed to suspend recorded real Hermes PID $pid"
+  done
+  verify_real_hermes_suspended || fail "not every recorded real Hermes PID is suspended"
+  update_real_hermes_suspended_checkpoint
+}
+
+resume_real_hermes_recorded_pids() {
+  [[ -r "$REAL_HERMES_RECORDS_FILE" ]] || return 0
+  /usr/bin/python3 - "$REAL_HERMES_RECORDS_FILE" <<'PY' | while IFS=$'\t' read -r pid uid pgid basename start_time; do
+import json
+import sys
+from pathlib import Path
+for record in json.loads(Path(sys.argv[1]).read_text(encoding="utf-8")):
+    if record.get("suspendedByM14003") is True:
+        print("\t".join([
+            str(record["pid"]),
+            str(record["uid"]),
+            str(record["pgid"]),
+            str(record["executableBasename"]),
+            str(record["processStartTime"]),
+        ]))
+PY
+    if kill -0 "$pid" 2>/dev/null && process_identity_matches_record "$pid" "$uid" "$pgid" "$basename" "$start_time"; then
+      /bin/kill -CONT "$pid" >/dev/null 2>&1 || true
+    fi
+  done
+}
+
 service_pid_from_launchctl() {
   pid_from_launchctl_label "$LABEL"
 }
@@ -593,7 +800,7 @@ write_checkpoint() {
     "$LABEL" "$RECORDER_LABEL" "$APP_TARGET_REL" "$LAUNCH_AGENT_TARGET_REL" "$RECORDER_PLIST_REL" \
     "$APP_EXECUTABLE_REL" "$SERVICE_EXECUTABLE_REL" "$APP_PID" "$SERVICE_PID" "$RECORDER_PID" \
     "$APP_INSTALLED_BY_RUN" "$LAUNCH_AGENT_INSTALLED_BY_RUN" "$SERVICE_BOOTSTRAPPED_BY_RUN" \
-    "$RECORDER_BOOTSTRAPPED_BY_RUN" "$RESTART_CYCLES_EXPECTED" <<'PY'
+    "$RECORDER_BOOTSTRAPPED_BY_RUN" "$RESTART_CYCLES_EXPECTED" "$REAL_HERMES_RECORDS_FILE" <<'PY'
 import json
 import os
 import sys
@@ -605,8 +812,15 @@ from pathlib import Path
     launch_agent_target_rel, recorder_plist_rel, app_executable_rel,
     service_executable_rel, app_pid, service_pid, recorder_pid, app_installed,
     launch_agent_installed, service_bootstrapped, recorder_bootstrapped,
-    restart_cycles_expected,
+    restart_cycles_expected, real_hermes_records_path,
 ) = sys.argv[1:]
+real_hermes_records = []
+records_path = Path(real_hermes_records_path)
+if records_path.exists():
+    loaded_records = json.loads(records_path.read_text(encoding="utf-8"))
+    if not isinstance(loaded_records, list):
+        raise SystemExit("invalid real Hermes quiescence records")
+    real_hermes_records = loaded_records
 checkpoint = {
     "schemaVersion": 1,
     "runIdentifier": run_id,
@@ -639,7 +853,12 @@ checkpoint = {
     "resultFile": "artifacts/m14-003/result.txt",
     "runtimeRoot": "artifacts/m14-003/runtime",
     "wakeEvidence": "artifacts/m14-003/runtime/wake-recorder-evidence.jsonl",
+    "wakeRecorderReady": "artifacts/m14-003/runtime/wake-recorder-ready.json",
     "realHomeSnapshotBefore": "artifacts/m14-003/runtime/real-home-before.snapshot",
+    "realHermesQuiescence": {
+        "operatorProvidedRootPids": [record["rootPid"] for record in real_hermes_records if record.get("isRoot")],
+        "records": real_hermes_records,
+    },
 }
 required = [
     ("schemaVersion", int),
@@ -658,7 +877,9 @@ required = [
     ("resultFile", str),
     ("runtimeRoot", str),
     ("wakeEvidence", str),
+    ("wakeRecorderReady", str),
     ("realHomeSnapshotBefore", str),
+    ("realHermesQuiescence", dict),
 ]
 for key, expected in required:
     if key not in checkpoint or not isinstance(checkpoint[key], expected):
@@ -668,6 +889,12 @@ for key in target_keys:
     value = checkpoint["targets"].get(key)
     if not isinstance(value, str) or value.startswith("/") or ".." in value.split("/"):
         raise SystemExit(f"invalid checkpoint target: {key}")
+for record in checkpoint["realHermesQuiescence"]["records"]:
+    for key in ["pid", "uid", "pgid", "executableBasename", "processStartTime"]:
+        if key not in record:
+            raise SystemExit(f"invalid real Hermes record: {key}")
+    if "/" in str(record["executableBasename"]):
+        raise SystemExit("real Hermes executable basename must not be a path")
 if os.environ.get("HERMES_M14_003_CHECKPOINT_TEST_FAIL_AFTER_TEMP") == "YES":
     Path(tmp_path).write_text("partial\n", encoding="utf-8")
     raise SystemExit("injected checkpoint failure")
@@ -746,11 +973,36 @@ emit("APP_INSTALLED_BY_RUN", "yes" if ownership.get("appInstalledByRun") else "n
 emit("LAUNCH_AGENT_INSTALLED_BY_RUN", "yes" if ownership.get("launchAgentInstalledByRun") else "no")
 emit("SERVICE_BOOTSTRAPPED_BY_RUN", "yes" if ownership.get("serviceBootstrappedByRun") else "no")
 emit("RECORDER_BOOTSTRAPPED_BY_RUN", "yes" if ownership.get("recorderBootstrappedByRun") else "no")
+records = data.get("realHermesQuiescence", {}).get("records", [])
+emit("REAL_HERMES_RECORDED_PIDS", " ".join(str(record.get("pid")) for record in records if isinstance(record.get("pid"), int)))
 PY
 )" || return 1
   eval "$assignments"
+  REAL_HERMES_RECORDED_PIDS=("${(@z)REAL_HERMES_RECORDED_PIDS}")
   RECORDER_PLIST="$HOME/$RECORDER_PLIST_REL"
+  restore_real_hermes_records_from_checkpoint 2>/dev/null || true
   return 0
+}
+
+restore_real_hermes_records_from_checkpoint() {
+  [[ -r "$CHECKPOINT_FILE" ]] || return 1
+  /usr/bin/python3 - "$CHECKPOINT_FILE" "$REAL_HERMES_RECORDS_FILE" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+checkpoint = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+records = checkpoint.get("realHermesQuiescence", {}).get("records", [])
+if not isinstance(records, list):
+    raise SystemExit("invalid real Hermes checkpoint records")
+path = Path(sys.argv[2])
+path.parent.mkdir(parents=True, exist_ok=True)
+payload = json.dumps(records, indent=2, sort_keys=True) + "\n"
+with path.open("w", encoding="utf-8") as handle:
+    handle.write(payload)
+    handle.flush()
+    os.fsync(handle.fileno())
+PY
 }
 
 checkpoint_field() {
@@ -948,7 +1200,9 @@ write_sleep_wake_recorder() {
   mkdir -p "$RUNTIME_ROOT"
   cat > "$RECORDER_SOURCE" <<'SWIFT'
 import AppKit
+import Darwin
 import Foundation
+import IOKit.pwr_mgt
 
 struct Event: Encodable {
   let schemaVersion: Int
@@ -958,27 +1212,46 @@ struct Event: Encodable {
   let pid: Int32
   let monotonicUptime: TimeInterval
   let wallClockEpochSeconds: TimeInterval
+  let iokitRegistered: Bool
+  let eventLoopActive: Bool
+  let evidenceWritable: Bool
+  let detail: String?
 }
 
 let args = CommandLine.arguments
-guard args.count == 6 else {
+guard args.count == 7 else {
   exit(64)
 }
 let runIdentifier = args[1]
 let recorderLabel = args[2]
 let evidencePath = args[3]
-let pidPath = args[4]
-let lifetime = TimeInterval(args[5]) ?? 900
+let readyPath = args[4]
+let pidPath = args[5]
+let lifetime = TimeInterval(args[6]) ?? 900
 let started = Date()
 let deadline = started.addingTimeInterval(lifetime)
-var sawSleep = false
-var sawWake = false
-var sleepUptime: TimeInterval?
-var wakeUptime: TimeInterval?
 let encoder = JSONEncoder()
 encoder.outputFormatting = [.sortedKeys]
+var rootPort: io_connect_t = 0
+var notifier: io_object_t = 0
+var notifyPort: IONotificationPortRef?
+var iokitRegistered = false
+var evidenceWritable = false
+let iokitSystemWillSleepMessage = UInt32(0xE0000280) // kIOMessageSystemWillSleep
+let iokitSystemHasPoweredOnMessage = UInt32(0xE0000300) // kIOMessageSystemHasPoweredOn
 
-func append(_ event: String) {
+@Sendable
+func fsyncDirectory(containing path: String) {
+  let directory = URL(fileURLWithPath: path).deletingLastPathComponent().path
+  let fd = open(directory, O_RDONLY)
+  if fd >= 0 {
+    fsync(fd)
+    close(fd)
+  }
+}
+
+@discardableResult
+func append(_ event: String, detail: String? = nil) -> Bool {
   let payload = Event(
     schemaVersion: 1,
     runIdentifier: runIdentifier,
@@ -986,78 +1259,162 @@ func append(_ event: String) {
     event: event,
     pid: getpid(),
     monotonicUptime: ProcessInfo.processInfo.systemUptime,
-    wallClockEpochSeconds: CFAbsoluteTimeGetCurrent() + kCFAbsoluteTimeIntervalSince1970
+    wallClockEpochSeconds: CFAbsoluteTimeGetCurrent() + kCFAbsoluteTimeIntervalSince1970,
+    iokitRegistered: iokitRegistered,
+    eventLoopActive: CFRunLoopGetCurrent() == CFRunLoopGetMain(),
+    evidenceWritable: evidenceWritable,
+    detail: detail
   )
-  guard let data = try? encoder.encode(payload) else { return }
+  guard let data = try? encoder.encode(payload) else { return false }
   let url = URL(fileURLWithPath: evidencePath)
   FileManager.default.createFile(atPath: evidencePath, contents: nil)
-  if let handle = try? FileHandle(forWritingTo: url) {
-    defer { try? handle.close() }
-    try? handle.seekToEnd()
-    try? handle.write(contentsOf: data)
-    try? handle.write(contentsOf: Data("\n".utf8))
+  guard let handle = try? FileHandle(forWritingTo: url) else { return false }
+  do {
+    try handle.seekToEnd()
+    try handle.write(contentsOf: data)
+    try handle.write(contentsOf: Data("\n".utf8))
+    try handle.synchronize()
+    fsync(handle.fileDescriptor)
+    try handle.close()
+    fsyncDirectory(containing: evidencePath)
+    return true
+  } catch {
+    try? handle.close()
+    return false
+  }
+}
+
+func writeReadyFile() -> Bool {
+  let payload: [String: Any] = [
+    "schemaVersion": 1,
+    "runIdentifier": runIdentifier,
+    "recorderLabel": recorderLabel,
+    "pid": Int(getpid()),
+    "iokitRegistered": iokitRegistered,
+    "eventLoopActive": true,
+    "evidenceWritable": evidenceWritable,
+    "monotonicUptime": ProcessInfo.processInfo.systemUptime,
+    "wallClockEpochSeconds": CFAbsoluteTimeGetCurrent() + kCFAbsoluteTimeIntervalSince1970,
+  ]
+  guard JSONSerialization.isValidJSONObject(payload),
+        let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]) else {
+    return false
+  }
+  let url = URL(fileURLWithPath: readyPath)
+  FileManager.default.createFile(atPath: readyPath, contents: nil)
+  guard let handle = try? FileHandle(forWritingTo: url) else { return false }
+  do {
+    try handle.truncate(atOffset: 0)
+    try handle.write(contentsOf: data)
+    try handle.write(contentsOf: Data("\n".utf8))
+    try handle.synchronize()
+    fsync(handle.fileDescriptor)
+    try handle.close()
+    fsyncDirectory(containing: readyPath)
+    return true
+  } catch {
+    try? handle.close()
+    return false
   }
 }
 
 try? "\(getpid())\n".write(toFile: pidPath, atomically: true, encoding: .utf8)
-append("recorder-started")
+evidenceWritable = append("recorder-started")
+
+if ProcessInfo.processInfo.environment["HERMES_M14_003_FORCE_IOKIT_REGISTRATION_FAILURE"] == "YES" {
+  append("iokit-registration-failed", detail: "forced")
+  exit(70)
+}
+
+let callback: IOServiceInterestCallback = { _, _, messageType, messageArgument in
+  switch messageType {
+  case iokitSystemWillSleepMessage:
+    append("IOKitSystemWillSleep")
+    IOAllowPowerChange(rootPort, Int(bitPattern: messageArgument))
+  case iokitSystemHasPoweredOnMessage:
+    append("IOKitSystemHasPoweredOn")
+    CFRunLoopStop(CFRunLoopGetMain())
+  default:
+    break
+  }
+}
+
+rootPort = IORegisterForSystemPower(nil, &notifyPort, callback, &notifier)
+guard rootPort != 0, let notifyPort else {
+  append("iokit-registration-failed")
+  exit(70)
+}
+iokitRegistered = true
+append("iokit-registration-succeeded")
+
+if let source = IONotificationPortGetRunLoopSource(notifyPort)?.takeUnretainedValue() {
+  CFRunLoopAddSource(CFRunLoopGetMain(), source, .defaultMode)
+} else {
+  append("iokit-registration-failed", detail: "missing-runloop-source")
+  exit(70)
+}
 
 let center = NSWorkspace.shared.notificationCenter
-let sleepObserver = center.addObserver(
-  forName: NSWorkspace.willSleepNotification,
-  object: nil,
-  queue: .main
-) { _ in
-  sawSleep = true
-  sleepUptime = ProcessInfo.processInfo.systemUptime
+let sleepObserver = center.addObserver(forName: NSWorkspace.willSleepNotification, object: nil, queue: .main) { _ in
   append("NSWorkspaceWillSleep")
 }
-let wakeObserver = center.addObserver(
-  forName: NSWorkspace.didWakeNotification,
-  object: nil,
-  queue: .main
-) { _ in
-  sawWake = true
-  wakeUptime = ProcessInfo.processInfo.systemUptime
+let wakeObserver = center.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { _ in
   append("NSWorkspaceDidWake")
-  CFRunLoopStop(CFRunLoopGetMain())
 }
 
-Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
-  if Date() >= deadline {
-    append("recorder-timeout")
+let timer = CFRunLoopTimerCreateWithHandler(kCFAllocatorDefault, deadline.timeIntervalSinceReferenceDate, 0, 0, 0) { _ in
+  append("recorder-timeout")
+  CFRunLoopStop(CFRunLoopGetMain())
+}
+CFRunLoopAddTimer(CFRunLoopGetMain(), timer, .defaultMode)
+
+CFRunLoopPerformBlock(CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue) {
+  append("recorder-ready")
+  if !writeReadyFile() {
+    append("recorder-ready-write-failed")
     CFRunLoopStop(CFRunLoopGetMain())
   }
 }
+CFRunLoopWakeUp(CFRunLoopGetMain())
 
 CFRunLoopRun()
 center.removeObserver(sleepObserver)
 center.removeObserver(wakeObserver)
+if notifier != 0 {
+  IOObjectRelease(notifier)
+}
+if rootPort != 0 {
+  IOServiceClose(rootPort)
+}
+IONotificationPortDestroy(notifyPort)
 
-let startUptime = sleepUptime ?? ProcessInfo.processInfo.systemUptime
-let endUptime = wakeUptime ?? ProcessInfo.processInfo.systemUptime
 append("recorder-finished")
-exit((sawSleep && sawWake && endUptime >= startUptime) ? 0 : 4)
+exit(0)
 SWIFT
 }
 
 install_recorder_launch_agent() {
   write_sleep_wake_recorder
-  rm -f "$EVIDENCE_FILE" "$RUNTIME_ROOT/wake-recorder.pid"
+  rm -f "$EVIDENCE_FILE" "$RECORDER_READY_FILE" "$RECORDER_PID_FILE"
   /usr/bin/python3 - "$RECORDER_PLIST" "$RECORDER_LABEL" "$RECORDER_SOURCE" "$RUN_ID" \
-    "$EVIDENCE_FILE" "$RUNTIME_ROOT/wake-recorder.pid" "$WAKE_TIMEOUT_SECONDS" "$LOGS_ROOT" <<'PY'
+    "$EVIDENCE_FILE" "$RECORDER_READY_FILE" "$RECORDER_PID_FILE" "$WAKE_TIMEOUT_SECONDS" "$LOGS_ROOT" <<'PY'
 import plistlib
+import os
 import sys
 from pathlib import Path
-target, label, source, run_id, evidence, pid_path, timeout, logs = sys.argv[1:]
+target, label, source, run_id, evidence, ready_path, pid_path, timeout, logs = sys.argv[1:]
 Path(target).parent.mkdir(parents=True, exist_ok=True)
 Path(logs).mkdir(parents=True, exist_ok=True)
+environment = {}
+if os.environ.get("HERMES_M14_003_FORCE_IOKIT_REGISTRATION_FAILURE") == "YES":
+    environment["HERMES_M14_003_FORCE_IOKIT_REGISTRATION_FAILURE"] = "YES"
 plist = {
     "Label": label,
-    "ProgramArguments": ["/usr/bin/swift", source, run_id, label, evidence, pid_path, timeout],
+    "ProgramArguments": ["/usr/bin/swift", source, run_id, label, evidence, ready_path, pid_path, timeout],
     "RunAtLoad": True,
     "KeepAlive": False,
     "ProcessType": "Background",
+    "EnvironmentVariables": environment,
     "StandardOutPath": str(Path(logs) / "wake-recorder.stdout.log"),
     "StandardErrorPath": str(Path(logs) / "wake-recorder.stderr.log"),
 }
@@ -1070,15 +1427,78 @@ PY
   local deadline=$(( $(date +%s) + 20 ))
   while [[ $(date +%s) -lt $deadline ]]; do
     RECORDER_PID="$(recorder_pid_from_launchctl)"
-    if [[ -z "$RECORDER_PID" && -r "$RUNTIME_ROOT/wake-recorder.pid" ]]; then
-      RECORDER_PID="$(head -n 1 "$RUNTIME_ROOT/wake-recorder.pid" 2>/dev/null | tr -cd '0-9')"
+    if [[ -z "$RECORDER_PID" && -r "$RECORDER_PID_FILE" ]]; then
+      RECORDER_PID="$(head -n 1 "$RECORDER_PID_FILE" 2>/dev/null | tr -cd '0-9')"
     fi
-    if [[ -n "$RECORDER_PID" ]] && kill -0 "$RECORDER_PID" 2>/dev/null; then
+    if [[ -n "$RECORDER_PID" ]] && kill -0 "$RECORDER_PID" 2>/dev/null && verify_recorder_ready; then
       return 0
     fi
     sleep 0.5
   done
+  RECORDER_FAILURE_REASON="recorder-not-ready"
   return 1
+}
+
+verify_recorder_ready() {
+  /bin/launchctl print "$SERVICE_DOMAIN/$RECORDER_LABEL" >/dev/null 2>&1 || {
+    RECORDER_FAILURE_REASON="recorder-not-ready"
+    return 1
+  }
+  local launchd_pid file_pid
+  launchd_pid="$(recorder_pid_from_launchctl)"
+  [[ -n "$launchd_pid" ]] || {
+    RECORDER_FAILURE_REASON="recorder-not-ready"
+    return 1
+  }
+  [[ -n "$RECORDER_PID" && "$launchd_pid" == "$RECORDER_PID" ]] || {
+    RECORDER_FAILURE_REASON="recorder-not-ready"
+    return 1
+  }
+  kill -0 "$RECORDER_PID" 2>/dev/null || {
+    RECORDER_FAILURE_REASON="recorder-not-ready"
+    return 1
+  }
+  [[ -r "$RECORDER_PID_FILE" ]] || {
+    RECORDER_FAILURE_REASON="recorder-not-ready"
+    return 1
+  }
+  file_pid="$(head -n 1 "$RECORDER_PID_FILE" 2>/dev/null | tr -cd '0-9')"
+  [[ "$file_pid" == "$RECORDER_PID" ]] || {
+    RECORDER_FAILURE_REASON="recorder-not-ready"
+    return 1
+  }
+  /usr/bin/python3 - "$RECORDER_READY_FILE" "$RUN_ID" "$RECORDER_LABEL" "$RECORDER_PID" "$EVIDENCE_FILE" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+ready_path, run_id, label, pid, evidence = sys.argv[1:]
+try:
+    ready = json.loads(Path(ready_path).read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit("recorder-not-ready")
+if ready.get("runIdentifier") != run_id or ready.get("recorderLabel") != label:
+    raise SystemExit("run-id-mismatch")
+if ready.get("pid") != int(pid):
+    raise SystemExit("recorder-not-ready")
+if ready.get("iokitRegistered") is not True:
+    raise SystemExit("recorder-not-ready")
+if ready.get("eventLoopActive") is not True:
+    raise SystemExit("recorder-not-ready")
+if ready.get("evidenceWritable") is not True:
+    raise SystemExit("recorder-not-ready")
+path = Path(evidence)
+path.parent.mkdir(parents=True, exist_ok=True)
+with path.open("a", encoding="utf-8") as handle:
+    handle.flush()
+    os.fsync(handle.fileno())
+PY
+  local rc=$?
+  if (( rc != 0 )); then
+    RECORDER_FAILURE_REASON="recorder-not-ready"
+    return 1
+  fi
+  return 0
 }
 
 verify_recorder_evidence() {
@@ -1091,33 +1511,45 @@ run_id = checkpoint["runIdentifier"]
 label = checkpoint["recorderLabel"]
 path = Path(sys.argv[2])
 if not path.exists():
-    raise SystemExit("missing wake evidence")
+    raise SystemExit("recorder-not-ready")
 events = []
 for line in path.read_text(encoding="utf-8").splitlines():
     if line.strip():
         event = json.loads(line)
         if event.get("runIdentifier") != run_id:
-            raise SystemExit("wrong run identifier")
+            raise SystemExit("run-id-mismatch")
         if event.get("recorderLabel") != label:
-            raise SystemExit("wrong recorder label")
+            raise SystemExit("run-id-mismatch")
         if not isinstance(event.get("pid"), int):
-            raise SystemExit("missing exact recorder pid")
+            raise SystemExit("recorder-not-ready")
         if not isinstance(event.get("monotonicUptime"), (int, float)):
-            raise SystemExit("missing monotonic evidence")
+            raise SystemExit("invalid-uptime-evidence")
+        if not isinstance(event.get("wallClockEpochSeconds"), (int, float)):
+            raise SystemExit("invalid-uptime-evidence")
         events.append(event)
 names = [event.get("event") for event in events]
-if "NSWorkspaceWillSleep" not in names:
-    raise SystemExit("will-sleep evidence required")
-if "NSWorkspaceDidWake" not in names:
-    raise SystemExit("did-wake evidence required")
-sleep = next(event for event in events if event.get("event") == "NSWorkspaceWillSleep")
-wake = next(event for event in events if event.get("event") == "NSWorkspaceDidWake")
-if wake["monotonicUptime"] < sleep["monotonicUptime"]:
-    raise SystemExit("wake uptime precedes sleep uptime")
-if sleep.get("wallClockEpochSeconds") is not None and wake.get("wallClockEpochSeconds") is not None:
-    pass
-else:
-    raise SystemExit("wall clock may be present but cannot be sole evidence")
+if "recorder-ready" not in names:
+    raise SystemExit("recorder-not-ready")
+if "IOKitSystemWillSleep" not in names:
+    raise SystemExit("will-sleep-missing")
+if "IOKitSystemHasPoweredOn" not in names:
+    raise SystemExit("wake-missing")
+ready_index = names.index("recorder-ready")
+sleep_index = names.index("IOKitSystemWillSleep")
+wake_index = names.index("IOKitSystemHasPoweredOn")
+if not (ready_index < sleep_index < wake_index):
+    raise SystemExit("invalid-event-order")
+ready = events[ready_index]
+sleep = events[sleep_index]
+wake = events[wake_index]
+if ready.get("iokitRegistered") is not True or ready.get("eventLoopActive") is not True:
+    raise SystemExit("recorder-not-ready")
+if sleep["monotonicUptime"] < ready["monotonicUptime"] or wake["monotonicUptime"] < sleep["monotonicUptime"]:
+    raise SystemExit("invalid-uptime-evidence")
+if wake["wallClockEpochSeconds"] <= sleep["wallClockEpochSeconds"]:
+    raise SystemExit("invalid-uptime-evidence")
+if wake["monotonicUptime"] - sleep["monotonicUptime"] < 0:
+    raise SystemExit("invalid-uptime-evidence")
 PY
 }
 
@@ -1169,6 +1601,8 @@ cleanup_owned_state() {
   if ! has_live_owned_state; then
     [[ -r "$CHECKPOINT_FILE" ]] && load_checkpoint 2>/dev/null || true
   fi
+
+  resume_real_hermes_recorded_pids
 
   terminate_pid "$APP_PID"
   APP_PID=""
@@ -1286,7 +1720,11 @@ prepare() {
   RESULT[APP_RELAUNCHED_BEFORE_SLEEP]=yes
   reconnect_check && RESULT[PRE_SLEEP_RECONNECT_SUCCEEDED]=yes || fail "pre-sleep reconnect failed"
 
-  install_recorder_launch_agent || fail "wake recorder launch failed"
+  stop_real_hermes_recorded_pids
+  write_checkpoint "prepare" "real-hermes-quiesced"
+
+  install_recorder_launch_agent || fail "${RECORDER_FAILURE_REASON:-recorder-not-ready}"
+  verify_recorder_ready || fail "${RECORDER_FAILURE_REASON:-recorder-not-ready}"
   write_checkpoint "prepare" "waiting-for-manual-sleep"
   RESULT[WAITING_FOR_MANUAL_SLEEP]=yes
   RESULT[M14_003_RESULT]=WAITING
@@ -1314,7 +1752,7 @@ resume() {
   local checkpoint_run_id checkpoint_status
   checkpoint_run_id="$(checkpoint_field runIdentifier)"
   checkpoint_status="$(checkpoint_field status)"
-  [[ "$checkpoint_run_id" == "$RUN_ID" ]] || fail "checkpoint run identifier mismatch"
+  [[ "$checkpoint_run_id" == "$RUN_ID" ]] || fail "run-id-mismatch"
   [[ "$checkpoint_status" == "waiting-for-manual-sleep" ]] || fail "stale or duplicate resume checkpoint"
   write_checkpoint "resume" "resuming"
 
@@ -1330,7 +1768,17 @@ resume() {
   RESULT[PRE_SLEEP_RECONNECT_SUCCEEDED]=yes
   RESULT[WAITING_FOR_MANUAL_SLEEP]=yes
 
-  verify_recorder_evidence || timeout_fail "genuine sleep/wake evidence was not recorded"
+  local recorder_verify_error
+  recorder_verify_error="$(verify_recorder_evidence 2>&1)" || {
+    case "$recorder_verify_error" in
+      recorder-not-ready|will-sleep-missing|wake-missing|run-id-mismatch|invalid-event-order|invalid-uptime-evidence)
+        timeout_fail "$recorder_verify_error"
+        ;;
+      *)
+        timeout_fail "recorder-not-ready"
+        ;;
+    esac
+  }
   RESULT[REAL_SLEEP_DETECTED]=yes
   RESULT[REAL_WAKE_DETECTED]=yes
   RESULT[WAKE_TIMEOUT_OCCURRED]=no
