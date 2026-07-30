@@ -351,7 +351,7 @@ private enum HermesVersionOutputParser {
   private static func parseHeader(
     _ line: String
   ) -> (semanticVersion: String, displayVersion: String, buildDateText: String?)? {
-    let pattern = #"^Hermes Agent v([0-9]+(?:\.[0-9]+){1,3})(?:\s+\(([^)]+)\))?$"#
+    let pattern = #"^Hermes Agent v([0-9]+(?:\.[0-9]+){1,3})(?:\s+\(([^)]+)\))?(?:\s+.*)?$"#
     guard let regex = try? NSRegularExpression(pattern: pattern),
       let match = regex.firstMatch(
         in: line,

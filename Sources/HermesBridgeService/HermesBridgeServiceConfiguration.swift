@@ -249,13 +249,17 @@ public struct HermesBridgeServiceConfiguration: Codable, Equatable, Sendable {
       for: .applicationSupportDirectory, in: .userDomainMask
     ).first!
     .appendingPathComponent("HermesBridge", isDirectory: true)
+    let candidates = uniqueExecutableCandidates(
+      [
+        pathHermesExecutableCandidate(),
+        URL(fileURLWithPath: "/opt/hermes/bin/hermes"),
+        URL(fileURLWithPath: "/usr/local/bin/hermes"),
+      ].compactMap { $0 }
+    )
     return try HermesBridgeServiceConfiguration(
       runtimeRoot: support.appendingPathComponent("Runtime", isDirectory: true),
       requestStateRoot: support.appendingPathComponent("RequestState", isDirectory: true),
-      allowlistedHermesExecutableCandidates: [
-        URL(fileURLWithPath: "/opt/hermes/bin/hermes"),
-        URL(fileURLWithPath: "/usr/local/bin/hermes"),
-      ],
+      allowlistedHermesExecutableCandidates: candidates,
       loopbackPortPolicy: HermesBridgeLoopbackPortPolicy(fixedPort: 17893),
       timeouts: HermesBridgeServiceTimeouts(
         startup: 20,
@@ -265,6 +269,37 @@ public struct HermesBridgeServiceConfiguration: Codable, Equatable, Sendable {
       ),
       maximumConcurrentXPCRequests: 8
     )
+  }
+
+  private static func pathHermesExecutableCandidate() -> URL? {
+    let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
+    for directory in path.split(separator: ":", omittingEmptySubsequences: true) {
+      let candidate = URL(fileURLWithPath: String(directory), isDirectory: true)
+        .appendingPathComponent("hermes")
+        .standardizedFileURL
+      var isDirectory: ObjCBool = false
+      guard FileManager.default.fileExists(atPath: candidate.path, isDirectory: &isDirectory),
+        !isDirectory.boolValue,
+        FileManager.default.isExecutableFile(atPath: candidate.path)
+      else {
+        continue
+      }
+      return candidate
+    }
+    return nil
+  }
+
+  private static func uniqueExecutableCandidates(_ candidates: [URL]) -> [URL] {
+    var seen = Set<String>()
+    var ordered: [URL] = []
+    for candidate in candidates {
+      let normalized = candidate.standardizedFileURL.path
+      guard seen.insert(normalized).inserted else {
+        continue
+      }
+      ordered.append(candidate)
+    }
+    return ordered
   }
 
   public static func decodeTrustedConfiguration(

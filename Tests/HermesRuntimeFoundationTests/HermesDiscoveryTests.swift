@@ -139,6 +139,32 @@ final class HermesDiscoveryTests: XCTestCase {
     XCTAssertEqual(versionInfo.openAISDKVersion, "2.30.0")
   }
 
+  func testVersionOutputWithInlineUpstreamSuffix() throws {
+    let executable = try fixtureExecutable(
+      named: "version-hermes-inline-suffix",
+      body: """
+        printf 'Hermes Agent v0.18.2 (2026.7.7.2) · upstream 8e1debd5\\n'
+        printf 'Install method: git\\n'
+        printf 'Python: 3.11.15\\n'
+        printf 'OpenAI SDK: 2.24.0\\n'
+        """
+    )
+
+    let versionInfo = try HermesDiscovery(
+      allowlistedExecutableCandidates: [executable]
+    ).discover(at: executable).versionInfo
+
+    XCTAssertEqual(versionInfo.semanticVersion, "0.18.2")
+    XCTAssertEqual(
+      versionInfo.displayVersion,
+      "Hermes Agent v0.18.2 (2026.7.7.2) · upstream 8e1debd5"
+    )
+    XCTAssertEqual(versionInfo.buildDateText, "2026.7.7.2")
+    XCTAssertEqual(versionInfo.installationMethod, "git")
+    XCTAssertEqual(versionInfo.pythonVersion, "3.11.15")
+    XCTAssertEqual(versionInfo.openAISDKVersion, "2.24.0")
+  }
+
   func testMalformedOutput() throws {
     let executable = try fixtureExecutable(
       named: "malformed-hermes",
