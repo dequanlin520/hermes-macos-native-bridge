@@ -576,6 +576,30 @@ public struct HermesBridgeServiceRequestHandler: HermesBridgeRequestHandling {
     }
   }
 
+  public func agentCompatibilityReport() -> HermesAgentCompatibilityReport {
+    do {
+      let result = try agentDiscovery.discover(at: agentExecutableURL)
+      return HermesAgentCompatibilityReport.discovered(result)
+    } catch let error as HermesDiscoveryError {
+      switch error {
+      case .executableNotFound:
+        return .blocked(reasonCode: "discovery.executable_not_found")
+      case .pathNotAllowlisted:
+        return .blocked(reasonCode: "discovery.path_not_allowlisted")
+      case .executableNotRunnable:
+        return .blocked(reasonCode: "discovery.executable_not_runnable")
+      case .versionCommandFailed:
+        return .blocked(reasonCode: "version.command_failed")
+      case .malformedVersionOutput:
+        return .blocked(reasonCode: "version.output_malformed")
+      case .timeout:
+        return .blocked(reasonCode: "version.timeout")
+      }
+    } catch {
+      return .blocked(reasonCode: "discovery.unknown_error")
+    }
+  }
+
   public func createRuntimeEventSubscription() async throws -> HermesBridgeRuntimeEventSubscriptionPayload {
     try await runtimeEvents.createSubscription()
   }
