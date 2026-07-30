@@ -2,10 +2,15 @@
 set -u
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd -P)"
+SCRIPT_NAME="$0"
 ARTIFACT_DIR="$ROOT_DIR/artifacts/m14-003"
 RESULT_FILE="$ARTIFACT_DIR/result.txt"
 RELEASE_ROOT="$ARTIFACT_DIR/release"
 RUNTIME_ROOT="$ARTIFACT_DIR/runtime"
+CHECKPOINT_FILE="$RUNTIME_ROOT/checkpoint.json"
+EVIDENCE_FILE="$RUNTIME_ROOT/wake-recorder-evidence.jsonl"
+RECORDER_SOURCE="$RUNTIME_ROOT/SleepWakeRecorder.swift"
+RECORDER_LABEL_PREFIX="com.hermes.bridge.m14-003.wake-recorder"
 HERMES_CONFIG_DIR="$RUNTIME_ROOT/HermesBridge"
 HERMES_CONFIG_FILE="$HERMES_CONFIG_DIR/configuration.json"
 RUNTIME_DATA_ROOT="$RUNTIME_ROOT/Runtime"
@@ -19,10 +24,14 @@ ISOLATED_XDG_DATA_HOME="$RUNTIME_ROOT/xdg-data"
 ISOLATED_XDG_STATE_HOME="$RUNTIME_ROOT/xdg-state"
 ISOLATED_XDG_RUNTIME_DIR="$RUNTIME_ROOT/xdg-runtime"
 APP_NAME="Hermes Bridge.app"
-APP_TARGET="$HOME/Applications/$APP_NAME"
-LAUNCH_AGENT_TARGET="$HOME/Library/LaunchAgents/com.hermes.bridge.plist"
-APP_EXECUTABLE="$APP_TARGET/Contents/MacOS/HermesBridgeApp"
-SERVICE_EXECUTABLE="$APP_TARGET/Contents/Library/HermesBridge/HermesBridgeService"
+APP_TARGET_REL="Applications/$APP_NAME"
+LAUNCH_AGENT_TARGET_REL="Library/LaunchAgents/com.hermes.bridge.plist"
+APP_TARGET="$HOME/$APP_TARGET_REL"
+LAUNCH_AGENT_TARGET="$HOME/$LAUNCH_AGENT_TARGET_REL"
+APP_EXECUTABLE_REL="$APP_TARGET_REL/Contents/MacOS/HermesBridgeApp"
+SERVICE_EXECUTABLE_REL="$APP_TARGET_REL/Contents/Library/HermesBridge/HermesBridgeService"
+APP_EXECUTABLE="$HOME/$APP_EXECUTABLE_REL"
+SERVICE_EXECUTABLE="$HOME/$SERVICE_EXECUTABLE_REL"
 CONTROL_EXECUTABLE="$RELEASE_ROOT/bin/HermesBridgeControl"
 RELEASE_APP="$RELEASE_ROOT/$APP_NAME"
 RELEASE_APP_EXECUTABLE="$RELEASE_APP/Contents/MacOS/HermesBridgeApp"
@@ -31,7 +40,10 @@ LABEL="com.hermes.bridge"
 MACH_SERVICE="com.hermes.bridge.xpc"
 SERVICE_DOMAIN="gui/$(id -u)"
 REAL_HERMES_HOME="$HOME/.hermes"
-RUN_ID="m14-003-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+RUN_ID="${HERMES_M14_003_RUN_ID:-m14-003-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
+RECORDER_LABEL="$RECORDER_LABEL_PREFIX.$RUN_ID"
+RECORDER_PLIST_REL="Library/LaunchAgents/$RECORDER_LABEL.plist"
+RECORDER_PLIST="$HOME/$RECORDER_PLIST_REL"
 ACCEPTANCE_LOCK_DIR="${TMPDIR:-/tmp}/com.hermes.bridge.m14-003.acceptance.lock"
 ACCEPTANCE_LOCK_OWNED="no"
 BLOCKED_REASON=""
@@ -42,11 +54,13 @@ typeset -A RESULT
 APP_INSTALLED_BY_RUN="no"
 LAUNCH_AGENT_INSTALLED_BY_RUN="no"
 SERVICE_BOOTSTRAPPED_BY_RUN="no"
+RECORDER_BOOTSTRAPPED_BY_RUN="no"
 APP_PID=""
 SERVICE_PID=""
-INTEGRITY_BEFORE="$ARTIFACT_DIR/real-home-before.snapshot"
-INTEGRITY_AFTER="$ARTIFACT_DIR/real-home-after.snapshot"
-INTEGRITY_CHANGES="$ARTIFACT_DIR/real-home-changes.txt"
+RECORDER_PID=""
+INTEGRITY_BEFORE="$RUNTIME_ROOT/real-home-before.snapshot"
+INTEGRITY_AFTER="$RUNTIME_ROOT/real-home-after.snapshot"
+INTEGRITY_CHANGES="$RUNTIME_ROOT/real-home-changes.txt"
 FINISHED="no"
 
 ORDERED_KEYS=(
@@ -87,6 +101,11 @@ ORDERED_KEYS=(
   M14_003_RESULT
 )
 
+usage() {
+  print -u2 "usage: $SCRIPT_NAME prepare|resume|cleanup"
+  print -u2 "prepare and resume require HERMES_SLEEP_WAKE_ACCEPTANCE=YES"
+}
+
 set_default_results() {
   RESULT=(
     EXPLICIT_OPT_IN_CONFIRMED no
@@ -118,10 +137,10 @@ set_default_results() {
     SUDO_USED no
     BROAD_PROCESS_KILL_USED no
     REAL_HERMES_HOME_MODIFIED no
-    APP_TARGET_CLEANED no
-    LAUNCH_AGENT_TARGET_CLEANED no
+    APP_TARGET_CLEANED skip
+    LAUNCH_AGENT_TARGET_CLEANED skip
     ACCEPTANCE_PROCESS_REMAINING skip
-    ENVIRONMENT_RESTORED no
+    ENVIRONMENT_RESTORED skip
     GENERATED_ARTIFACT_TRACKED_BY_GIT yes
     M14_003_RESULT FAIL
   )
@@ -174,6 +193,7 @@ result_exit_code() {
     OPT_IN_REQUIRED) return 2 ;;
     BLOCKED) return 3 ;;
     TIMEOUT) return 4 ;;
+    WAITING) return 5 ;;
     *) return 1 ;;
   esac
 }
@@ -204,7 +224,8 @@ mark_pre_start_skips() {
 finish_result() {
   if [[ "${RESULT[M14_003_RESULT]}" == "OPT_IN_REQUIRED" \
     || "${RESULT[M14_003_RESULT]}" == "BLOCKED" \
-    || "${RESULT[M14_003_RESULT]}" == "TIMEOUT" ]]; then
+    || "${RESULT[M14_003_RESULT]}" == "TIMEOUT" \
+    || "${RESULT[M14_003_RESULT]}" == "WAITING" ]]; then
     write_result
     return 0
   fi
@@ -254,6 +275,17 @@ timeout_fail() {
   RESULT[WAKE_TIMEOUT_OCCURRED]=yes
   RESULT[M14_003_RESULT]=TIMEOUT
   exit 4
+}
+
+require_opt_in() {
+  if [[ "${HERMES_SLEEP_WAKE_ACCEPTANCE:-}" != "YES" ]]; then
+    RESULT[M14_003_RESULT]=OPT_IN_REQUIRED
+    mark_pre_start_skips
+    print -u2 "opt-in required: set HERMES_SLEEP_WAKE_ACCEPTANCE=YES to run real sleep/wake endurance acceptance"
+    write_result
+    exit 2
+  fi
+  RESULT[EXPLICIT_OPT_IN_CONFIRMED]=yes
 }
 
 write_real_home_integrity_snapshot() {
@@ -366,7 +398,7 @@ PY
 }
 
 set_real_home_modified_result() {
-  if compare_real_home_integrity_snapshot; then
+  if [[ -r "$INTEGRITY_BEFORE" ]] && compare_real_home_integrity_snapshot; then
     RESULT[REAL_HERMES_HOME_MODIFIED]=no
   else
     RESULT[REAL_HERMES_HOME_MODIFIED]=yes
@@ -405,9 +437,18 @@ pid_for_exact_executable() {
   done
 }
 
-service_pid_from_launchctl() {
-  /bin/launchctl print "$SERVICE_DOMAIN/$LABEL" 2>/dev/null \
+pid_from_launchctl_label() {
+  local label="$1"
+  /bin/launchctl print "$SERVICE_DOMAIN/$label" 2>/dev/null \
     | awk -F= '/^[[:space:]]*pid = / { gsub(/[[:space:]]/, "", $2); print $2; exit }'
+}
+
+service_pid_from_launchctl() {
+  pid_from_launchctl_label "$LABEL"
+}
+
+recorder_pid_from_launchctl() {
+  pid_from_launchctl_label "$RECORDER_LABEL"
 }
 
 wait_for_service_pid() {
@@ -438,69 +479,6 @@ wait_for_app_pid() {
   return 1
 }
 
-cleanup() {
-  trap - EXIT INT TERM HUP
-  terminate_pid "$APP_PID"
-  APP_PID=""
-
-  if [[ "$SERVICE_BOOTSTRAPPED_BY_RUN" == "yes" ]]; then
-    /bin/launchctl bootout "$SERVICE_DOMAIN" "$LAUNCH_AGENT_TARGET" >/dev/null 2>&1 || true
-    SERVICE_BOOTSTRAPPED_BY_RUN="no"
-  fi
-  if [[ "$LAUNCH_AGENT_INSTALLED_BY_RUN" == "yes" && -e "$LAUNCH_AGENT_TARGET" ]]; then
-    rm -f "$LAUNCH_AGENT_TARGET"
-  fi
-  if [[ "$APP_INSTALLED_BY_RUN" == "yes" && -e "$APP_TARGET" ]]; then
-    rm -rf "$APP_TARGET"
-  fi
-  if [[ "$ACCEPTANCE_LOCK_OWNED" == "yes" ]]; then
-    rm -rf "$ACCEPTANCE_LOCK_DIR"
-    ACCEPTANCE_LOCK_OWNED="no"
-  fi
-
-  if [[ "$APP_INSTALLED_BY_RUN" == "no" \
-    && "$LAUNCH_AGENT_INSTALLED_BY_RUN" == "no" \
-    && "$SERVICE_BOOTSTRAPPED_BY_RUN" == "no" \
-    && -z "$SERVICE_PID" ]]; then
-    mark_pre_start_skips
-    RESULT[REAL_HERMES_HOME_MODIFIED]=no
-    finish_result
-    FINISHED="yes"
-    return 0
-  fi
-
-  if [[ "$APP_INSTALLED_BY_RUN" == "yes" ]]; then
-    [[ ! -e "$APP_TARGET" ]] && RESULT[APP_TARGET_CLEANED]=yes || RESULT[APP_TARGET_CLEANED]=no
-  else
-    RESULT[APP_TARGET_CLEANED]=skip
-  fi
-  if [[ "$LAUNCH_AGENT_INSTALLED_BY_RUN" == "yes" ]]; then
-    [[ ! -e "$LAUNCH_AGENT_TARGET" ]] && RESULT[LAUNCH_AGENT_TARGET_CLEANED]=yes || RESULT[LAUNCH_AGENT_TARGET_CLEANED]=no
-  else
-    RESULT[LAUNCH_AGENT_TARGET_CLEANED]=skip
-  fi
-
-  local residual="no"
-  if [[ -n "$(pid_for_exact_executable "$APP_EXECUTABLE" || true)" ]]; then
-    residual="yes"
-  fi
-  if [[ -n "$SERVICE_PID" ]] && kill -0 "$SERVICE_PID" 2>/dev/null; then
-    residual="yes"
-  fi
-  if /bin/launchctl print "$SERVICE_DOMAIN/$LABEL" >/dev/null 2>&1; then
-    residual="yes"
-  fi
-  RESULT[ACCEPTANCE_PROCESS_REMAINING]="$residual"
-
-  set_real_home_modified_result
-  RESULT[ENVIRONMENT_RESTORED]=$([[ "$residual" == "no" ]] && print -r -- yes || print -r -- no)
-  finish_result
-  FINISHED="yes"
-}
-
-trap cleanup EXIT
-trap 'RESULT[M14_003_RESULT]=FAIL; exit 130' INT TERM HUP
-
 assert_user_scope() {
   case "$APP_TARGET" in
     "$HOME/Applications/"*) ;;
@@ -510,8 +488,13 @@ assert_user_scope() {
     "$HOME/Library/LaunchAgents/"*) ;;
     *) return 1 ;;
   esac
+  case "$RECORDER_PLIST" in
+    "$HOME/Library/LaunchAgents/"*) ;;
+    *) return 1 ;;
+  esac
   [[ "$APP_TARGET" != "/Applications/"* ]] || return 1
   [[ "$LAUNCH_AGENT_TARGET" == *"/$LABEL.plist" ]] || return 1
+  [[ "$RECORDER_LABEL" == "$RECORDER_LABEL_PREFIX."* ]] || return 1
   [[ "$SERVICE_DOMAIN" == "gui/$(id -u)" ]] || return 1
   RESULT[USER_SCOPE_ONLY]=yes
 }
@@ -527,8 +510,18 @@ detect_collision() {
     RESULT[M14_003_RESULT]=BLOCKED
     return 1
   fi
+  if [[ -e "$RECORDER_PLIST" || -L "$RECORDER_PLIST" ]]; then
+    BLOCKED_REASON="wake recorder LaunchAgent target exists"
+    RESULT[M14_003_RESULT]=BLOCKED
+    return 1
+  fi
   if /bin/launchctl print "$SERVICE_DOMAIN/$LABEL" >/dev/null 2>&1; then
     BLOCKED_REASON="production launchd label already loaded"
+    RESULT[M14_003_RESULT]=BLOCKED
+    return 1
+  fi
+  if /bin/launchctl print "$SERVICE_DOMAIN/$RECORDER_LABEL" >/dev/null 2>&1; then
+    BLOCKED_REASON="wake recorder launchd label already loaded"
     RESULT[M14_003_RESULT]=BLOCKED
     return 1
   fi
@@ -575,6 +568,146 @@ acquire_acceptance_lock() {
   BLOCKED_REASON="active acceptance lock exists"
   RESULT[M14_003_RESULT]=BLOCKED
   return 1
+}
+
+write_checkpoint() {
+  local phase="$1"
+  local status="$2"
+  mkdir -p "$RUNTIME_ROOT"
+  /usr/bin/python3 - "$CHECKPOINT_FILE" "$RUN_ID" "$phase" "$status" \
+    "$LABEL" "$RECORDER_LABEL" "$APP_TARGET_REL" "$LAUNCH_AGENT_TARGET_REL" "$RECORDER_PLIST_REL" \
+    "$APP_EXECUTABLE_REL" "$SERVICE_EXECUTABLE_REL" "$APP_PID" "$SERVICE_PID" "$RECORDER_PID" \
+    "$APP_INSTALLED_BY_RUN" "$LAUNCH_AGENT_INSTALLED_BY_RUN" "$SERVICE_BOOTSTRAPPED_BY_RUN" \
+    "$RECORDER_BOOTSTRAPPED_BY_RUN" "$RESTART_CYCLES_EXPECTED" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+(
+    path, run_id, phase, status, service_label, recorder_label, app_target_rel,
+    launch_agent_target_rel, recorder_plist_rel, app_executable_rel,
+    service_executable_rel, app_pid, service_pid, recorder_pid, app_installed,
+    launch_agent_installed, service_bootstrapped, recorder_bootstrapped,
+    restart_cycles_expected,
+) = sys.argv[1:]
+checkpoint = {
+    "schemaVersion": 1,
+    "runIdentifier": run_id,
+    "phase": phase,
+    "status": status,
+    "createdAtMonotonicUptime": None,
+    "updatedAtEpochSeconds": None,
+    "serviceDomain": "gui/current-user",
+    "serviceLabel": service_label,
+    "recorderLabel": recorder_label,
+    "targets": {
+        "app": app_target_rel,
+        "launchAgent": launch_agent_target_rel,
+        "recorderLaunchAgent": recorder_plist_rel,
+        "appExecutable": app_executable_rel,
+        "serviceExecutable": service_executable_rel,
+    },
+    "ownedPids": {
+        "app": int(app_pid) if app_pid.isdigit() else None,
+        "service": int(service_pid) if service_pid.isdigit() else None,
+        "recorder": int(recorder_pid) if recorder_pid.isdigit() else None,
+    },
+    "ownership": {
+        "appInstalledByRun": app_installed == "yes",
+        "launchAgentInstalledByRun": launch_agent_installed == "yes",
+        "serviceBootstrappedByRun": service_bootstrapped == "yes",
+        "recorderBootstrappedByRun": recorder_bootstrapped == "yes",
+    },
+    "restartCyclesExpected": int(restart_cycles_expected),
+    "resultFile": "artifacts/m14-003/result.txt",
+    "runtimeRoot": "artifacts/m14-003/runtime",
+    "wakeEvidence": "artifacts/m14-003/runtime/wake-recorder-evidence.jsonl",
+    "realHomeSnapshotBefore": "artifacts/m14-003/runtime/real-home-before.snapshot",
+}
+Path(path).write_text(json.dumps(checkpoint, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+  /usr/bin/python3 - "$CHECKPOINT_FILE" <<'PY'
+import json
+import subprocess
+import sys
+import time
+from pathlib import Path
+path = Path(sys.argv[1])
+data = json.loads(path.read_text(encoding="utf-8"))
+try:
+    uptime = float(subprocess.check_output(["/usr/bin/python3", "-c", "import time; print(time.monotonic())"], text=True).strip())
+except Exception:
+    uptime = None
+data["createdAtMonotonicUptime"] = data.get("createdAtMonotonicUptime") or uptime
+data["updatedAtEpochSeconds"] = int(time.time())
+path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+}
+
+load_checkpoint() {
+  [[ -r "$CHECKPOINT_FILE" ]] || return 1
+  local assignments
+  assignments="$(/usr/bin/python3 - "$CHECKPOINT_FILE" <<'PY'
+import json
+import shlex
+import sys
+from pathlib import Path
+data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+required = [
+    ("runIdentifier", str),
+    ("phase", str),
+    ("status", str),
+    ("serviceLabel", str),
+    ("recorderLabel", str),
+    ("targets", dict),
+    ("ownedPids", dict),
+    ("ownership", dict),
+]
+for key, expected in required:
+    if key not in data or not isinstance(data[key], expected):
+        raise SystemExit(f"invalid checkpoint: {key}")
+targets = data["targets"]
+for key in ["app", "launchAgent", "recorderLaunchAgent", "appExecutable", "serviceExecutable"]:
+    value = targets.get(key)
+    if not isinstance(value, str) or value.startswith("/") or ".." in value.split("/"):
+        raise SystemExit(f"invalid relative target: {key}")
+if data["serviceLabel"] != "com.hermes.bridge":
+    raise SystemExit("invalid service label")
+if not data["recorderLabel"].startswith("com.hermes.bridge.m14-003.wake-recorder."):
+    raise SystemExit("invalid recorder label")
+owned = data["ownedPids"]
+ownership = data["ownership"]
+def emit(name, value):
+    print(f"{name}={shlex.quote(str(value))}")
+emit("RUN_ID", data["runIdentifier"])
+emit("RECORDER_LABEL", data["recorderLabel"])
+emit("RECORDER_PLIST_REL", targets["recorderLaunchAgent"])
+emit("APP_PID", "" if owned.get("app") is None else owned["app"])
+emit("SERVICE_PID", "" if owned.get("service") is None else owned["service"])
+emit("RECORDER_PID", "" if owned.get("recorder") is None else owned["recorder"])
+emit("APP_INSTALLED_BY_RUN", "yes" if ownership.get("appInstalledByRun") else "no")
+emit("LAUNCH_AGENT_INSTALLED_BY_RUN", "yes" if ownership.get("launchAgentInstalledByRun") else "no")
+emit("SERVICE_BOOTSTRAPPED_BY_RUN", "yes" if ownership.get("serviceBootstrappedByRun") else "no")
+emit("RECORDER_BOOTSTRAPPED_BY_RUN", "yes" if ownership.get("recorderBootstrappedByRun") else "no")
+PY
+)" || return 1
+  eval "$assignments"
+  RECORDER_PLIST="$HOME/$RECORDER_PLIST_REL"
+  return 0
+}
+
+checkpoint_field() {
+  local field="$1"
+  /usr/bin/python3 - "$CHECKPOINT_FILE" "$field" <<'PY'
+import json
+import sys
+from pathlib import Path
+data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+value = data
+for part in sys.argv[2].split("."):
+    value = value[part]
+print(value)
+PY
 }
 
 build_release_app() {
@@ -754,20 +887,63 @@ detect_duplicate_service_instance() {
   return 0
 }
 
-write_sleep_wake_helper() {
-  local helper="$ARTIFACT_DIR/SleepWakeProbe.swift"
-  mkdir -p "$ARTIFACT_DIR"
-  cat > "$helper" <<'SWIFT'
+write_sleep_wake_recorder() {
+  mkdir -p "$RUNTIME_ROOT"
+  cat > "$RECORDER_SOURCE" <<'SWIFT'
 import AppKit
 import Foundation
 
-let timeout = TimeInterval(CommandLine.arguments.dropFirst().first.flatMap(Double.init) ?? 900)
-let startUptime = ProcessInfo.processInfo.systemUptime
-let deadline = Date().addingTimeInterval(timeout)
+struct Event: Encodable {
+  let schemaVersion: Int
+  let runIdentifier: String
+  let recorderLabel: String
+  let event: String
+  let pid: Int32
+  let monotonicUptime: TimeInterval
+  let wallClockEpochSeconds: TimeInterval
+}
+
+let args = CommandLine.arguments
+guard args.count == 6 else {
+  exit(64)
+}
+let runIdentifier = args[1]
+let recorderLabel = args[2]
+let evidencePath = args[3]
+let pidPath = args[4]
+let lifetime = TimeInterval(args[5]) ?? 900
+let started = Date()
+let deadline = started.addingTimeInterval(lifetime)
 var sawSleep = false
 var sawWake = false
 var sleepUptime: TimeInterval?
 var wakeUptime: TimeInterval?
+let encoder = JSONEncoder()
+encoder.outputFormatting = [.sortedKeys]
+
+func append(_ event: String) {
+  let payload = Event(
+    schemaVersion: 1,
+    runIdentifier: runIdentifier,
+    recorderLabel: recorderLabel,
+    event: event,
+    pid: getpid(),
+    monotonicUptime: ProcessInfo.processInfo.systemUptime,
+    wallClockEpochSeconds: CFAbsoluteTimeGetCurrent() + kCFAbsoluteTimeIntervalSince1970
+  )
+  guard let data = try? encoder.encode(payload) else { return }
+  let url = URL(fileURLWithPath: evidencePath)
+  FileManager.default.createFile(atPath: evidencePath, contents: nil)
+  if let handle = try? FileHandle(forWritingTo: url) {
+    defer { try? handle.close() }
+    try? handle.seekToEnd()
+    try? handle.write(contentsOf: data)
+    try? handle.write(contentsOf: Data("\n".utf8))
+  }
+}
+
+try? "\(getpid())\n".write(toFile: pidPath, atomically: true, encoding: .utf8)
+append("recorder-started")
 
 let center = NSWorkspace.shared.notificationCenter
 let sleepObserver = center.addObserver(
@@ -777,7 +953,7 @@ let sleepObserver = center.addObserver(
 ) { _ in
   sawSleep = true
   sleepUptime = ProcessInfo.processInfo.systemUptime
-  FileHandle.standardOutput.write(Data("NSWorkspaceWillSleep=yes\n".utf8))
+  append("NSWorkspaceWillSleep")
 }
 let wakeObserver = center.addObserver(
   forName: NSWorkspace.didWakeNotification,
@@ -786,12 +962,13 @@ let wakeObserver = center.addObserver(
 ) { _ in
   sawWake = true
   wakeUptime = ProcessInfo.processInfo.systemUptime
-  FileHandle.standardOutput.write(Data("NSWorkspaceDidWake=yes\n".utf8))
+  append("NSWorkspaceDidWake")
   CFRunLoopStop(CFRunLoopGetMain())
 }
 
 Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
   if Date() >= deadline {
+    append("recorder-timeout")
     CFRunLoopStop(CFRunLoopGetMain())
   }
 }
@@ -800,48 +977,91 @@ CFRunLoopRun()
 center.removeObserver(sleepObserver)
 center.removeObserver(wakeObserver)
 
-let endUptime = ProcessInfo.processInfo.systemUptime
-let sleepToWakeUptime = (wakeUptime ?? endUptime) - (sleepUptime ?? startUptime)
-print("START_UPTIME=\(startUptime)")
-print("END_UPTIME=\(endUptime)")
-print("SLEEP_TO_WAKE_UPTIME_DELTA=\(sleepToWakeUptime)")
-print("REAL_SLEEP_DETECTED=\(sawSleep ? "yes" : "no")")
-print("REAL_WAKE_DETECTED=\(sawWake ? "yes" : "no")")
-exit((sawSleep && sawWake && sleepToWakeUptime >= 0) ? 0 : 4)
+let startUptime = sleepUptime ?? ProcessInfo.processInfo.systemUptime
+let endUptime = wakeUptime ?? ProcessInfo.processInfo.systemUptime
+append("recorder-finished")
+exit((sawSleep && sawWake && endUptime >= startUptime) ? 0 : 4)
 SWIFT
-  print -r -- "$helper"
 }
 
-wait_for_real_sleep_wake() {
-  local checkpoint="$ARTIFACT_DIR/pre-sleep-checkpoint.txt"
-  local evidence="$ARTIFACT_DIR/sleep-wake-evidence.txt"
-  local helper
-  {
-    print -r -- "CHECKPOINT_MONOTONIC_UPTIME=$(sysctl -n kern.boottime 2>/dev/null || print -r -- unavailable)"
-    print -r -- "SERVICE_PID=$SERVICE_PID"
-    print -r -- "APP_PID=$APP_PID"
-    isolated_env_prefix "$CONTROL_EXECUTABLE" protocol-version --timeout 10 2>/dev/null | sed 's/^/XPC_PROTOCOL=/'
-  } > "$checkpoint"
-
-  write_real_home_integrity_snapshot "$ARTIFACT_DIR/pre-sleep-real-home.snapshot"
-  RESULT[WAITING_FOR_MANUAL_SLEEP]=yes
-  write_result
-  print -r -- "WAITING_FOR_MANUAL_SLEEP=yes"
-  print -r -- "Manual action required: put this Mac to sleep, then wake it before ${WAKE_TIMEOUT_SECONDS}s elapse."
-
-  helper="$(write_sleep_wake_helper)"
-  if /usr/bin/swift "$helper" "$WAKE_TIMEOUT_SECONDS" > "$evidence"; then
-    if grep -q '^REAL_SLEEP_DETECTED=yes$' "$evidence" \
-      && grep -q '^REAL_WAKE_DETECTED=yes$' "$evidence"; then
-      RESULT[REAL_SLEEP_DETECTED]=yes
-      RESULT[REAL_WAKE_DETECTED]=yes
-      RESULT[WAKE_TIMEOUT_OCCURRED]=no
+install_recorder_launch_agent() {
+  write_sleep_wake_recorder
+  rm -f "$EVIDENCE_FILE" "$RUNTIME_ROOT/wake-recorder.pid"
+  /usr/bin/python3 - "$RECORDER_PLIST" "$RECORDER_LABEL" "$RECORDER_SOURCE" "$RUN_ID" \
+    "$EVIDENCE_FILE" "$RUNTIME_ROOT/wake-recorder.pid" "$WAKE_TIMEOUT_SECONDS" "$LOGS_ROOT" <<'PY'
+import plistlib
+import sys
+from pathlib import Path
+target, label, source, run_id, evidence, pid_path, timeout, logs = sys.argv[1:]
+Path(target).parent.mkdir(parents=True, exist_ok=True)
+Path(logs).mkdir(parents=True, exist_ok=True)
+plist = {
+    "Label": label,
+    "ProgramArguments": ["/usr/bin/swift", source, run_id, label, evidence, pid_path, timeout],
+    "RunAtLoad": True,
+    "KeepAlive": False,
+    "ProcessType": "Background",
+    "StandardOutPath": str(Path(logs) / "wake-recorder.stdout.log"),
+    "StandardErrorPath": str(Path(logs) / "wake-recorder.stderr.log"),
+}
+Path(target).write_bytes(plistlib.dumps(plist, fmt=plistlib.FMT_XML, sort_keys=True))
+PY
+  chmod 600 "$RECORDER_PLIST" || return 1
+  /usr/bin/plutil -lint "$RECORDER_PLIST" >/dev/null || return 1
+  /bin/launchctl bootstrap "$SERVICE_DOMAIN" "$RECORDER_PLIST" >/dev/null || return 1
+  RECORDER_BOOTSTRAPPED_BY_RUN="yes"
+  local deadline=$(( $(date +%s) + 20 ))
+  while [[ $(date +%s) -lt $deadline ]]; do
+    RECORDER_PID="$(recorder_pid_from_launchctl)"
+    if [[ -z "$RECORDER_PID" && -r "$RUNTIME_ROOT/wake-recorder.pid" ]]; then
+      RECORDER_PID="$(head -n 1 "$RUNTIME_ROOT/wake-recorder.pid" 2>/dev/null | tr -cd '0-9')"
+    fi
+    if [[ -n "$RECORDER_PID" ]] && kill -0 "$RECORDER_PID" 2>/dev/null; then
       return 0
     fi
-  fi
-  RESULT[REAL_SLEEP_DETECTED]=no
-  RESULT[REAL_WAKE_DETECTED]=no
-  timeout_fail "real sleep/wake transition was not observed"
+    sleep 0.5
+  done
+  return 1
+}
+
+verify_recorder_evidence() {
+  /usr/bin/python3 - "$CHECKPOINT_FILE" "$EVIDENCE_FILE" <<'PY'
+import json
+import sys
+from pathlib import Path
+checkpoint = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+run_id = checkpoint["runIdentifier"]
+label = checkpoint["recorderLabel"]
+path = Path(sys.argv[2])
+if not path.exists():
+    raise SystemExit("missing wake evidence")
+events = []
+for line in path.read_text(encoding="utf-8").splitlines():
+    if line.strip():
+        event = json.loads(line)
+        if event.get("runIdentifier") != run_id:
+            raise SystemExit("wrong run identifier")
+        if event.get("recorderLabel") != label:
+            raise SystemExit("wrong recorder label")
+        if not isinstance(event.get("pid"), int):
+            raise SystemExit("missing exact recorder pid")
+        if not isinstance(event.get("monotonicUptime"), (int, float)):
+            raise SystemExit("missing monotonic evidence")
+        events.append(event)
+names = [event.get("event") for event in events]
+if "NSWorkspaceWillSleep" not in names:
+    raise SystemExit("will-sleep evidence required")
+if "NSWorkspaceDidWake" not in names:
+    raise SystemExit("did-wake evidence required")
+sleep = next(event for event in events if event.get("event") == "NSWorkspaceWillSleep")
+wake = next(event for event in events if event.get("event") == "NSWorkspaceDidWake")
+if wake["monotonicUptime"] < sleep["monotonicUptime"]:
+    raise SystemExit("wake uptime precedes sleep uptime")
+if sleep.get("wallClockEpochSeconds") is not None and wake.get("wallClockEpochSeconds") is not None:
+    pass
+else:
+    raise SystemExit("wall clock may be present but cannot be sole evidence")
+PY
 }
 
 discover_agent_status() {
@@ -877,35 +1097,103 @@ post_wake_validation() {
   RESULT[FINAL_RECONNECT_SUCCEEDED]=yes
 }
 
-main() {
+cleanup_owned_state() {
+  trap - EXIT INT TERM HUP
+  [[ -r "$CHECKPOINT_FILE" ]] && load_checkpoint || true
+
+  terminate_pid "$APP_PID"
+  APP_PID=""
+
+  if [[ -n "$RECORDER_LABEL" ]]; then
+    /bin/launchctl bootout "$SERVICE_DOMAIN" "$RECORDER_PLIST" >/dev/null 2>&1 || true
+    RECORDER_BOOTSTRAPPED_BY_RUN="no"
+  fi
+  if [[ -n "$RECORDER_PID" ]]; then
+    terminate_pid "$RECORDER_PID"
+    RECORDER_PID=""
+  fi
+  if [[ -n "$RECORDER_PLIST" && -e "$RECORDER_PLIST" ]]; then
+    rm -f "$RECORDER_PLIST"
+  fi
+
+  if [[ "$SERVICE_BOOTSTRAPPED_BY_RUN" == "yes" || -e "$LAUNCH_AGENT_TARGET" ]]; then
+    /bin/launchctl bootout "$SERVICE_DOMAIN" "$LAUNCH_AGENT_TARGET" >/dev/null 2>&1 || true
+    SERVICE_BOOTSTRAPPED_BY_RUN="no"
+  fi
+  if [[ "$LAUNCH_AGENT_INSTALLED_BY_RUN" == "yes" && -e "$LAUNCH_AGENT_TARGET" ]]; then
+    rm -f "$LAUNCH_AGENT_TARGET"
+  fi
+  if [[ "$APP_INSTALLED_BY_RUN" == "yes" && -e "$APP_TARGET" ]]; then
+    rm -rf "$APP_TARGET"
+  fi
+  if [[ "$ACCEPTANCE_LOCK_OWNED" == "yes" || -d "$ACCEPTANCE_LOCK_DIR" ]]; then
+    rm -rf "$ACCEPTANCE_LOCK_DIR"
+    ACCEPTANCE_LOCK_OWNED="no"
+  fi
+
+  if [[ "$APP_INSTALLED_BY_RUN" == "yes" ]]; then
+    [[ ! -e "$APP_TARGET" ]] && RESULT[APP_TARGET_CLEANED]=yes || RESULT[APP_TARGET_CLEANED]=no
+  else
+    RESULT[APP_TARGET_CLEANED]=skip
+  fi
+  if [[ "$LAUNCH_AGENT_INSTALLED_BY_RUN" == "yes" ]]; then
+    [[ ! -e "$LAUNCH_AGENT_TARGET" ]] && RESULT[LAUNCH_AGENT_TARGET_CLEANED]=yes || RESULT[LAUNCH_AGENT_TARGET_CLEANED]=no
+  else
+    RESULT[LAUNCH_AGENT_TARGET_CLEANED]=skip
+  fi
+
+  local residual="no"
+  if [[ -n "$(pid_for_exact_executable "$APP_EXECUTABLE" || true)" ]]; then
+    residual="yes"
+  fi
+  if [[ -n "$SERVICE_PID" ]] && kill -0 "$SERVICE_PID" 2>/dev/null; then
+    residual="yes"
+  fi
+  if /bin/launchctl print "$SERVICE_DOMAIN/$LABEL" >/dev/null 2>&1; then
+    residual="yes"
+  fi
+  if [[ -n "$RECORDER_LABEL" ]] && /bin/launchctl print "$SERVICE_DOMAIN/$RECORDER_LABEL" >/dev/null 2>&1; then
+    residual="yes"
+  fi
+  RESULT[ACCEPTANCE_PROCESS_REMAINING]="$residual"
+
+  set_real_home_modified_result
+  RESULT[ENVIRONMENT_RESTORED]=$([[ "$residual" == "no" ]] && print -r -- yes || print -r -- no)
+  write_checkpoint "cleanup" "cleaned" 2>/dev/null || true
+}
+
+cleanup() {
+  cleanup_owned_state
+  finish_result
+  FINISHED="yes"
+}
+
+trap cleanup EXIT
+trap 'RESULT[M14_003_RESULT]=FAIL; exit 130' INT TERM HUP
+
+prepare() {
   set_default_results
-  mkdir -p "$ARTIFACT_DIR"
+  mkdir -p "$ARTIFACT_DIR" "$RUNTIME_ROOT"
   write_real_home_integrity_snapshot "$INTEGRITY_BEFORE"
   write_result
   assert_user_scope || fail "user-scope policy failed"
-  local collision="no"
-  detect_collision || collision="yes"
-
-  if [[ "${HERMES_SLEEP_WAKE_ACCEPTANCE:-}" != "YES" ]]; then
-    RESULT[M14_003_RESULT]=OPT_IN_REQUIRED
-    mark_pre_start_skips
-    print -u2 "opt-in required: set HERMES_SLEEP_WAKE_ACCEPTANCE=YES to run real sleep/wake endurance acceptance"
-    write_result
-    exit 2
-  fi
-
-  RESULT[EXPLICIT_OPT_IN_CONFIRMED]=yes
-  if [[ "$collision" == "no" ]]; then
-    acquire_acceptance_lock || collision="yes"
-  fi
-  if [[ "$collision" == "yes" ]]; then
+  require_opt_in
+  acquire_acceptance_lock || {
     RESULT[M14_003_RESULT]=BLOCKED
     mark_pre_start_skips
     print -u2 "blocked: $BLOCKED_REASON"
     write_result
     exit 3
-  fi
+  }
+  detect_collision || {
+    RESULT[M14_003_RESULT]=BLOCKED
+    mark_pre_start_skips
+    print -u2 "blocked: $BLOCKED_REASON"
+    write_result
+    exit 3
+  }
 
+  write_checkpoint "prepare" "started"
   build_release_app || fail "release build failed"
   write_isolated_service_config
   install_app_and_service || fail "install failed"
@@ -926,13 +1214,103 @@ main() {
   RESULT[APP_RELAUNCHED_BEFORE_SLEEP]=yes
   reconnect_check && RESULT[PRE_SLEEP_RECONNECT_SUCCEEDED]=yes || fail "pre-sleep reconnect failed"
 
-  wait_for_real_sleep_wake
-  post_wake_validation || fail "post-wake validation failed"
+  install_recorder_launch_agent || fail "wake recorder launch failed"
+  write_checkpoint "prepare" "waiting-for-manual-sleep"
+  RESULT[WAITING_FOR_MANUAL_SLEEP]=yes
+  RESULT[M14_003_RESULT]=WAITING
+  finish_result
+  print -r -- "WAITING_FOR_MANUAL_SLEEP=yes"
+  print -r -- "M14_003_RESULT=WAITING"
+  print -r -- "Manual action required: put this Mac to sleep, wake/login, then run resume."
+  trap - EXIT INT TERM HUP
+  FINISHED="yes"
+  exit 5
+}
 
+resume() {
+  set_default_results
+  mkdir -p "$ARTIFACT_DIR" "$RUNTIME_ROOT"
+  require_opt_in
+  load_checkpoint || fail "missing or invalid durable checkpoint"
+  local checkpoint_run_id checkpoint_status
+  checkpoint_run_id="$(checkpoint_field runIdentifier)"
+  checkpoint_status="$(checkpoint_field status)"
+  [[ "$checkpoint_run_id" == "$RUN_ID" ]] || fail "checkpoint run identifier mismatch"
+  [[ "$checkpoint_status" == "waiting-for-manual-sleep" ]] || fail "stale or duplicate resume checkpoint"
+  write_checkpoint "resume" "resuming"
+
+  RESULT[USER_SCOPE_ONLY]=yes
+  RESULT[COLLISION_CHECK_PASSED]=yes
+  RESULT[RELEASE_APP_BUILT]=yes
+  RESULT[APP_INSTALLED]=$APP_INSTALLED_BY_RUN
+  RESULT[LAUNCH_AGENT_INSTALLED]=$LAUNCH_AGENT_INSTALLED_BY_RUN
+  RESULT[INITIAL_XPC_CONNECTED]=yes
+  RESULT[PRE_SLEEP_RESTART_CYCLES_PASSED]=5
+  RESULT[APP_EXIT_LEFT_SERVICE_RUNNING]=yes
+  RESULT[APP_RELAUNCHED_BEFORE_SLEEP]=yes
+  RESULT[PRE_SLEEP_RECONNECT_SUCCEEDED]=yes
+  RESULT[WAITING_FOR_MANUAL_SLEEP]=yes
+
+  verify_recorder_evidence || timeout_fail "genuine sleep/wake evidence was not recorded"
+  RESULT[REAL_SLEEP_DETECTED]=yes
+  RESULT[REAL_WAKE_DETECTED]=yes
+  RESULT[WAKE_TIMEOUT_OCCURRED]=no
+
+  if [[ -z "$(pid_for_exact_executable "$APP_EXECUTABLE" || true)" ]]; then
+    launch_app || fail "app relaunch after wake failed"
+  fi
+  post_wake_validation || fail "post-wake validation failed"
+  discover_agent_status
   cleanup
   finish_result
   FINISHED="yes"
   result_exit_code
+  exit $?
+}
+
+cleanup_command() {
+  set_default_results
+  mkdir -p "$ARTIFACT_DIR" "$RUNTIME_ROOT"
+  RESULT[USER_SCOPE_ONLY]=yes
+  [[ -r "$CHECKPOINT_FILE" ]] && load_checkpoint || true
+  cleanup_owned_state
+  RESULT[M14_003_RESULT]=$([[ "${RESULT[ENVIRONMENT_RESTORED]}" == "yes" ]] && print -r -- PASS || print -r -- FAIL)
+  write_result
+  result_exit_code
+  exit $?
+}
+
+main() {
+  local command="${1:-}"
+  case "$command" in
+    prepare)
+      prepare
+      ;;
+    resume)
+      resume
+      ;;
+    cleanup)
+      cleanup_command
+      ;;
+    "")
+      set_default_results
+      mkdir -p "$ARTIFACT_DIR"
+      RESULT[M14_003_RESULT]=OPT_IN_REQUIRED
+      mark_pre_start_skips
+      write_result
+      usage
+      exit 2
+      ;;
+    *)
+      set_default_results
+      mkdir -p "$ARTIFACT_DIR"
+      RESULT[M14_003_RESULT]=FAIL
+      mark_pre_start_skips
+      write_result
+      usage
+      exit 1
+      ;;
+  esac
 }
 
 main "$@"
