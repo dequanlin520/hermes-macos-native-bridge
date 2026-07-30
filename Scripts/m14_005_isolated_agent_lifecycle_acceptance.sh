@@ -8,6 +8,7 @@ RUNTIME_ROOT="$ARTIFACT_DIR/runtime"
 EVIDENCE_DIR="$ARTIFACT_DIR/evidence"
 RESULT_FILE="$ARTIFACT_DIR/result.txt"
 CONTRACT_FILE="$ARTIFACT_DIR/launch-contract.json"
+INSPECT_REPORT_FILE="$EVIDENCE_DIR/production-inspect.env"
 REAL_HERMES_HOME="$HOME/.hermes"
 SNAPSHOT_BEFORE="$RUNTIME_ROOT/real-home-before.snapshot"
 SNAPSHOT_AFTER="$RUNTIME_ROOT/real-home-after.snapshot"
@@ -23,9 +24,20 @@ ORDERED_KEYS=(
   SERVICE_OWNED_DISCOVERY_USED
   HERMES_EXECUTABLE_STATUS
   HERMES_EXECUTABLE_FAMILY
+  HERMES_EXECUTABLE_BASENAME
+  HERMES_EXECUTABLE_SOURCE
+  HERMES_VERSION_STATUS
   HERMES_VERSION
+  DISCOVERY_PARITY
+  ISOLATED_START_ADVERTISED
+  STATUS_MECHANISM_ADVERTISED
+  EXACT_ISOLATED_SHUTDOWN_ADVERTISED
+  BROAD_SHUTDOWN_ADVERTISED
+  BROAD_SHUTDOWN_SAFE_FOR_ISOLATED_LIFECYCLE
   LAUNCH_CONTRACT_STATUS
   LAUNCH_CONTRACT_REASON
+  M14_005_EXPECTED_RESULT
+  EXPECTED_EXIT_CODE
   ISOLATED_ENVIRONMENT_VALID
   REAL_HERMES_HOME_MODIFIED
   ISOLATED_AGENT_STARTED
@@ -55,9 +67,20 @@ set_default_results() {
     SERVICE_OWNED_DISCOVERY_USED yes
     HERMES_EXECUTABLE_STATUS unknown
     HERMES_EXECUTABLE_FAMILY unknown
+    HERMES_EXECUTABLE_BASENAME unknown
+    HERMES_EXECUTABLE_SOURCE unknown
+    HERMES_VERSION_STATUS unknown
     HERMES_VERSION unknown
+    DISCOVERY_PARITY unknown
+    ISOLATED_START_ADVERTISED no
+    STATUS_MECHANISM_ADVERTISED no
+    EXACT_ISOLATED_SHUTDOWN_ADVERTISED no
+    BROAD_SHUTDOWN_ADVERTISED no
+    BROAD_SHUTDOWN_SAFE_FOR_ISOLATED_LIFECYCLE no
     LAUNCH_CONTRACT_STATUS blocked
     LAUNCH_CONTRACT_REASON unknown
+    M14_005_EXPECTED_RESULT BLOCKED
+    EXPECTED_EXIT_CODE 3
     ISOLATED_ENVIRONMENT_VALID unknown
     REAL_HERMES_HOME_MODIFIED unknown
     ISOLATED_AGENT_STARTED no
@@ -86,18 +109,6 @@ result_exit_code() {
     UNSUPPORTED) return 6 ;;
     *) return 1 ;;
   esac
-}
-
-detect_executable_path() {
-  if [[ -n "${HERMES_M14_005_HERMES_EXECUTABLE:-}" && -x "${HERMES_M14_005_HERMES_EXECUTABLE:-}" ]]; then
-    print -r -- "$HERMES_M14_005_HERMES_EXECUTABLE"
-    return 0
-  fi
-  if command -v hermes >/dev/null 2>&1; then
-    command -v hermes
-    return 0
-  fi
-  return 1
 }
 
 validate_result_contract() {
@@ -191,6 +202,22 @@ path.write_text(json.dumps({
 PY
 }
 
+load_production_inspect_report() {
+  local file="$1"
+  [[ -f "$file" ]] || return 1
+  local line key value
+  while IFS= read -r line; do
+    [[ -n "$line" && "$line" == *=* ]] || continue
+    key="${line%%=*}"
+    value="${line#*=}"
+    case "$key" in
+      USER_SCOPE_ONLY|SERVICE_OWNED_CONTRACT_SELECTION|SERVICE_OWNED_DISCOVERY_USED|HERMES_EXECUTABLE_STATUS|HERMES_EXECUTABLE_FAMILY|HERMES_EXECUTABLE_BASENAME|HERMES_EXECUTABLE_SOURCE|HERMES_VERSION_STATUS|HERMES_VERSION|DISCOVERY_PARITY|ISOLATED_START_ADVERTISED|STATUS_MECHANISM_ADVERTISED|EXACT_ISOLATED_SHUTDOWN_ADVERTISED|BROAD_SHUTDOWN_ADVERTISED|BROAD_SHUTDOWN_SAFE_FOR_ISOLATED_LIFECYCLE|LAUNCH_CONTRACT_STATUS|LAUNCH_CONTRACT_REASON|M14_005_EXPECTED_RESULT|EXPECTED_EXIT_CODE)
+        RESULT[$key]="$value"
+        ;;
+    esac
+  done < "$file"
+}
+
 real_home_snapshot() {
   local target="$1"
   mkdir -p "$RUNTIME_ROOT"
@@ -235,152 +262,40 @@ for name in ["home", "hermes-home", "xdg-config", "xdg-state", "xdg-cache", "tmp
 PY
 }
 
-bounded_cli_probe() {
-  local evidence_name="$1"
-  local executable_path="$2"
-  shift 2
+write_blocked_production_inspect_report() {
   mkdir -p "$EVIDENCE_DIR"
-  /usr/bin/python3 - "$EVIDENCE_DIR/$evidence_name.json" "$executable_path" "$RUNTIME_ROOT" "$@" <<'PY'
-import json
-import os
-import re
-import signal
-import subprocess
-import sys
-from pathlib import Path
-
-out = Path(sys.argv[1])
-exe = sys.argv[2]
-runtime = Path(sys.argv[3])
-args = sys.argv[4:]
-event = {"exitCode": None, "timedOut": False, "stdout": "", "stderr": "", "identityValidated": False, "reaped": False}
-if not args:
-    event["error"] = "bare-hermes-forbidden"
-    out.write_text(json.dumps(event, sort_keys=True) + "\n", encoding="utf-8")
-    raise SystemExit(10)
-if args not in (["--version"], ["--help"]) and not (len(args) == 2 and args[1] == "--help"):
-    event["error"] = "probe-command-forbidden"
-    out.write_text(json.dumps(event, sort_keys=True) + "\n", encoding="utf-8")
-    raise SystemExit(10)
-env = {
-    "HOME": str(runtime / "home"),
-    "HERMES_HOME": str(runtime / "hermes-home"),
-    "XDG_CONFIG_HOME": str(runtime / "xdg-config"),
-    "XDG_STATE_HOME": str(runtime / "xdg-state"),
-    "XDG_CACHE_HOME": str(runtime / "xdg-cache"),
-    "TMPDIR": str(runtime / "tmp"),
-    "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
-    "LANG": "C",
-}
-def redact(value):
-    value = re.sub(r"/Users/[^\\s]+", "REDACTED_PATH", value)
-    value = re.sub(r"[0-9a-fA-F]{8}-[0-9a-fA-F-]{27,}", "REDACTED_ID", value)
-    value = re.sub(r"(?i)(token|secret|key)=\\S+", r"\\1=REDACTED", value)
-    return value[:16000]
-process = subprocess.Popen(
-    [exe, *args],
-    stdin=subprocess.DEVNULL,
-    stdout=subprocess.PIPE,
-    stderr=subprocess.PIPE,
-    env=env,
-    text=True,
-    start_new_session=False,
-)
-event["pid"] = process.pid
-try:
-    stdout, stderr = process.communicate(timeout=5.0)
-    event["exitCode"] = process.returncode
-    event["reaped"] = True
-except subprocess.TimeoutExpired:
-    event["timedOut"] = True
-    process.terminate()
-    try:
-        stdout, stderr = process.communicate(timeout=2.0)
-        event["exitCode"] = process.returncode
-        event["reaped"] = True
-    except subprocess.TimeoutExpired:
-        os.kill(process.pid, signal.SIGKILL)
-        stdout, stderr = process.communicate(timeout=2.0)
-        event["exitCode"] = process.returncode
-        event["reaped"] = True
-event["stdout"] = redact(stdout or "")
-event["stderr"] = redact(stderr or "")
-event["identityValidated"] = True
-out.write_text(json.dumps(event, sort_keys=True) + "\n", encoding="utf-8")
-raise SystemExit(0 if event["exitCode"] == 0 and not event["timedOut"] else 124 if event["timedOut"] else 1)
-PY
-}
-
-extract_probe_stdout() {
-  /usr/bin/python3 - "$1" <<'PY'
-import json
-import sys
-from pathlib import Path
-if not Path(sys.argv[1]).exists():
-    raise SystemExit(0)
-print(json.loads(Path(sys.argv[1]).read_text(encoding="utf-8")).get("stdout", ""))
-PY
-}
-
-select_contract_from_evidence() {
-  local version_text="$1"
-  local root_help="$2"
-  local serve_help="$3"
-  if [[ "$version_text" != 0.18.* ]]; then
-    RESULT[LAUNCH_CONTRACT_STATUS]=incompatible
-    RESULT[LAUNCH_CONTRACT_REASON]=version.out_of_range
-    return
-  fi
-  if [[ "$root_help" == *$'\n  serve'* && "$root_help" == *$'\n  status'* && "$serve_help" == *"--isolated"* && "$serve_help" == *"--stop"* ]]; then
-    RESULT[LAUNCH_CONTRACT_STATUS]=unsupported
-    RESULT[LAUNCH_CONTRACT_REASON]=shutdown.command.not_exact_isolated
-  elif [[ "$root_help" == *$'\n  serve'* && "$root_help" == *$'\n  status'* && "$root_help" == *$'\n  stop'* && "$serve_help" == *"--isolated"* ]]; then
-    RESULT[LAUNCH_CONTRACT_STATUS]=supported
-    RESULT[LAUNCH_CONTRACT_REASON]=launch.contract.supported
-  elif [[ "$root_help" == *$'\n  serve'* && "$root_help" == *$'\n  status'* && "$serve_help" == *"--isolated"* ]]; then
-    RESULT[LAUNCH_CONTRACT_STATUS]=unsupported
-    RESULT[LAUNCH_CONTRACT_REASON]=shutdown.command.not_advertised
-  else
-    RESULT[LAUNCH_CONTRACT_STATUS]=unsupported
-    RESULT[LAUNCH_CONTRACT_REASON]=startup.command.not_advertised
-  fi
+  {
+    print -r -- "USER_SCOPE_ONLY=yes"
+    print -r -- "SERVICE_OWNED_CONTRACT_SELECTION=yes"
+    print -r -- "SERVICE_OWNED_DISCOVERY_USED=yes"
+    print -r -- "HERMES_EXECUTABLE_STATUS=unknown"
+    print -r -- "HERMES_EXECUTABLE_FAMILY=unknown"
+    print -r -- "HERMES_EXECUTABLE_BASENAME=unknown"
+    print -r -- "HERMES_EXECUTABLE_SOURCE=unknown"
+    print -r -- "HERMES_VERSION_STATUS=blocked"
+    print -r -- "HERMES_VERSION=unknown"
+    print -r -- "DISCOVERY_PARITY=unknown"
+    print -r -- "ISOLATED_START_ADVERTISED=no"
+    print -r -- "STATUS_MECHANISM_ADVERTISED=no"
+    print -r -- "EXACT_ISOLATED_SHUTDOWN_ADVERTISED=no"
+    print -r -- "BROAD_SHUTDOWN_ADVERTISED=no"
+    print -r -- "BROAD_SHUTDOWN_SAFE_FOR_ISOLATED_LIFECYCLE=no"
+    print -r -- "LAUNCH_CONTRACT_STATUS=blocked"
+    print -r -- "LAUNCH_CONTRACT_REASON=production.inspect.unavailable"
+    print -r -- "M14_005_EXPECTED_RESULT=BLOCKED"
+    print -r -- "EXPECTED_EXIT_CODE=3"
+  } > "$INSPECT_REPORT_FILE"
 }
 
 discover_and_select_contract() {
   local mode_label="$1"
-  local executable_path
-  if ! executable_path="$(detect_executable_path)"; then
-    RESULT[HERMES_EXECUTABLE_STATUS]=unavailable
-    RESULT[HERMES_EXECUTABLE_FAMILY]=unknown
-    RESULT[LAUNCH_CONTRACT_STATUS]=blocked
-    RESULT[LAUNCH_CONTRACT_REASON]=executable.unavailable
-    return 3
+  mkdir -p "$EVIDENCE_DIR"
+  if ! swift run --configuration release HermesReleaseAgentPreflight m14-005-inspect > "$INSPECT_REPORT_FILE" 2>/dev/null; then
+    write_blocked_production_inspect_report
   fi
-  RESULT[HERMES_EXECUTABLE_STATUS]=available
-  RESULT[HERMES_EXECUTABLE_FAMILY]=hermes-agent
-  [[ "$mode_label" == inspect ]] && return 0
-
-  bounded_cli_probe version-query "$executable_path" --version || true
-  local version_output
-  version_output="$(extract_probe_stdout "$EVIDENCE_DIR/version-query.json" | /usr/bin/sed -n 's/^Hermes Agent v\([0-9][0-9.]*\).*/\1/p' | /usr/bin/head -n 1)"
-  if [[ -z "$version_output" ]]; then
-    RESULT[HERMES_VERSION]=unknown
-    RESULT[LAUNCH_CONTRACT_STATUS]=blocked
-    RESULT[LAUNCH_CONTRACT_REASON]=version.probe.failed
-    return 3
-  fi
-  RESULT[HERMES_VERSION]="$version_output"
-
-  bounded_cli_probe root-help "$executable_path" --help || true
-  local root_help
-  root_help="$(extract_probe_stdout "$EVIDENCE_DIR/root-help.json")"
-  local serve_help=""
-  if [[ "$root_help" == *$'\n  serve'* ]]; then
-    bounded_cli_probe serve-help "$executable_path" serve --help || true
-    serve_help="$(extract_probe_stdout "$EVIDENCE_DIR/serve-help.json")"
-  fi
-  select_contract_from_evidence "$version_output" "$root_help" "$serve_help"
+  load_production_inspect_report "$INSPECT_REPORT_FILE" || true
   write_contract "${RESULT[HERMES_VERSION]}" "${RESULT[LAUNCH_CONTRACT_STATUS]}" "${RESULT[LAUNCH_CONTRACT_REASON]}"
+  [[ "${RESULT[LAUNCH_CONTRACT_STATUS]}" != blocked ]]
 }
 
 cleanup_owned_process() {
@@ -412,13 +327,28 @@ inspect() {
   set_default_results
   discover_and_select_contract inspect || true
   print -r -- "M14-005 read-only inspect"
-  print -r -- "detected_version=${RESULT[HERMES_VERSION]}"
-  print -r -- "selected_launch_contract=${RESULT[LAUNCH_CONTRACT_STATUS]}"
-  print -r -- "contract_reason=${RESULT[LAUNCH_CONTRACT_REASON]}"
-  print -r -- "advertised_startup_status=requires-run-probe"
-  print -r -- "advertised_status_status=requires-run-probe"
-  print -r -- "advertised_shutdown_status=requires-run-probe"
-  print -r -- "expected_outcome=blocked-or-unsupported-until-opt-in-run"
+  for key in \
+    USER_SCOPE_ONLY \
+    SERVICE_OWNED_CONTRACT_SELECTION \
+    SERVICE_OWNED_DISCOVERY_USED \
+    HERMES_EXECUTABLE_STATUS \
+    HERMES_EXECUTABLE_FAMILY \
+    HERMES_EXECUTABLE_BASENAME \
+    HERMES_EXECUTABLE_SOURCE \
+    HERMES_VERSION_STATUS \
+    HERMES_VERSION \
+    DISCOVERY_PARITY \
+    ISOLATED_START_ADVERTISED \
+    STATUS_MECHANISM_ADVERTISED \
+    EXACT_ISOLATED_SHUTDOWN_ADVERTISED \
+    BROAD_SHUTDOWN_ADVERTISED \
+    BROAD_SHUTDOWN_SAFE_FOR_ISOLATED_LIFECYCLE \
+    LAUNCH_CONTRACT_STATUS \
+    LAUNCH_CONTRACT_REASON \
+    M14_005_EXPECTED_RESULT \
+    EXPECTED_EXIT_CODE; do
+    print -r -- "$key=${RESULT[$key]}"
+  done
 }
 
 run_acceptance() {

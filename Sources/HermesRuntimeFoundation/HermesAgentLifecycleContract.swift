@@ -208,6 +208,25 @@ public struct HermesAgentCommandSurface: Equatable, Sendable {
   public func help(for subcommand: String) -> String {
     subcommandHelp[subcommand] ?? ""
   }
+
+  public var isolatedStartupAdvertised: Bool {
+    HermesAgentLaunchContractSelector.advertisedStartup(self) != nil
+  }
+
+  public var statusMechanismAdvertised: Bool {
+    HermesAgentLaunchContractSelector.advertisedStatus(self) != nil
+  }
+
+  public var exactIsolatedShutdownAdvertised: Bool {
+    HermesAgentLaunchContractSelector.advertisedExactIsolatedShutdown(self) != nil
+  }
+
+  public var broadShutdownAdvertised: Bool {
+    help(for: "serve").range(
+      of: #"(^|\s)--stop(\s|,|\.|$)"#,
+      options: .regularExpression
+    ) != nil
+  }
 }
 
 public enum HermesAgentLaunchContractSelector {
@@ -226,7 +245,7 @@ public enum HermesAgentLaunchContractSelector {
 
     let startup = advertisedStartup(commandSurface)
     let status = advertisedStatus(commandSurface)
-    let shutdown = advertisedShutdown(commandSurface)
+    let shutdown = advertisedExactIsolatedShutdown(commandSurface)
     var capabilities: [HermesAgentLaunchCapability] = [
       .isolatedWritableRoots,
       .stableProcessIdentity,
@@ -246,6 +265,9 @@ public enum HermesAgentLaunchContractSelector {
       return unsupported(version: version, reason: "status.command.not_advertised")
     }
     guard let shutdown else {
+      if commandSurface.broadShutdownAdvertised {
+        return unsupported(version: version, reason: "shutdown.command.not_exact_isolated")
+      }
       return unsupported(version: version, reason: "shutdown.command.not_advertised")
     }
 
@@ -286,7 +308,7 @@ public enum HermesAgentLaunchContractSelector {
     )
   }
 
-  private static func advertisedStartup(_ surface: HermesAgentCommandSurface) -> [String]? {
+  public static func advertisedStartup(_ surface: HermesAgentCommandSurface) -> [String]? {
     for candidate in ["serve", "agent", "daemon", "start"] {
       guard surface.advertisesSubcommand(candidate) else { continue }
       let help = surface.help(for: candidate)
@@ -297,14 +319,14 @@ public enum HermesAgentLaunchContractSelector {
     return nil
   }
 
-  private static func advertisedStatus(_ surface: HermesAgentCommandSurface) -> [String]? {
+  public static func advertisedStatus(_ surface: HermesAgentCommandSurface) -> [String]? {
     for candidate in ["status", "health"] where surface.advertisesSubcommand(candidate) {
       return [candidate]
     }
     return nil
   }
 
-  private static func advertisedShutdown(_ surface: HermesAgentCommandSurface) -> [String]? {
+  public static func advertisedExactIsolatedShutdown(_ surface: HermesAgentCommandSurface) -> [String]? {
     for candidate in ["stop", "shutdown"] where surface.advertisesSubcommand(candidate) {
       return [candidate]
     }

@@ -46,41 +46,45 @@ final class HermesIsolatedAgentLifecycleAcceptanceTests: XCTestCase {
 
     XCTAssertTrue(inspect.contains("discover_and_select_contract inspect"))
     XCTAssertFalse(inspect.contains("write_result"))
-    XCTAssertFalse(inspect.contains("write_contract"))
     XCTAssertFalse(inspect.contains("validate_isolated_environment"))
-    XCTAssertFalse(inspect.contains("bounded_cli_probe"))
     XCTAssertTrue(inspect.contains("M14-005 read-only inspect"))
+    XCTAssertTrue(inspect.contains("HERMES_VERSION_STATUS"))
+    XCTAssertTrue(inspect.contains("DISCOVERY_PARITY"))
+    XCTAssertTrue(inspect.contains("LAUNCH_CONTRACT_REASON"))
+  }
+
+  func testProductionInspectUsesSwiftPreflightRatherThanShellHermesDetection() throws {
+    let script = try read("Scripts/m14_005_isolated_agent_lifecycle_acceptance.sh")
+    let discovery = try extractFunction("discover_and_select_contract", from: script)
+
+    XCTAssertTrue(discovery.contains("HermesReleaseAgentPreflight m14-005-inspect"))
+    XCTAssertTrue(discovery.contains("load_production_inspect_report"))
+    XCTAssertFalse(script.contains("command -v hermes"))
+    XCTAssertFalse(script.contains("HERMES_M14_005_HERMES_EXECUTABLE"))
+    XCTAssertFalse(script.contains("bounded_cli_probe"))
   }
 
   func testIsolatedEnvironmentVariablesAreAcceptanceOwned() throws {
     let script = try read("Scripts/m14_005_isolated_agent_lifecycle_acceptance.sh")
     let validator = try extractFunction("validate_isolated_environment", from: script)
-    let probe = try extractFunction("bounded_cli_probe", from: script)
 
     XCTAssertTrue(script.contains("RUNTIME_ROOT=\"$ARTIFACT_DIR/runtime\""))
-    XCTAssertTrue(probe.contains("\"HOME\": str(runtime / \"home\")"))
-    XCTAssertTrue(probe.contains("\"HERMES_HOME\": str(runtime / \"hermes-home\")"))
-    XCTAssertTrue(probe.contains("\"XDG_CONFIG_HOME\": str(runtime / \"xdg-config\")"))
-    XCTAssertTrue(probe.contains("\"XDG_STATE_HOME\": str(runtime / \"xdg-state\")"))
-    XCTAssertTrue(probe.contains("\"XDG_CACHE_HOME\": str(runtime / \"xdg-cache\")"))
-    XCTAssertTrue(probe.contains("\"TMPDIR\": str(runtime / \"tmp\")"))
     XCTAssertTrue(validator.contains("if \"..\" in root.parts"))
     XCTAssertTrue(validator.contains("child.resolve()"))
+    XCTAssertTrue(script.contains("HermesReleaseAgentPreflight m14-005-inspect"))
   }
 
   func testSafeCommandProbePolicy() throws {
-    let script = try read("Scripts/m14_005_isolated_agent_lifecycle_acceptance.sh")
-    let probe = try extractFunction("bounded_cli_probe", from: script)
+    let helper = try read("Sources/HermesReleaseAgentPreflight/HermesReleaseAgentPreflight.swift")
 
-    XCTAssertTrue(probe.contains("stdin=subprocess.DEVNULL"))
-    XCTAssertTrue(probe.contains("stdout=subprocess.PIPE"))
-    XCTAssertTrue(probe.contains("stderr=subprocess.PIPE"))
-    XCTAssertTrue(probe.contains("start_new_session=False"))
-    XCTAssertTrue(probe.contains("communicate(timeout=5.0)"))
-    XCTAssertTrue(probe.contains("process.terminate()"))
-    XCTAssertTrue(probe.contains("os.kill(process.pid, signal.SIGKILL)"))
-    XCTAssertTrue(probe.contains("event[\"reaped\"] = True"))
-    XCTAssertTrue(probe.contains("bare-hermes-forbidden"))
+    XCTAssertTrue(helper.contains("HermesAgentCommandSafetyPolicy.validateProbeArguments(arguments)"))
+    XCTAssertTrue(helper.contains("process.standardInput = FileHandle.nullDevice"))
+    XCTAssertTrue(helper.contains("process.standardOutput = stdout"))
+    XCTAssertTrue(helper.contains("process.standardError = stderr"))
+    XCTAssertTrue(helper.contains("termination.wait(timeout: .now() + 5)"))
+    XCTAssertTrue(helper.contains("process.terminate()"))
+    XCTAssertTrue(helper.contains("kill(process.processIdentifier, SIGKILL)"))
+    XCTAssertFalse(helper.contains("[\"stop\", \"--help\"]"))
   }
 
   func testNoBroadKillSudoOrNegativePIDSignaling() throws {
@@ -103,6 +107,16 @@ final class HermesIsolatedAgentLifecycleAcceptanceTests: XCTestCase {
     XCTAssertEqual(keys.first, "EXPLICIT_OPT_IN_CONFIRMED")
     XCTAssertEqual(keys.last, "M14_005_RESULT")
     XCTAssertTrue(keys.contains("LAUNCH_CONTRACT_STATUS"))
+    XCTAssertTrue(keys.contains("HERMES_EXECUTABLE_BASENAME"))
+    XCTAssertTrue(keys.contains("HERMES_EXECUTABLE_SOURCE"))
+    XCTAssertTrue(keys.contains("HERMES_VERSION_STATUS"))
+    XCTAssertTrue(keys.contains("DISCOVERY_PARITY"))
+    XCTAssertTrue(keys.contains("ISOLATED_START_ADVERTISED"))
+    XCTAssertTrue(keys.contains("BROAD_SHUTDOWN_ADVERTISED"))
+    XCTAssertTrue(keys.contains("BROAD_SHUTDOWN_SAFE_FOR_ISOLATED_LIFECYCLE"))
+    XCTAssertTrue(keys.contains("EXACT_ISOLATED_SHUTDOWN_ADVERTISED"))
+    XCTAssertTrue(keys.contains("M14_005_EXPECTED_RESULT"))
+    XCTAssertTrue(keys.contains("EXPECTED_EXIT_CODE"))
     XCTAssertTrue(keys.contains("REAL_HERMES_HOME_MODIFIED"))
     XCTAssertTrue(keys.contains("SERVICE_OWNED_CONTRACT_SELECTION"))
   }
@@ -117,20 +131,42 @@ final class HermesIsolatedAgentLifecycleAcceptanceTests: XCTestCase {
     )
 
     XCTAssertTrue(unsupportedBranch.contains("RESULT[M14_005_RESULT]=UNSUPPORTED"))
+    XCTAssertTrue(unsupportedBranch.contains("RESULT[ISOLATED_AGENT_STARTED]=unsupported"))
     XCTAssertFalse(unsupportedBranch.contains("RESULT[M14_005_RESULT]=FAIL"))
+    XCTAssertFalse(unsupportedBranch.contains("serve --stop"))
+  }
+
+  func testSwiftPreflightReportsProductionContractSelectionFields() throws {
+    let helper = try read("Sources/HermesReleaseAgentPreflight/HermesReleaseAgentPreflight.swift")
+
+    XCTAssertTrue(helper.contains("\"HERMES_EXECUTABLE_STATUS\""))
+    XCTAssertTrue(helper.contains("\"HERMES_EXECUTABLE_FAMILY\""))
+    XCTAssertTrue(helper.contains("\"HERMES_EXECUTABLE_BASENAME\""))
+    XCTAssertTrue(helper.contains("\"HERMES_EXECUTABLE_SOURCE\""))
+    XCTAssertTrue(helper.contains("\"HERMES_VERSION_STATUS\""))
+    XCTAssertTrue(helper.contains("\"DISCOVERY_PARITY\""))
+    XCTAssertTrue(helper.contains("\"ISOLATED_START_ADVERTISED\""))
+    XCTAssertTrue(helper.contains("\"BROAD_SHUTDOWN_ADVERTISED\""))
+    XCTAssertTrue(helper.contains("\"BROAD_SHUTDOWN_SAFE_FOR_ISOLATED_LIFECYCLE\""))
+    XCTAssertTrue(helper.contains("\"EXACT_ISOLATED_SHUTDOWN_ADVERTISED\""))
+    XCTAssertTrue(helper.contains("HermesAgentLaunchContractSelector.select"))
+    XCTAssertTrue(helper.contains("HermesAgentVersionDescriptor(result: result, sourceCategory: \"PATH\")"))
   }
 
   func testGeneratedArtifactsRemainIgnoredAndRedacted() throws {
     let script = try read("Scripts/m14_005_isolated_agent_lifecycle_acceptance.sh")
     let gitignore = try read(".gitignore")
-    let probe = try extractFunction("bounded_cli_probe", from: script)
+    let inspect = try extractFunction("inspect", from: script)
+    let helper = try read("Sources/HermesReleaseAgentPreflight/HermesReleaseAgentPreflight.swift")
 
     XCTAssertTrue(gitignore.contains("artifacts/"))
     XCTAssertTrue(script.contains("git -C \"$ROOT_DIR\" check-ignore -q \"artifacts/m14-005/result.txt\""))
     XCTAssertTrue(script.contains("RESULT[GENERATED_ARTIFACT_TRACKED_BY_GIT]=no"))
-    XCTAssertTrue(probe.contains("REDACTED_PATH"))
-    XCTAssertTrue(probe.contains("REDACTED_ID"))
-    XCTAssertTrue(probe.contains("REDACTED"))
+    XCTAssertTrue(inspect.contains("HERMES_EXECUTABLE_BASENAME"))
+    XCTAssertFalse(inspect.contains("originalPath"))
+    XCTAssertFalse(inspect.contains("resolvedPath"))
+    XCTAssertTrue(helper.contains("output.prefix(64 * 1024)"))
+    XCTAssertFalse(helper.contains("print(rootHelp)"))
   }
 
   func testCleanupIsIdempotentAndScopedToM14005RuntimeRoot() throws {

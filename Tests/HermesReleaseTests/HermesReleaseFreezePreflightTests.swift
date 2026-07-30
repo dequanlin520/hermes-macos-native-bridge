@@ -88,8 +88,10 @@ final class HermesReleaseFreezePreflightTests: XCTestCase {
     XCTAssertTrue(script.contains("available|unavailable|incompatible|unknown"))
     XCTAssertTrue(helper.contains("HermesBridgeServiceConfiguration.productionDefault()"))
     XCTAssertTrue(helper.contains("HermesDiscovery"))
-    XCTAssertFalse(helper.contains("processIdentifier"))
-    XCTAssertFalse(helper.contains("CommandLine.arguments"))
+    XCTAssertTrue(helper.contains("CommandLine.arguments.dropFirst().first == \"m14-005-inspect\""))
+    XCTAssertTrue(helper.contains("process.processIdentifier > 1"))
+    XCTAssertFalse(helper.contains("[\"stop\", \"--help\"]"))
+    XCTAssertFalse(helper.contains("\"serve\", \"--stop\""))
   }
 
   func testPathAndSecretRedactionChecks() throws {

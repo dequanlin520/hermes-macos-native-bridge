@@ -86,7 +86,29 @@ final class HermesAgentLaunchContractTests: XCTestCase {
     )
 
     XCTAssertEqual(contract.status, .unsupported)
-    XCTAssertEqual(contract.reasonCode, "shutdown.command.not_advertised")
+    XCTAssertEqual(contract.reasonCode, "shutdown.command.not_exact_isolated")
+  }
+
+  func testObserved018BroadStopCapabilitiesAreCapturedButRejected() throws {
+    let surface = HermesAgentCommandSurface(
+      versionOutput: "Hermes Agent v0.18.2",
+      rootHelpOutput: "Commands:\n  serve\n  status\n",
+      subcommandHelp: [
+        "serve": "Usage: hermes serve [--isolated] [--stop]\n--stop Stop all running Hermes web server processes",
+        "status": "Usage: hermes status",
+      ]
+    )
+    let contract = HermesAgentLaunchContractSelector.select(
+      discoveryResult: try discoveryResult(version: "0.18.2"),
+      commandSurface: surface
+    )
+
+    XCTAssertTrue(surface.isolatedStartupAdvertised)
+    XCTAssertTrue(surface.statusMechanismAdvertised)
+    XCTAssertFalse(surface.exactIsolatedShutdownAdvertised)
+    XCTAssertTrue(surface.broadShutdownAdvertised)
+    XCTAssertEqual(contract.status, .unsupported)
+    XCTAssertEqual(contract.reasonCode, "shutdown.command.not_exact_isolated")
   }
 
   func testNoBareHermesInvocation() throws {
