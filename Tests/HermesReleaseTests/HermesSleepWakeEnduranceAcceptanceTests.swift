@@ -53,8 +53,9 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
   func testNoAutomaticSleepCommandOrGuiAutomation() throws {
     let script = try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh")
 
-    XCTAssertFalse(script.contains("pmset"))
+    XCTAssertTrue(script.contains("\"$POWER_LOG_COMMAND\" -g log"))
     XCTAssertFalse(script.contains("sleepnow"))
+    XCTAssertFalse(script.contains(" schedule "))
     XCTAssertFalse(script.contains("osascript"))
     XCTAssertFalse(script.contains("CGEvent"))
     XCTAssertTrue(script.contains("Manual action required: put this Mac to sleep"))
@@ -186,34 +187,76 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
     XCTAssertTrue(write.contains("try? \"\\(getpid())\\n\".write"))
   }
 
-  func testIOKitIsPrimarySleepEvidenceAndNSWorkspaceOnlyIsInsufficient() throws {
+  func testBoundedMacOSSystemPowerLogIsPrimarySleepWakeEvidence() throws {
+    let script = try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh")
+    let prepare = try extractFunction("record_power_log_prepare_checkpoint", from: script)
+    let verify = try extractFunction("verify_system_power_log_evidence", from: script)
+    let resume = try extractFunction("resume", from: script)
+
+    XCTAssertTrue(script.contains("POWER_LOG_COMMAND=\"/usr/bin/pmset\""))
+    XCTAssertTrue(prepare.contains("POWER_LOG_PREPARE_UTC"))
+    XCTAssertTrue(prepare.contains("process_info_system_uptime"))
+    XCTAssertTrue(prepare.contains("POWER_LOG_PREPARE_BOUNDARY"))
+    XCTAssertTrue(verify.contains("provider\": \"pmset -g log\""))
+    XCTAssertTrue(verify.contains("prepare_epoch < sleep[\"epochSeconds\"] < wake[\"epochSeconds\"] <= resume_epoch"))
+    XCTAssertTrue(resume.contains("verify_system_power_log_evidence"))
+    XCTAssertLessThan(
+      try XCTUnwrap(resume.range(of: "verify_system_power_log_evidence")?.lowerBound),
+      try XCTUnwrap(resume.range(of: "verify_recorder_evidence")?.lowerBound)
+    )
+  }
+
+  func testSystemPowerLogAcceptsOnlyExplicitSystemSleepAndWake() throws {
+    let script = try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh")
+    let verify = try extractFunction("verify_system_power_log_evidence", from: script)
+
+    XCTAssertTrue(verify.contains("normalized.startswith(\"Sleep \")"))
+    XCTAssertTrue(verify.contains("\"Entering Sleep state\""))
+    XCTAssertTrue(verify.contains("normalized.startswith(\"Wake \")"))
+    XCTAssertTrue(verify.contains("\"Wake from\""))
+    XCTAssertTrue(verify.contains("rejected-display-sleep"))
+    XCTAssertTrue(verify.contains("rejected-screen-lock"))
+    XCTAssertTrue(verify.contains("rejected-idle-assertion"))
+    XCTAssertTrue(verify.contains("rejected-darkwake"))
+    XCTAssertTrue(verify.contains("rejected-out-of-bounds"))
+    XCTAssertFalse(verify.contains("wall-clock delay"))
+  }
+
+  func testPowerLogNegativeCasesHaveSpecificReasons() throws {
+    let script = try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh")
+    let verify = try extractFunction("verify_system_power_log_evidence", from: script)
+    let resume = try extractFunction("resume", from: script)
+
+    XCTAssertTrue(verify.contains("epoch < prepare_epoch or epoch > resume_epoch"))
+    XCTAssertTrue(verify.contains("rejected-out-of-bounds"))
+    XCTAssertTrue(verify.contains("if wake and not sleep:"))
+    XCTAssertTrue(verify.contains("fail(\"invalid-system-event-order\")"))
+    XCTAssertTrue(verify.contains("if sleep is None:"))
+    XCTAssertTrue(verify.contains("fail(\"system-sleep-missing\")"))
+    XCTAssertTrue(verify.contains("if wake is None:"))
+    XCTAssertTrue(verify.contains("fail(\"system-wake-missing\")"))
+    XCTAssertTrue(verify.contains("ordered_system_events[0][\"kind\"] != \"system-sleep\""))
+    XCTAssertTrue(verify.contains("fail(\"invalid-uptime-evidence\")"))
+    XCTAssertTrue(resume.contains("timeout_fail \"$system_power_verify_error\""))
+    XCTAssertFalse(resume.contains("timeout_fail \"will-sleep-missing\""))
+  }
+
+  func testIOKitAndNSWorkspaceRemainCorroboratingOnly() throws {
     let script = try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh")
     let helper = try extractFunction("write_sleep_wake_recorder", from: script)
-    let verify = try extractFunction("verify_recorder_evidence", from: script)
+    let iokit = try extractFunction("verify_recorder_evidence", from: script)
+    let resume = try extractFunction("resume", from: script)
 
     XCTAssertTrue(helper.contains("IORegisterForSystemPower"))
     XCTAssertTrue(helper.contains("kIOMessageSystemWillSleep"))
     XCTAssertTrue(helper.contains("IOAllowPowerChange"))
     XCTAssertTrue(helper.contains("append(\"IOKitSystemWillSleep\")"))
-    XCTAssertTrue(helper.contains("NSWorkspace.willSleepNotification"))
-    XCTAssertTrue(helper.contains("append(\"NSWorkspaceWillSleep\")"))
-    XCTAssertTrue(verify.contains("\"IOKitSystemWillSleep\" not in names"))
-    XCTAssertTrue(verify.contains("will-sleep-missing"))
-    XCTAssertFalse(verify.contains("\"NSWorkspaceWillSleep\" not in names"))
-  }
-
-  func testIOKitPoweredOnWakeEvidenceRequirement() throws {
-    let script = try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh")
-    let helper = try extractFunction("write_sleep_wake_recorder", from: script)
-    let verify = try extractFunction("verify_recorder_evidence", from: script)
-
-    XCTAssertTrue(helper.contains("kIOMessageSystemHasPoweredOn"))
     XCTAssertTrue(helper.contains("append(\"IOKitSystemHasPoweredOn\")"))
-    XCTAssertTrue(helper.contains("NSWorkspace.didWakeNotification"))
+    XCTAssertTrue(helper.contains("append(\"NSWorkspaceWillSleep\")"))
     XCTAssertTrue(helper.contains("append(\"NSWorkspaceDidWake\")"))
-    XCTAssertTrue(verify.contains("\"IOKitSystemHasPoweredOn\" not in names"))
-    XCTAssertTrue(verify.contains("wake-missing"))
-    XCTAssertFalse(verify.contains("\"NSWorkspaceDidWake\" not in names"))
+    XCTAssertTrue(iokit.contains("will-sleep-missing"))
+    XCTAssertTrue(resume.contains("verify_recorder_evidence >/dev/null 2>&1 || true"))
+    XCTAssertFalse(resume.contains("timeout_fail \"$recorder_verify_error\""))
   }
 
   func testRecorderReadyHandshakeBlocksPrepareUntilIOKitRunLoopAndWritableEvidence() throws {
@@ -258,7 +301,7 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
   func testEventOrderingRunIDAndUptimeEvidenceRequired() throws {
     let script = try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh")
     let helper = try extractFunction("write_sleep_wake_recorder", from: script)
-    let verify = try extractFunction("verify_recorder_evidence", from: script)
+    let verify = try extractFunction("verify_system_power_log_evidence", from: script)
 
     XCTAssertTrue(helper.contains("ProcessInfo.processInfo.systemUptime"))
     XCTAssertTrue(helper.contains("monotonicUptime"))
@@ -266,14 +309,13 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
     XCTAssertTrue(helper.contains("eventSequenceNumber"))
     XCTAssertTrue(helper.contains("currentExecutablePath"))
     XCTAssertTrue(verify.contains("run-id-mismatch"))
-    XCTAssertTrue(verify.contains("ready_index < sleep_index < wake_index"))
-    XCTAssertTrue(verify.contains("invalid-event-order"))
+    XCTAssertTrue(verify.contains("invalid-system-event-order"))
     XCTAssertTrue(verify.contains("invalid-uptime-evidence"))
-    XCTAssertTrue(verify.contains("evidence-invalid"))
-    XCTAssertTrue(verify.contains("recorderInstanceIdentifier"))
-    XCTAssertTrue(verify.contains("eventSequenceNumber"))
-    XCTAssertTrue(verify.contains("currentExecutablePath"))
-    XCTAssertTrue(verify.contains("wake[\"monotonicUptime\"] < sleep[\"monotonicUptime\"]"))
+    XCTAssertTrue(verify.contains("system-sleep-missing"))
+    XCTAssertTrue(verify.contains("system-wake-missing"))
+    XCTAssertTrue(verify.contains("power-log-boundary-invalid"))
+    XCTAssertTrue(verify.contains("resume_uptime < prepare_uptime"))
+    XCTAssertTrue(verify.contains("(resume_epoch - prepare_epoch) + 1 < (resume_uptime - prepare_uptime)"))
     XCTAssertFalse(helper.contains("Date().timeIntervalSince"))
   }
 
@@ -313,8 +355,9 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
     XCTAssertTrue(evidence.contains("will-sleep-missing"))
     XCTAssertTrue(evidence.contains("wake-missing"))
     XCTAssertTrue(resume.contains("validate_resume_recorder_identity"))
-    XCTAssertTrue(resume.contains("verify_recorder_evidence"))
-    XCTAssertTrue(resume.contains("recorder-never-ready|will-sleep-missing|wake-missing"))
+    XCTAssertTrue(resume.contains("verify_system_power_log_evidence"))
+    XCTAssertTrue(resume.contains("system-sleep-missing|system-wake-missing|invalid-system-event-order|power-log-boundary-invalid|invalid-uptime-evidence|run-id-mismatch"))
+    XCTAssertTrue(resume.contains("verify_recorder_evidence >/dev/null 2>&1 || true"))
     XCTAssertFalse(evidence.contains("kill -0 \"$RECORDER_PID\""))
     XCTAssertFalse(resume.contains("verify_recorder_ready"))
   }
@@ -483,13 +526,22 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
   func testSIGCONTOnResumeFailTimeoutInterruptAndCleanupOnlyExactRecordedPIDs() throws {
     let script = try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh")
     let cleanup = try extractFunction("cleanup_owned_state", from: script)
+    let finalRestore = try extractFunction("restore_real_hermes_after_final_decision", from: script)
+    let trapCleanup = try extractFunction("cleanup", from: script)
     let signal = try extractFunction("resume_real_hermes_recorded_pids", from: script)
 
-    XCTAssertTrue(cleanup.contains("resume_real_hermes_recorded_pids"))
+    XCTAssertFalse(cleanup.contains("resume_real_hermes_recorded_pids"))
+    XCTAssertTrue(finalRestore.contains("resume_real_hermes_recorded_pids"))
+    XCTAssertLessThan(
+      try XCTUnwrap(trapCleanup.range(of: "finish_result")?.lowerBound),
+      try XCTUnwrap(trapCleanup.range(of: "restore_real_hermes_after_final_decision")?.lowerBound)
+    )
     XCTAssertTrue(script.contains("trap cleanup EXIT"))
     XCTAssertTrue(script.contains("timeout_fail"))
     XCTAssertTrue(signal.contains("suspendedByM14003"))
     XCTAssertTrue(signal.contains("/bin/kill -CONT \"$pid\""))
+    XCTAssertTrue(signal.contains("AGENT_RESUME_STARTED"))
+    XCTAssertTrue(signal.contains("AGENT_RESUME_COMPLETED"))
     XCTAssertFalse(signal.contains("kill -CONT -"))
     XCTAssertFalse(script.contains("killall"))
     XCTAssertFalse(script.contains("pkill"))
@@ -569,6 +621,37 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
     XCTAssertFalse(script.contains("rm -rf \"$REAL_HERMES_HOME\""))
     XCTAssertTrue(compare.contains("RESULT[REAL_HERMES_HOME_MODIFIED]=yes"))
     XCTAssertTrue(compare.contains("RESULT[REAL_HERMES_HOME_MODIFIED]=no"))
+    XCTAssertTrue(compare.contains("REAL_HOME_INTEGRITY_FINALIZED"))
+    XCTAssertTrue(compare.contains("REAL_HOME_COMPARED_BEFORE_AGENT_RESUME"))
+  }
+
+  func testRealHomeComparisonOccursBeforeSIGCONTAndIsNotRepeatedAfterResume() throws {
+    let script = try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh")
+    let cleanup = try extractFunction("cleanup_owned_state", from: script)
+    let trapCleanup = try extractFunction("cleanup", from: script)
+    let resume = try extractFunction("resume", from: script)
+
+    XCTAssertTrue(script.contains("REAL_HOME_BASELINE_CAPTURED"))
+    XCTAssertTrue(script.contains("REAL_HOME_COMPARED_BEFORE_AGENT_RESUME"))
+    XCTAssertTrue(script.contains("AGENT_RESUME_STARTED"))
+    XCTAssertTrue(script.contains("AGENT_RESUME_COMPLETED"))
+    XCTAssertTrue(cleanup.contains("set_real_home_modified_result"))
+    XCTAssertLessThan(
+      try XCTUnwrap(trapCleanup.range(of: "finish_result")?.lowerBound),
+      try XCTUnwrap(trapCleanup.range(of: "restore_real_hermes_after_final_decision")?.lowerBound)
+    )
+    XCTAssertFalse(resume.contains("finish_result\n  FINISHED=\"yes\""))
+  }
+
+  func testPowerLogRedactsSensitiveDetails() throws {
+    let script = try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh")
+    let verify = try extractFunction("verify_system_power_log_evidence", from: script)
+
+    XCTAssertTrue(verify.contains("/Users/<redacted>"))
+    XCTAssertTrue(verify.contains("/<path-redacted>"))
+    XCTAssertTrue(verify.contains("<uuid>"))
+    XCTAssertTrue(verify.contains("=<redacted>"))
+    XCTAssertTrue(verify.contains("return value[:220]"))
   }
 
   func testFinalPassExitZeroAndFailNeverExitsZero() throws {
