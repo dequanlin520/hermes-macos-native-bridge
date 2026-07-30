@@ -82,8 +82,9 @@ CHECKPOINT_FAILURE_FATAL="yes"
 REAL_HOME_INTEGRITY_FINALIZED="no"
 POWER_LOG_PREPARE_UTC=""
 POWER_LOG_PREPARE_EPOCH=""
+POWER_LOG_PREPARE_LOCAL_OFFSET=""
 POWER_LOG_PREPARE_UPTIME=""
-POWER_LOG_PREPARE_BOUNDARY=""
+POWER_LOG_PREPARE_MONOTONIC=""
 
 ORDERED_KEYS=(
   EXPLICIT_OPT_IN_CONFIRMED
@@ -124,7 +125,7 @@ ORDERED_KEYS=(
 )
 
 usage() {
-  print -u2 "usage: $SCRIPT_NAME prepare|resume|cleanup"
+  print -u2 "usage: $SCRIPT_NAME prepare|resume|cleanup|diagnose-power-evidence"
   print -u2 "prepare and resume require HERMES_SLEEP_WAKE_ACCEPTANCE=YES"
 }
 
@@ -350,9 +351,11 @@ capture_pmset_log() {
 record_power_log_prepare_checkpoint() {
   POWER_LOG_PREPARE_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   POWER_LOG_PREPARE_EPOCH="$(date -u +%s)"
+  POWER_LOG_PREPARE_LOCAL_OFFSET="$(date +%z)"
   POWER_LOG_PREPARE_UPTIME="$(process_info_system_uptime)"
-  POWER_LOG_PREPARE_BOUNDARY="$(capture_pmset_log 2>/dev/null | tail -n 1 | /usr/bin/python3 -c 'import re,sys; s=sys.stdin.read().strip(); s=re.sub(r"/Users/[^ \t]+", "/Users/<redacted>", s); s=re.sub(r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}", "<uuid>", s); print(s[:240])' 2>/dev/null)"
-  [[ -n "$POWER_LOG_PREPARE_UPTIME" ]] || return 1
+  POWER_LOG_PREPARE_MONOTONIC="$(/usr/bin/python3 -c 'import time; print(time.monotonic())' 2>/dev/null)"
+  [[ "$POWER_LOG_PREPARE_EPOCH" == <-> ]] || return 1
+  [[ -n "$POWER_LOG_PREPARE_UPTIME" && -n "$POWER_LOG_PREPARE_MONOTONIC" ]] || return 1
 }
 
 verify_system_power_log_evidence() {
@@ -364,147 +367,29 @@ verify_system_power_log_evidence() {
     print -u2 "invalid-uptime-evidence"
     return 1
   }
-  capture_pmset_log | /usr/bin/python3 - "$CHECKPOINT_FILE" "$POWER_LOG_EVIDENCE_FILE" "$RUN_ID" "$resume_utc" "$resume_epoch" "$resume_uptime" <<'PY'
-import json
-import os
-import re
-import sys
-from datetime import datetime, timezone
-from pathlib import Path
-
-checkpoint_path, evidence_path, expected_run_id, resume_utc, resume_epoch, resume_uptime = sys.argv[1:]
-
-def fail(reason):
-    raise SystemExit(reason)
-
-def redact(value):
-    value = re.sub(r"/Users/[^ \t:,'\"]+", "/Users/<redacted>", value)
-    value = re.sub(r"/(?:Applications|Library|System|private|tmp|var|opt|usr|bin|sbin|Volumes)/[^ \t:,'\"]+", "/<path-redacted>", value)
-    value = re.sub(r"\b[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\b", "<uuid>", value)
-    value = re.sub(r"\b(?:pid|process|proc|owner|user|uid|gid)=[^ \t,;]+", lambda m: m.group(0).split("=")[0] + "=<redacted>", value, flags=re.I)
-    value = re.sub(r"'[^']{1,80}'", "'<redacted>'", value)
-    return value[:220]
-
-def parse_epoch_from_iso(value):
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
-    except ValueError:
-        return None
-
-def parse_pmset_timestamp(line):
-    match = re.match(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})(?:\s+([+-]\d{4}))?\s+(.*)$", line)
-    if not match:
-        return None
-    stamp, offset, body = match.groups()
-    try:
-        if offset:
-            parsed = datetime.strptime(stamp + " " + offset, "%Y-%m-%d %H:%M:%S %z")
-        else:
-            parsed = datetime.strptime(stamp, "%Y-%m-%d %H:%M:%S").astimezone()
-    except ValueError:
-        return None
-    return parsed.timestamp(), body
-
-def classify(body):
-    normalized = " ".join(body.split())
-    if not normalized:
-        return None
-    lower = normalized.lower()
-    if "display sleep" in lower or "display is turned off" in lower or "screensleep" in lower:
-        return "rejected-display-sleep"
-    if "screen lock" in lower or "lockscreen" in lower or "session locked" in lower:
-        return "rejected-screen-lock"
-    if "assertion" in lower or "idle sleep preventers" in lower:
-        return "rejected-idle-assertion"
-    if normalized.startswith("DarkWake"):
-        return "rejected-darkwake"
-    if normalized.startswith("Sleep ") and ("Entering Sleep state" in normalized or "Sleep from" in normalized or "sleep due to" in lower):
-        return "system-sleep"
-    if normalized.startswith("Wake ") and "Wake from" in normalized and "Display" not in normalized:
-        return "system-wake"
-    return None
-
-try:
-    checkpoint = json.loads(Path(checkpoint_path).read_text(encoding="utf-8"))
-except Exception:
-    fail("power-log-boundary-invalid")
-if checkpoint.get("runIdentifier") != expected_run_id:
-    fail("run-id-mismatch")
-boundary = checkpoint.get("powerLogCheckpoint")
-if not isinstance(boundary, dict):
-    fail("power-log-boundary-invalid")
-prepare_epoch = parse_epoch_from_iso(boundary.get("wallClockUTC"))
-if prepare_epoch is None:
-    fail("power-log-boundary-invalid")
-try:
-    prepare_uptime = float(boundary["systemUptime"])
-    resume_epoch = float(resume_epoch)
-    resume_uptime = float(resume_uptime)
-except Exception:
-    fail("invalid-uptime-evidence")
-if resume_epoch < prepare_epoch or resume_uptime < prepare_uptime:
-    fail("invalid-uptime-evidence")
-if (resume_epoch - prepare_epoch) + 1 < (resume_uptime - prepare_uptime):
-    fail("invalid-uptime-evidence")
-
-events = []
-for raw_line in sys.stdin.read().splitlines():
-    parsed = parse_pmset_timestamp(raw_line)
-    if parsed is None:
-        continue
-    epoch, body = parsed
-    kind = classify(body)
-    if epoch < prepare_epoch or epoch > resume_epoch:
-        if kind in {"system-sleep", "system-wake"}:
-            events.append({"kind": "rejected-out-of-bounds", "epochSeconds": epoch, "summary": redact(body)})
-        continue
-    if kind:
-        events.append({"kind": kind, "epochSeconds": epoch, "summary": redact(body)})
-
-sleep = next((event for event in events if event["kind"] == "system-sleep"), None)
-wake = next((event for event in events if event["kind"] == "system-wake"), None)
-ordered_system_events = [event for event in events if event["kind"] in {"system-sleep", "system-wake"}]
-if wake and not sleep:
-    fail("invalid-system-event-order")
-if sleep is None:
-    fail("system-sleep-missing")
-if wake is None:
-    fail("system-wake-missing")
-if not (prepare_epoch < sleep["epochSeconds"] < wake["epochSeconds"] <= resume_epoch):
-    fail("invalid-system-event-order")
-if ordered_system_events[0]["kind"] != "system-sleep":
-    fail("invalid-system-event-order")
-
-payload = {
-    "schemaVersion": 1,
-    "runIdentifier": expected_run_id,
-    "provider": "pmset -g log",
-    "boundedInterval": {
-        "prepareWallClockUTC": boundary["wallClockUTC"],
-        "resumeWallClockUTC": resume_utc,
-    },
-    "systemSleepEpochSeconds": sleep["epochSeconds"],
-    "systemWakeEpochSeconds": wake["epochSeconds"],
-    "uptime": {
-        "prepareSystemUptime": prepare_uptime,
-        "resumeSystemUptime": resume_uptime,
-    },
-    "events": events,
+  capture_pmset_log | /usr/bin/python3 Scripts/m14_003_power_log_evidence.py verify \
+    --checkpoint "$CHECKPOINT_FILE" \
+    --evidence "$POWER_LOG_EVIDENCE_FILE" \
+    --run-id "$RUN_ID" \
+    --resume-utc "$resume_utc" \
+    --resume-epoch "$resume_epoch" \
+    --resume-uptime "$resume_uptime"
 }
-target = Path(evidence_path)
-target.parent.mkdir(parents=True, exist_ok=True)
-with target.open("w", encoding="utf-8") as handle:
-    handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
-    handle.flush()
-    os.fsync(handle.fileno())
-directory_fd = os.open(str(target.parent), os.O_RDONLY)
-try:
-    os.fsync(directory_fd)
-finally:
-    os.close(directory_fd)
-PY
+
+diagnose_power_evidence() {
+  if [[ -n "${HERMES_M14_003_POWER_LOG_FIXTURE:-}" ]]; then
+    /usr/bin/python3 Scripts/m14_003_power_log_evidence.py diagnose \
+      --checkpoint "${HERMES_M14_003_CHECKPOINT_FIXTURE:-$CHECKPOINT_FILE}" \
+      --run-id "${HERMES_M14_003_RUN_ID:-}" \
+      --fixture-log "$HERMES_M14_003_POWER_LOG_FIXTURE" \
+      --fixture-prepare-epoch "${HERMES_M14_003_FIXTURE_PREPARE_EPOCH:-0}" \
+      --fixture-resume-epoch "${HERMES_M14_003_FIXTURE_RESUME_EPOCH:-$(date -u +%s)}"
+  else
+    capture_pmset_log | /usr/bin/python3 Scripts/m14_003_power_log_evidence.py diagnose \
+      --checkpoint "$CHECKPOINT_FILE" \
+      --run-id "${HERMES_M14_003_RUN_ID:-}" \
+      --fixture-resume-epoch "$(date -u +%s)"
+  fi
 }
 
 write_real_home_integrity_snapshot() {
@@ -1209,7 +1094,8 @@ write_checkpoint() {
     "$APP_EXECUTABLE_REL" "$SERVICE_EXECUTABLE_REL" "$APP_PID" "$SERVICE_PID" "$RECORDER_PID" \
     "$APP_INSTALLED_BY_RUN" "$LAUNCH_AGENT_INSTALLED_BY_RUN" "$SERVICE_BOOTSTRAPPED_BY_RUN" \
     "$RECORDER_BOOTSTRAPPED_BY_RUN" "$RESTART_CYCLES_EXPECTED" "$REAL_HERMES_RECORDS_FILE" \
-    "$POWER_LOG_PREPARE_UTC" "$POWER_LOG_PREPARE_EPOCH" "$POWER_LOG_PREPARE_UPTIME" "$POWER_LOG_PREPARE_BOUNDARY" <<'PY'
+    "$POWER_LOG_PREPARE_UTC" "$POWER_LOG_PREPARE_EPOCH" "$POWER_LOG_PREPARE_LOCAL_OFFSET" \
+    "$POWER_LOG_PREPARE_UPTIME" "$POWER_LOG_PREPARE_MONOTONIC" <<'PY'
 import json
 import os
 import sys
@@ -1222,7 +1108,8 @@ from pathlib import Path
     service_executable_rel, app_pid, service_pid, recorder_pid, app_installed,
     launch_agent_installed, service_bootstrapped, recorder_bootstrapped,
     restart_cycles_expected, real_hermes_records_path,
-    power_log_prepare_utc, power_log_prepare_epoch, power_log_prepare_uptime, power_log_prepare_boundary,
+    power_log_prepare_utc, power_log_prepare_epoch, power_log_prepare_local_offset,
+    power_log_prepare_uptime, power_log_prepare_monotonic,
 ) = sys.argv[1:]
 real_hermes_records = []
 records_path = Path(real_hermes_records_path)
@@ -1275,14 +1162,16 @@ if power_log_prepare_utc:
     try:
         power_log_epoch_value = int(power_log_prepare_epoch)
         power_log_uptime_value = float(power_log_prepare_uptime)
+        power_log_monotonic_value = float(power_log_prepare_monotonic)
     except ValueError:
         raise SystemExit("invalid power log checkpoint")
     checkpoint["powerLogCheckpoint"] = {
         "runIdentifier": run_id,
-        "wallClockUTC": power_log_prepare_utc,
-        "wallClockEpochSeconds": power_log_epoch_value,
+        "epochSeconds": power_log_epoch_value,
+        "utcISO8601": power_log_prepare_utc,
+        "localTimezoneOffset": power_log_prepare_local_offset,
         "systemUptime": power_log_uptime_value,
-        "cursorBoundary": power_log_prepare_boundary,
+        "createdAtMonotonic": power_log_monotonic_value,
     }
 required = [
     ("schemaVersion", int),
@@ -2246,7 +2135,7 @@ resume() {
   local system_power_verify_error
   system_power_verify_error="$(verify_system_power_log_evidence 2>&1)" || {
     case "$system_power_verify_error" in
-      system-sleep-missing|system-wake-missing|invalid-system-event-order|power-log-boundary-invalid|invalid-uptime-evidence|run-id-mismatch)
+      system-sleep-missing|system-wake-missing|invalid-system-event-order|power-log-boundary-invalid|invalid-uptime-evidence)
         timeout_fail "$system_power_verify_error"
         ;;
       *)
@@ -2294,6 +2183,12 @@ main() {
       ;;
     cleanup)
       cleanup_command
+      ;;
+    diagnose-power-evidence)
+      trap - EXIT INT TERM HUP
+      diagnose_power_evidence
+      FINISHED="yes"
+      exit $?
       ;;
     "")
       set_default_results

@@ -195,10 +195,13 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
 
     XCTAssertTrue(script.contains("POWER_LOG_COMMAND=\"/usr/bin/pmset\""))
     XCTAssertTrue(prepare.contains("POWER_LOG_PREPARE_UTC"))
+    XCTAssertTrue(prepare.contains("POWER_LOG_PREPARE_EPOCH"))
+    XCTAssertTrue(prepare.contains("POWER_LOG_PREPARE_LOCAL_OFFSET"))
+    XCTAssertTrue(prepare.contains("POWER_LOG_PREPARE_MONOTONIC"))
     XCTAssertTrue(prepare.contains("process_info_system_uptime"))
-    XCTAssertTrue(prepare.contains("POWER_LOG_PREPARE_BOUNDARY"))
-    XCTAssertTrue(verify.contains("provider\": \"pmset -g log\""))
-    XCTAssertTrue(verify.contains("prepare_epoch < sleep[\"epochSeconds\"] < wake[\"epochSeconds\"] <= resume_epoch"))
+    XCTAssertFalse(prepare.contains("POWER_LOG_PREPARE_BOUNDARY"))
+    XCTAssertTrue(try read("Scripts/m14_003_power_log_evidence.py").contains("\"provider\": \"pmset -g log\""))
+    XCTAssertTrue(verify.contains("Scripts/m14_003_power_log_evidence.py verify"))
     XCTAssertTrue(resume.contains("verify_system_power_log_evidence"))
     XCTAssertLessThan(
       try XCTUnwrap(resume.range(of: "verify_system_power_log_evidence")?.lowerBound),
@@ -207,38 +210,177 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
   }
 
   func testSystemPowerLogAcceptsOnlyExplicitSystemSleepAndWake() throws {
-    let script = try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh")
-    let verify = try extractFunction("verify_system_power_log_evidence", from: script)
+    let helper = try read("Scripts/m14_003_power_log_evidence.py")
 
-    XCTAssertTrue(verify.contains("normalized.startswith(\"Sleep \")"))
-    XCTAssertTrue(verify.contains("\"Entering Sleep state\""))
-    XCTAssertTrue(verify.contains("normalized.startswith(\"Wake \")"))
-    XCTAssertTrue(verify.contains("\"Wake from\""))
-    XCTAssertTrue(verify.contains("rejected-display-sleep"))
-    XCTAssertTrue(verify.contains("rejected-screen-lock"))
-    XCTAssertTrue(verify.contains("rejected-idle-assertion"))
-    XCTAssertTrue(verify.contains("rejected-darkwake"))
-    XCTAssertTrue(verify.contains("rejected-out-of-bounds"))
-    XCTAssertFalse(verify.contains("wall-clock delay"))
+    XCTAssertTrue(helper.contains("Entering Sleep state"))
+    XCTAssertTrue(helper.contains("System Sleep"))
+    XCTAssertTrue(helper.contains("Wake from Normal Sleep"))
+    XCTAssertTrue(helper.contains("System Wake"))
+    XCTAssertTrue(helper.contains("rejected-display-sleep"))
+    XCTAssertTrue(helper.contains("rejected-display-wake"))
+    XCTAssertTrue(helper.contains("rejected-maintenance-wake"))
+    XCTAssertTrue(helper.contains("rejected-sleepservice"))
+    XCTAssertTrue(helper.contains("rejected-user-active"))
+    XCTAssertTrue(helper.contains("rejected-assertions"))
+    XCTAssertTrue(helper.contains("rejected-darkwake"))
+    XCTAssertTrue(helper.contains("rejected-out-of-bounds"))
   }
 
   func testPowerLogNegativeCasesHaveSpecificReasons() throws {
     let script = try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh")
-    let verify = try extractFunction("verify_system_power_log_evidence", from: script)
+    let helper = try read("Scripts/m14_003_power_log_evidence.py")
     let resume = try extractFunction("resume", from: script)
 
-    XCTAssertTrue(verify.contains("epoch < prepare_epoch or epoch > resume_epoch"))
-    XCTAssertTrue(verify.contains("rejected-out-of-bounds"))
-    XCTAssertTrue(verify.contains("if wake and not sleep:"))
-    XCTAssertTrue(verify.contains("fail(\"invalid-system-event-order\")"))
-    XCTAssertTrue(verify.contains("if sleep is None:"))
-    XCTAssertTrue(verify.contains("fail(\"system-sleep-missing\")"))
-    XCTAssertTrue(verify.contains("if wake is None:"))
-    XCTAssertTrue(verify.contains("fail(\"system-wake-missing\")"))
-    XCTAssertTrue(verify.contains("ordered_system_events[0][\"kind\"] != \"system-sleep\""))
-    XCTAssertTrue(verify.contains("fail(\"invalid-uptime-evidence\")"))
+    XCTAssertTrue(helper.contains("epoch < prepare_epoch - BOUNDARY_TOLERANCE_SECONDS"))
+    XCTAssertTrue(helper.contains("epoch > resume_epoch + BOUNDARY_TOLERANCE_SECONDS"))
+    XCTAssertTrue(helper.contains("rejected-out-of-bounds"))
+    XCTAssertTrue(helper.contains("fail(\"invalid-system-event-order\")"))
+    XCTAssertTrue(helper.contains("fail(\"system-sleep-missing\")"))
+    XCTAssertTrue(helper.contains("fail(\"system-wake-missing\")"))
+    XCTAssertTrue(helper.contains("fail(\"invalid-uptime-evidence\")"))
     XCTAssertTrue(resume.contains("timeout_fail \"$system_power_verify_error\""))
     XCTAssertFalse(resume.contains("timeout_fail \"will-sleep-missing\""))
+  }
+
+  func testPowerLogCheckpointUsesIntegerEpochSchema() throws {
+    let script = try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh")
+    let checkpoint = try extractFunction("write_checkpoint", from: script)
+
+    XCTAssertTrue(checkpoint.contains("\"epochSeconds\": power_log_epoch_value"))
+    XCTAssertTrue(checkpoint.contains("\"utcISO8601\": power_log_prepare_utc"))
+    XCTAssertTrue(checkpoint.contains("\"localTimezoneOffset\": power_log_prepare_local_offset"))
+    XCTAssertTrue(checkpoint.contains("\"systemUptime\": power_log_uptime_value"))
+    XCTAssertTrue(checkpoint.contains("\"createdAtMonotonic\": power_log_monotonic_value"))
+    XCTAssertFalse(checkpoint.contains("cursorBoundary"))
+    XCTAssertFalse(checkpoint.contains("wallClockUTC"))
+  }
+
+  func testPowerLogParserAcceptsTimestampFormsAndOrderedFullSleepWakePair() throws {
+    let log = """
+    2026-07-29 21:33:34.500 -0700   Sleep                Entering Sleep state due to 'Software Sleep pid=449'
+    unrelated row without a timestamp
+    2026-07-29    21:33:39 PDT Wake                 Wake from Normal Sleep [CDNVA] : due to HID Activity
+    """
+
+    let result = try runPowerLogVerifier(log: log)
+
+    XCTAssertEqual(result.exitCode, 0, result.combinedOutput)
+    let evidence = try XCTUnwrap(result.evidence)
+    XCTAssertEqual(evidence["systemSleepEpochSeconds"] as? Int, 1_785_386_014)
+    XCTAssertEqual(evidence["systemWakeEpochSeconds"] as? Int, 1_785_386_019)
+  }
+
+  func testPowerLogParserAcceptsTimezoneOffsetAndVariableWhitespace() throws {
+    let log = """
+    2026-07-30 04:33:34 +0000 Sleep Entering Sleep state
+    2026-07-30 04:33:39 +00:00    Wake    Wake from Normal Sleep
+    """
+
+    let result = try runPowerLogVerifier(log: log)
+
+    XCTAssertEqual(result.exitCode, 0, result.combinedOutput)
+  }
+
+  func testPowerLogParserIsLocaleIndependent() throws {
+    let log = """
+    2026-07-30 04:33:34 UTC Sleep Entering Sleep state
+    2026-07-30 04:33:39 GMT Wake Wake from Normal Sleep
+    """
+
+    let result = try runPowerLogVerifier(log: log, locale: "fr_FR.UTF-8")
+
+    XCTAssertEqual(result.exitCode, 0, result.combinedOutput)
+  }
+
+  func testPowerLogRejectsDarkWakeMaintenanceDisplayAndAssertionRows() throws {
+    let log = """
+    2026-07-30 04:33:34 UTC Sleep Entering DarkWake state due to 'Software Sleep pid=449'
+    2026-07-30 04:33:35 UTC Assertions PID 354(powerd) Created PreventSystemSleep "secret-process"
+    2026-07-30 04:33:36 UTC Notification Display is turned off
+    2026-07-30 04:33:37 UTC Notification Display is turned on
+    2026-07-30 04:33:38 UTC Wake Maintenance SleepService Wake
+    """
+
+    let diagnostic = try runPowerLogDiagnostic(log: log)
+    XCTAssertTrue(diagnostic.combinedOutput.contains("rejection=rejected-darkwake"))
+    XCTAssertTrue(diagnostic.combinedOutput.contains("rejection=rejected-assertions"))
+    XCTAssertTrue(diagnostic.combinedOutput.contains("rejection=rejected-display-sleep"))
+    XCTAssertTrue(diagnostic.combinedOutput.contains("rejection=rejected-display-wake"))
+    XCTAssertTrue(diagnostic.combinedOutput.contains("rejection=rejected-maintenance-wake"))
+
+    let result = try runPowerLogVerifier(log: log)
+    XCTAssertEqual(result.exitCode, 1)
+    XCTAssertTrue(result.combinedOutput.contains("system-sleep-missing"))
+  }
+
+  func testPowerLogBoundedIntervalRejectsHistoricalAndPostResumeEvents() throws {
+    let log = """
+    2026-07-30 04:33:00 UTC Sleep Entering Sleep state
+    2026-07-30 04:33:34 UTC Sleep Entering Sleep state
+    2026-07-30 04:33:39 UTC Wake Wake from Normal Sleep
+    2026-07-30 04:34:00 UTC Wake Wake from Normal Sleep
+    """
+
+    let result = try runPowerLogVerifier(log: log)
+
+    XCTAssertEqual(result.exitCode, 0, result.combinedOutput)
+    let events = try XCTUnwrap(result.evidence?["events"] as? [[String: Any]])
+    XCTAssertTrue(events.contains { $0["rejectionReason"] as? String == "before-checkpoint" })
+    XCTAssertTrue(events.contains { $0["rejectionReason"] as? String == "after-resume" })
+  }
+
+  func testPowerLogSpecificMissingAndOrderingReasons() throws {
+    XCTAssertTrue(try runPowerLogVerifier(log: "2026-07-30 04:33:39 UTC Wake Wake from Normal Sleep\n").combinedOutput.contains("invalid-system-event-order"))
+    XCTAssertTrue(try runPowerLogVerifier(log: "2026-07-30 04:33:34 UTC Sleep Entering Sleep state\n").combinedOutput.contains("system-wake-missing"))
+    XCTAssertTrue(try runPowerLogVerifier(log: "2026-07-30 04:33:34 UTC Assertions PID 1(powerd) Summary UserIsActive\n").combinedOutput.contains("system-sleep-missing"))
+  }
+
+  func testPowerLogBoundaryInvalidIsReservedForMalformedCheckpointOnly() throws {
+    let malformed = try runPowerLogVerifier(
+      log: "2026-07-30 04:33:34 UTC Sleep Entering Sleep state\n",
+      checkpointEpoch: "1785386012"
+    )
+    XCTAssertTrue(malformed.combinedOutput.contains("power-log-boundary-invalid"))
+
+    let resumeBeforeCheckpoint = try runPowerLogVerifier(
+      log: "2026-07-30 04:33:34 UTC Sleep Entering Sleep state\n",
+      resumeEpoch: 1_785_386_000
+    )
+    XCTAssertTrue(resumeBeforeCheckpoint.combinedOutput.contains("power-log-boundary-invalid"))
+
+    let unparseable = try runPowerLogVerifier(log: "not a pmset timestamp\n")
+    XCTAssertFalse(unparseable.combinedOutput.contains("power-log-boundary-invalid"))
+    XCTAssertTrue(unparseable.combinedOutput.contains("system-sleep-missing"))
+  }
+
+  func testPowerEvidenceDiagnosticModeIsReadOnlyAndRedactsOutput() throws {
+    let temp = try temporaryDirectory()
+    let checkpoint = temp.appendingPathComponent("checkpoint.json")
+    let fixture = temp.appendingPathComponent("pmset.log")
+    try writePowerLogCheckpoint(to: checkpoint, checkpointEpoch: 1_785_386_012)
+    try """
+    2026-07-30 04:33:34 UTC Sleep Entering Sleep state due to /Users/jerry/private/token
+    2026-07-30 04:33:39 UTC Wake Wake from Normal Sleep UUID C2EF653C-7A3B-4F92-B1AB-12BBC66C6C63 pid=449
+    """.write(to: fixture, atomically: true, encoding: .utf8)
+    try? FileManager.default.removeItem(at: root.appendingPathComponent("artifacts/m14-003/result.txt"))
+
+    let result = try runAcceptanceScript(
+      ["diagnose-power-evidence"],
+      optIn: false,
+      extraEnvironment: [
+        "HERMES_M14_003_CHECKPOINT_FIXTURE": checkpoint.path,
+        "HERMES_M14_003_POWER_LOG_FIXTURE": fixture.path,
+        "HERMES_M14_003_FIXTURE_RESUME_EPOCH": "1785386020",
+      ]
+    )
+
+    XCTAssertEqual(result.exitCode, 0, result.combinedOutput)
+    XCTAssertTrue(result.combinedOutput.contains("candidate epoch=1785386014 kind=system-sleep"))
+    XCTAssertTrue(result.combinedOutput.contains("/Users/<redacted>"))
+    XCTAssertTrue(result.combinedOutput.contains("<uuid>"))
+    XCTAssertTrue(result.combinedOutput.contains("pid=<redacted>"))
+    XCTAssertFalse(result.combinedOutput.contains("private/token"))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("artifacts/m14-003/result.txt").path))
   }
 
   func testIOKitAndNSWorkspaceRemainCorroboratingOnly() throws {
@@ -301,21 +443,20 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
   func testEventOrderingRunIDAndUptimeEvidenceRequired() throws {
     let script = try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh")
     let helper = try extractFunction("write_sleep_wake_recorder", from: script)
-    let verify = try extractFunction("verify_system_power_log_evidence", from: script)
+    let parser = try read("Scripts/m14_003_power_log_evidence.py")
 
     XCTAssertTrue(helper.contains("ProcessInfo.processInfo.systemUptime"))
     XCTAssertTrue(helper.contains("monotonicUptime"))
     XCTAssertTrue(helper.contains("recorderInstanceIdentifier"))
     XCTAssertTrue(helper.contains("eventSequenceNumber"))
     XCTAssertTrue(helper.contains("currentExecutablePath"))
-    XCTAssertTrue(verify.contains("run-id-mismatch"))
-    XCTAssertTrue(verify.contains("invalid-system-event-order"))
-    XCTAssertTrue(verify.contains("invalid-uptime-evidence"))
-    XCTAssertTrue(verify.contains("system-sleep-missing"))
-    XCTAssertTrue(verify.contains("system-wake-missing"))
-    XCTAssertTrue(verify.contains("power-log-boundary-invalid"))
-    XCTAssertTrue(verify.contains("resume_uptime < prepare_uptime"))
-    XCTAssertTrue(verify.contains("(resume_epoch - prepare_epoch) + 1 < (resume_uptime - prepare_uptime)"))
+    XCTAssertTrue(parser.contains("invalid-system-event-order"))
+    XCTAssertTrue(parser.contains("invalid-uptime-evidence"))
+    XCTAssertTrue(parser.contains("system-sleep-missing"))
+    XCTAssertTrue(parser.contains("system-wake-missing"))
+    XCTAssertTrue(parser.contains("power-log-boundary-invalid"))
+    XCTAssertTrue(parser.contains("resume_uptime < prepare_uptime"))
+    XCTAssertTrue(parser.contains("(resume_epoch - prepare_epoch) + BOUNDARY_TOLERANCE_SECONDS < (resume_uptime - prepare_uptime)"))
     XCTAssertFalse(helper.contains("Date().timeIntervalSince"))
   }
 
@@ -356,7 +497,7 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
     XCTAssertTrue(evidence.contains("wake-missing"))
     XCTAssertTrue(resume.contains("validate_resume_recorder_identity"))
     XCTAssertTrue(resume.contains("verify_system_power_log_evidence"))
-    XCTAssertTrue(resume.contains("system-sleep-missing|system-wake-missing|invalid-system-event-order|power-log-boundary-invalid|invalid-uptime-evidence|run-id-mismatch"))
+    XCTAssertTrue(resume.contains("system-sleep-missing|system-wake-missing|invalid-system-event-order|power-log-boundary-invalid|invalid-uptime-evidence"))
     XCTAssertTrue(resume.contains("verify_recorder_evidence >/dev/null 2>&1 || true"))
     XCTAssertFalse(evidence.contains("kill -0 \"$RECORDER_PID\""))
     XCTAssertFalse(resume.contains("verify_recorder_ready"))
@@ -644,14 +785,13 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
   }
 
   func testPowerLogRedactsSensitiveDetails() throws {
-    let script = try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh")
-    let verify = try extractFunction("verify_system_power_log_evidence", from: script)
+    let helper = try read("Scripts/m14_003_power_log_evidence.py")
 
-    XCTAssertTrue(verify.contains("/Users/<redacted>"))
-    XCTAssertTrue(verify.contains("/<path-redacted>"))
-    XCTAssertTrue(verify.contains("<uuid>"))
-    XCTAssertTrue(verify.contains("=<redacted>"))
-    XCTAssertTrue(verify.contains("return value[:220]"))
+    XCTAssertTrue(helper.contains("/Users/<redacted>"))
+    XCTAssertTrue(helper.contains("/<path-redacted>"))
+    XCTAssertTrue(helper.contains("<uuid>"))
+    XCTAssertTrue(helper.contains("=<redacted>"))
+    XCTAssertTrue(helper.contains("return value[:240]"))
   }
 
   func testFinalPassExitZeroAndFailNeverExitsZero() throws {
@@ -772,7 +912,11 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
     try FileManager.default.createDirectory(at: runtime, withIntermediateDirectories: true)
   }
 
-  private func runAcceptanceScript(_ arguments: [String], optIn: Bool) throws -> (exitCode: Int32, combinedOutput: String) {
+  private func runAcceptanceScript(
+    _ arguments: [String],
+    optIn: Bool,
+    extraEnvironment: [String: String] = [:]
+  ) throws -> (exitCode: Int32, combinedOutput: String) {
     let process = Process()
     process.currentDirectoryURL = root
     process.executableURL = URL(fileURLWithPath: "/bin/zsh")
@@ -784,6 +928,9 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
     } else {
       environment.removeValue(forKey: "HERMES_SLEEP_WAKE_ACCEPTANCE")
     }
+    for (key, value) in extraEnvironment {
+      environment[key] = value
+    }
     process.environment = environment
     let pipe = Pipe()
     process.standardOutput = pipe
@@ -792,6 +939,109 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
     process.waitUntilExit()
     let data = pipe.fileHandleForReading.readDataToEndOfFile()
     return (process.terminationStatus, String(data: data, encoding: .utf8) ?? "")
+  }
+
+  private func runPowerLogVerifier(
+    log: String,
+    checkpointEpoch: Any = 1_785_386_012,
+    resumeEpoch: Int = 1_785_386_020,
+    locale: String? = nil
+  ) throws -> (exitCode: Int32, combinedOutput: String, evidence: [String: Any]?) {
+    let temp = try temporaryDirectory()
+    let checkpoint = temp.appendingPathComponent("checkpoint.json")
+    let evidence = temp.appendingPathComponent("evidence.json")
+    try writePowerLogCheckpoint(to: checkpoint, checkpointEpoch: checkpointEpoch)
+    let result = try runPythonHelper(
+      arguments: [
+        "verify",
+        "--checkpoint", checkpoint.path,
+        "--evidence", evidence.path,
+        "--run-id", "m14-003-test",
+        "--resume-utc", "2026-07-30T04:33:40Z",
+        "--resume-epoch", "\(resumeEpoch)",
+        "--resume-uptime", "108.0",
+      ],
+      standardInput: log,
+      locale: locale
+    )
+    var parsedEvidence: [String: Any]?
+    if FileManager.default.fileExists(atPath: evidence.path) {
+      let data = try Data(contentsOf: evidence)
+      parsedEvidence = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+    }
+    return (result.exitCode, result.combinedOutput, parsedEvidence)
+  }
+
+  private func runPowerLogDiagnostic(log: String) throws -> (exitCode: Int32, combinedOutput: String) {
+    let temp = try temporaryDirectory()
+    let checkpoint = temp.appendingPathComponent("checkpoint.json")
+    let fixture = temp.appendingPathComponent("pmset.log")
+    try writePowerLogCheckpoint(to: checkpoint, checkpointEpoch: 1_785_386_012)
+    try log.write(to: fixture, atomically: true, encoding: .utf8)
+    return try runPythonHelper(
+      arguments: [
+        "diagnose",
+        "--checkpoint", checkpoint.path,
+        "--run-id", "m14-003-test",
+        "--fixture-log", fixture.path,
+        "--fixture-resume-epoch", "1785386020",
+      ],
+      standardInput: ""
+    )
+  }
+
+  private func runPythonHelper(
+    arguments: [String],
+    standardInput: String,
+    locale: String? = nil
+  ) throws -> (exitCode: Int32, combinedOutput: String) {
+    let process = Process()
+    process.currentDirectoryURL = root
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
+    process.arguments = ["Scripts/m14_003_power_log_evidence.py"] + arguments
+    var environment = ProcessInfo.processInfo.environment
+    if let locale {
+      environment["LC_TIME"] = locale
+      environment["LANG"] = locale
+    }
+    process.environment = environment
+    let input = Pipe()
+    let output = Pipe()
+    process.standardInput = input
+    process.standardOutput = output
+    process.standardError = output
+    try process.run()
+    input.fileHandleForWriting.write(Data(standardInput.utf8))
+    input.fileHandleForWriting.closeFile()
+    process.waitUntilExit()
+    let data = output.fileHandleForReading.readDataToEndOfFile()
+    return (process.terminationStatus, String(data: data, encoding: .utf8) ?? "")
+  }
+
+  private func writePowerLogCheckpoint(to url: URL, checkpointEpoch: Any) throws {
+    try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+    let checkpoint: [String: Any] = [
+      "schemaVersion": 1,
+      "runIdentifier": "m14-003-test",
+      "powerLogCheckpoint": [
+        "runIdentifier": "m14-003-test",
+        "epochSeconds": checkpointEpoch,
+        "utcISO8601": "2026-07-30T04:33:32Z",
+        "localTimezoneOffset": "+0000",
+        "systemUptime": 100.0,
+        "createdAtMonotonic": 50.0,
+      ],
+    ]
+    let data = try JSONSerialization.data(withJSONObject: checkpoint, options: [.prettyPrinted, .sortedKeys])
+    try data.write(to: url)
+  }
+
+  private func temporaryDirectory() throws -> URL {
+    let url = FileManager.default.temporaryDirectory
+      .appendingPathComponent("hermes-m14-003-tests")
+      .appendingPathComponent(UUID().uuidString)
+    try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+    return url
   }
 
   private func zshReservedNameViolations(in script: String) throws -> [ReservedNameViolation] {
