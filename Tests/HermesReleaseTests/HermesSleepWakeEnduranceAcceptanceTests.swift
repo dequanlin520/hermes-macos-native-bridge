@@ -246,6 +246,9 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
     let script = try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh")
     let checkpoint = try extractFunction("write_checkpoint", from: script)
 
+    XCTAssertTrue(checkpoint.contains("final.exists()"))
+    XCTAssertTrue(checkpoint.contains("checkpoint.get(\"runIdentifier\") != run_id"))
+    XCTAssertTrue(checkpoint.contains("merge_dict(checkpoint, updates)"))
     XCTAssertTrue(checkpoint.contains("\"epochSeconds\": power_log_epoch_value"))
     XCTAssertTrue(checkpoint.contains("\"utcISO8601\": power_log_prepare_utc"))
     XCTAssertTrue(checkpoint.contains("\"localTimezoneOffset\": power_log_prepare_local_offset"))
@@ -253,6 +256,120 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
     XCTAssertTrue(checkpoint.contains("\"createdAtMonotonic\": power_log_monotonic_value"))
     XCTAssertFalse(checkpoint.contains("cursorBoundary"))
     XCTAssertFalse(checkpoint.contains("wallClockUTC"))
+  }
+
+  func testCheckpointUpdatesAreMergePreservingAndRejectRunIDMismatch() throws {
+    let script = try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh")
+    let checkpoint = try extractFunction("write_checkpoint", from: script)
+
+    XCTAssertTrue(checkpoint.contains("checkpoint = json.loads(final.read_text"))
+    XCTAssertTrue(checkpoint.contains("raise SystemExit(\"run-id-mismatch\")"))
+    XCTAssertTrue(checkpoint.contains("def merge_dict(base, updates):"))
+    XCTAssertTrue(checkpoint.contains("if isinstance(value, dict) and isinstance(base.get(key), dict):"))
+    XCTAssertTrue(checkpoint.contains("base[key] = value"))
+    XCTAssertFalse(checkpoint.contains("payload = json.dumps(updates"))
+    XCTAssertTrue(checkpoint.contains("if power_log_prepare_utc:"))
+    XCTAssertTrue(checkpoint.contains("checkpoint[\"powerLogCheckpoint\"] = {"))
+  }
+
+  func testPrepareReadBackGatePreventsWaitingWithMissingBoundaryFields() throws {
+    let script = try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh")
+    let prepare = try extractFunction("prepare", from: script)
+    let validate = try extractFunction("validate_checkpoint_before_waiting", from: script)
+
+    XCTAssertTrue(prepare.contains("write_checkpoint \"prepare\" \"waiting-for-manual-sleep\""))
+    XCTAssertTrue(prepare.contains("validate_checkpoint_before_waiting || fail"))
+    XCTAssertLessThan(
+      try XCTUnwrap(prepare.range(of: "validate_checkpoint_before_waiting")?.lowerBound),
+      try XCTUnwrap(prepare.range(of: "RESULT[WAITING_FOR_MANUAL_SLEEP]=yes")?.lowerBound)
+    )
+    XCTAssertTrue(validate.contains("powerLogCheckpoint"))
+    XCTAssertTrue(validate.contains("epochSeconds\", int"))
+    XCTAssertTrue(validate.contains("utcISO8601\", str"))
+    XCTAssertTrue(validate.contains("localTimezoneOffset\", str"))
+    XCTAssertTrue(validate.contains("systemUptime\", (int, float)"))
+    XCTAssertTrue(validate.contains("createdAtMonotonic\", (int, float)"))
+    XCTAssertTrue(validate.contains("systemPowerLogEvidence"))
+    XCTAssertTrue(validate.contains("wakeEvidence"))
+    XCTAssertTrue(validate.contains("realHomeSnapshotBefore"))
+    XCTAssertTrue(validate.contains("recorderLabel"))
+    XCTAssertTrue(validate.contains("suspendedByM14003"))
+  }
+
+  func testDiagnosticCheckpointPreservesFailureEvidenceAndRedactsPrivatePaths() throws {
+    let script = try read("Scripts/m14_003_sleep_wake_endurance_acceptance.sh")
+    let diagnostic = try extractFunction("preserve_diagnostic_checkpoint", from: script)
+    let fail = try extractFunction("fail", from: script)
+    let timeout = try extractFunction("timeout_fail", from: script)
+
+    XCTAssertTrue(diagnostic.contains("DIAGNOSTIC_DIR"))
+    XCTAssertTrue(diagnostic.contains("failureReason"))
+    XCTAssertTrue(diagnostic.contains("phaseOrdering"))
+    XCTAssertTrue(diagnostic.contains("/Users/<redacted>"))
+    XCTAssertTrue(diagnostic.contains("<redacted-path>"))
+    XCTAssertTrue(diagnostic.contains("os.fsync(handle.fileno())"))
+    XCTAssertTrue(diagnostic.contains("os.replace(tmp, target)"))
+    XCTAssertTrue(fail.contains("preserve_diagnostic_checkpoint"))
+    XCTAssertTrue(timeout.contains("preserve_diagnostic_checkpoint"))
+  }
+
+  func testInspectCheckpointModeIsReadOnlyAndSchemaAware() throws {
+    let runID = "m14-003-inspect-\(UUID().uuidString)"
+    let runtime = root.appendingPathComponent("artifacts/m14-003/runtime")
+    let checkpoint = runtime.appendingPathComponent("checkpoint.json")
+    try writePowerLogCheckpoint(to: checkpoint, checkpointEpoch: 1_785_386_012, runID: runID)
+    try? FileManager.default.removeItem(at: root.appendingPathComponent("artifacts/m14-003/result.txt"))
+    let before = try Data(contentsOf: checkpoint)
+
+    let result = try runAcceptanceScript(
+      ["inspect-checkpoint"],
+      optIn: false,
+      extraEnvironment: ["HERMES_M14_003_RUN_ID": runID]
+    )
+
+    XCTAssertEqual(result.exitCode, 0, result.combinedOutput)
+    XCTAssertEqual(try Data(contentsOf: checkpoint), before)
+    XCTAssertTrue(result.combinedOutput.contains("run_id_match=yes"))
+    XCTAssertTrue(result.combinedOutput.contains("required_fields=ok"))
+    XCTAssertTrue(result.combinedOutput.contains("power_boundary_epoch=1785386012"))
+    XCTAssertTrue(result.combinedOutput.contains("utc_timestamp=present-string"))
+    XCTAssertTrue(result.combinedOutput.contains("timezone_offset=present-string"))
+    XCTAssertTrue(result.combinedOutput.contains("recorder_identity=ok"))
+    XCTAssertTrue(result.combinedOutput.contains("quiescence_completeness=complete"))
+    XCTAssertTrue(result.combinedOutput.contains("checkpoint_schema_version=1"))
+    XCTAssertFalse(result.combinedOutput.contains("/Users/"))
+    XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("artifacts/m14-003/result.txt").path))
+  }
+
+  func testDiagnosePowerEvidencePrefersMatchingDiagnosticCheckpointAfterCleanup() throws {
+    let runID = "m14-003-diagnostic-\(UUID().uuidString)"
+    let runtime = root.appendingPathComponent("artifacts/m14-003/runtime")
+    let diagnostics = root.appendingPathComponent("artifacts/m14-003/diagnostics")
+    let active = runtime.appendingPathComponent("checkpoint.json")
+    let diagnostic = diagnostics.appendingPathComponent("\(runID)-checkpoint.json")
+    let fixture = try temporaryDirectory().appendingPathComponent("pmset.log")
+    try FileManager.default.createDirectory(at: runtime, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: diagnostics, withIntermediateDirectories: true)
+    try writeReducedCheckpoint(to: active, runID: runID)
+    try writePowerLogCheckpoint(to: diagnostic, checkpointEpoch: 1_785_386_012, runID: runID)
+    try """
+    2026-07-30 04:33:34 UTC Sleep Entering Sleep state
+    2026-07-30 04:33:39 UTC Wake Wake from Normal Sleep
+    """.write(to: fixture, atomically: true, encoding: .utf8)
+
+    let result = try runAcceptanceScript(
+      ["diagnose-power-evidence"],
+      optIn: false,
+      extraEnvironment: [
+        "HERMES_M14_003_RUN_ID": runID,
+        "HERMES_M14_003_POWER_LOG_FIXTURE": fixture.path,
+        "HERMES_M14_003_FIXTURE_RESUME_EPOCH": "1785386020",
+      ]
+    )
+
+    XCTAssertEqual(result.exitCode, 0, result.combinedOutput)
+    XCTAssertTrue(result.combinedOutput.contains("checkpoint_epoch=1785386012"))
+    XCTAssertFalse(result.combinedOutput.contains("checkpoint=invalid reason=power-log-boundary-invalid"))
   }
 
   func testPowerLogParserAcceptsTimestampFormsAndOrderedFullSleepWakePair() throws {
@@ -381,6 +498,30 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
     XCTAssertTrue(result.combinedOutput.contains("pid=<redacted>"))
     XCTAssertFalse(result.combinedOutput.contains("private/token"))
     XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("artifacts/m14-003/result.txt").path))
+  }
+
+  func testPowerEvidenceDiagnosticReportsMalformedCheckpointWithoutTraceback() throws {
+    let temp = try temporaryDirectory()
+    let checkpoint = temp.appendingPathComponent("checkpoint.json")
+    let fixture = temp.appendingPathComponent("pmset.log")
+    try "partial\n".write(to: checkpoint, atomically: true, encoding: .utf8)
+    try "2026-07-30 04:33:34 UTC Sleep Entering Sleep state\n".write(to: fixture, atomically: true, encoding: .utf8)
+
+    let result = try runPythonHelper(
+      arguments: [
+        "diagnose",
+        "--checkpoint", checkpoint.path,
+        "--run-id", "m14-003-test",
+        "--fixture-log", fixture.path,
+        "--fixture-prepare-epoch", "1785386012",
+        "--fixture-resume-epoch", "1785386020",
+      ],
+      standardInput: ""
+    )
+
+    XCTAssertEqual(result.exitCode, 0, result.combinedOutput)
+    XCTAssertTrue(result.combinedOutput.contains("checkpoint=invalid reason=power-log-boundary-invalid"))
+    XCTAssertFalse(result.combinedOutput.contains("Traceback"))
   }
 
   func testIOKitAndNSWorkspaceRemainCorroboratingOnly() throws {
@@ -1018,18 +1159,76 @@ final class HermesSleepWakeEnduranceAcceptanceTests: XCTestCase {
     return (process.terminationStatus, String(data: data, encoding: .utf8) ?? "")
   }
 
-  private func writePowerLogCheckpoint(to url: URL, checkpointEpoch: Any) throws {
+  private func writePowerLogCheckpoint(
+    to url: URL,
+    checkpointEpoch: Any,
+    runID: String = "m14-003-test"
+  ) throws {
     try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
     let checkpoint: [String: Any] = [
       "schemaVersion": 1,
-      "runIdentifier": "m14-003-test",
+      "runIdentifier": runID,
+      "phase": "prepare",
+      "status": "waiting-for-manual-sleep",
+      "createdAtMonotonicUptime": 40.0,
+      "updatedAtEpochSeconds": 1_785_386_012,
+      "serviceDomain": "gui/current-user",
+      "serviceLabel": "com.hermes.bridge",
+      "recorderLabel": "com.hermes.bridge.m14-003.wake-recorder.\(runID)",
+      "targets": [
+        "app": "Applications/Hermes Bridge.app",
+        "launchAgent": "Library/LaunchAgents/com.hermes.bridge.plist",
+        "recorderLaunchAgent": "Library/LaunchAgents/com.hermes.bridge.m14-003.wake-recorder.\(runID).plist",
+        "appExecutable": "Applications/Hermes Bridge.app/Contents/MacOS/HermesBridgeApp",
+        "serviceExecutable": "Applications/Hermes Bridge.app/Contents/Library/HermesBridge/HermesBridgeService",
+      ],
+      "ownedPids": [
+        "app": NSNull(),
+        "service": NSNull(),
+        "recorder": 12345,
+      ],
+      "ownership": [
+        "appInstalledByRun": true,
+        "launchAgentInstalledByRun": true,
+        "serviceBootstrappedByRun": true,
+        "recorderBootstrappedByRun": true,
+      ],
+      "restartCyclesExpected": 5,
+      "resultFile": "artifacts/m14-003/result.txt",
+      "runtimeRoot": "artifacts/m14-003/runtime",
+      "wakeEvidence": "artifacts/m14-003/runtime/wake-recorder-evidence.jsonl",
+      "systemPowerLogEvidence": "artifacts/m14-003/runtime/system-power-log-evidence.json",
+      "wakeRecorderReady": "artifacts/m14-003/runtime/wake-recorder-ready.json",
+      "realHomeSnapshotBefore": "artifacts/m14-003/runtime/real-home-before.snapshot",
+      "realHermesQuiescence": [
+        "operatorProvidedRootPids": [],
+        "records": [],
+      ],
       "powerLogCheckpoint": [
-        "runIdentifier": "m14-003-test",
+        "runIdentifier": runID,
         "epochSeconds": checkpointEpoch,
         "utcISO8601": "2026-07-30T04:33:32Z",
         "localTimezoneOffset": "+0000",
         "systemUptime": 100.0,
         "createdAtMonotonic": 50.0,
+      ],
+    ]
+    let data = try JSONSerialization.data(withJSONObject: checkpoint, options: [.prettyPrinted, .sortedKeys])
+    try data.write(to: url)
+  }
+
+  private func writeReducedCheckpoint(to url: URL, runID: String) throws {
+    try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+    let checkpoint: [String: Any] = [
+      "schemaVersion": 1,
+      "runIdentifier": runID,
+      "phase": "cleanup",
+      "status": "cleaned",
+      "ownership": [
+        "appInstalledByRun": false,
+        "launchAgentInstalledByRun": false,
+        "serviceBootstrappedByRun": false,
+        "recorderBootstrappedByRun": false,
       ],
     ]
     let data = try JSONSerialization.data(withJSONObject: checkpoint, options: [.prettyPrinted, .sortedKeys])

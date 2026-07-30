@@ -288,6 +288,11 @@ def diagnose(args):
             if not args.fixture_log:
                 return 1
             prepare_epoch = int(args.fixture_prepare_epoch)
+        except Exception:
+            print("checkpoint=invalid reason=power-log-boundary-invalid")
+            if not args.fixture_log:
+                return 1
+            prepare_epoch = int(args.fixture_prepare_epoch)
         resume_epoch = int(args.fixture_resume_epoch) if args.fixture_resume_epoch else int(time.time())
 
     if args.fixture_log:

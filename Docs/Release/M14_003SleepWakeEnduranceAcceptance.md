@@ -45,6 +45,12 @@ real Hermes Agent root process groups, starts a dedicated wake recorder, proves
 the recorder readiness handshake, and creates a durable checkpoint under
 `artifacts/m14-003/runtime/`.
 
+Before prepare prints `WAITING_FOR_MANUAL_SLEEP=yes`, it reads the checkpoint
+back and verifies the durable power-log boundary object, recorder identity,
+relative evidence paths, real-home baseline path, and exact quiesced process
+records. If any required checkpoint field is missing or malformed, prepare fails
+before asking the operator to sleep.
+
 When `HERMES_REAL_AGENT_ROOT_PIDS` is non-empty, `HERMES_QUIESCE_REAL_AGENT=YES`
 is required. The script validates that every supplied root PID and every exact
 current-user PGID member belongs to the current UID, records PID, UID, PGID,
@@ -98,6 +104,33 @@ targets, writes the final result, and returns the final exit code.
 
 `resume` returns `0` only for final `M14_003_RESULT=PASS`.
 
+## Read-Only Checkpoint Inspection
+
+Inspect the active checkpoint, or a matching diagnostic checkpoint when the
+active checkpoint no longer has a valid power boundary:
+
+```sh
+Scripts/m14_003_sleep_wake_endurance_acceptance.sh inspect-checkpoint
+```
+
+This mode does not require opt-in, does not write result files, and does not
+change system state. It reports only run ID match, required field type status,
+power boundary epoch, UTC and timezone type status, recorder identity status,
+quiescence completeness, and checkpoint schema version. It does not print
+absolute paths.
+
+To inspect a specific run, pass the run identifier used by prepare:
+
+```sh
+HERMES_M14_003_RUN_ID="<run-id>" \
+Scripts/m14_003_sleep_wake_endurance_acceptance.sh inspect-checkpoint
+```
+
+Power-log diagnostics use the same checkpoint selection order: active checkpoint
+for the requested run ID when it has a valid power boundary, otherwise the
+latest matching privacy-safe diagnostic checkpoint under
+`artifacts/m14-003/diagnostics/`.
+
 ## Cleanup For Interrupted Runs
 
 Use cleanup after prepare failure, terminal closure, sleep interruption, resume
@@ -122,6 +155,12 @@ targets only acceptance-owned state:
 
 Cleanup does not remove real `~/.hermes`, unrelated LaunchAgents, unrelated
 application bundles, unrelated logs, browser data, or Keychain items.
+
+Failed resume paths preserve a privacy-safe diagnostic checkpoint copy under
+`artifacts/m14-003/diagnostics/<run-id>-checkpoint.json` before cleanup rewrites
+or removes active runtime state. The diagnostic copy preserves run ID, power-log
+boundaries, recorder evidence identifiers, failure reason, and phase ordering,
+with private absolute paths redacted.
 
 ## Scoped Paths
 

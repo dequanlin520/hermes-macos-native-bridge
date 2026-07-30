@@ -7,6 +7,7 @@ ARTIFACT_DIR="$ROOT_DIR/artifacts/m14-003"
 RESULT_FILE="$ARTIFACT_DIR/result.txt"
 RELEASE_ROOT="$ARTIFACT_DIR/release"
 RUNTIME_ROOT="$ARTIFACT_DIR/runtime"
+DIAGNOSTIC_DIR="$ARTIFACT_DIR/diagnostics"
 CHECKPOINT_FILE="$RUNTIME_ROOT/checkpoint.json"
 EVIDENCE_FILE="$RUNTIME_ROOT/wake-recorder-evidence.jsonl"
 POWER_LOG_EVIDENCE_FILE="$RUNTIME_ROOT/system-power-log-evidence.json"
@@ -125,7 +126,7 @@ ORDERED_KEYS=(
 )
 
 usage() {
-  print -u2 "usage: $SCRIPT_NAME prepare|resume|cleanup|diagnose-power-evidence"
+  print -u2 "usage: $SCRIPT_NAME prepare|resume|cleanup|diagnose-power-evidence|inspect-checkpoint"
   print -u2 "prepare and resume require HERMES_SLEEP_WAKE_ACCEPTANCE=YES"
 }
 
@@ -290,6 +291,7 @@ finish_result() {
 fail() {
   print -u2 "error: $*"
   RESULT[M14_003_RESULT]=FAIL
+  preserve_diagnostic_checkpoint "$*" 2>/dev/null || true
   exit 1
 }
 
@@ -297,6 +299,7 @@ timeout_fail() {
   print -u2 "timeout: $*"
   RESULT[WAKE_TIMEOUT_OCCURRED]=yes
   RESULT[M14_003_RESULT]=TIMEOUT
+  preserve_diagnostic_checkpoint "$*" 2>/dev/null || true
   exit 4
 }
 
@@ -377,19 +380,79 @@ verify_system_power_log_evidence() {
 }
 
 diagnose_power_evidence() {
+  local diagnostic_checkpoint
+  local requested_run_id="${HERMES_M14_003_RUN_ID:-}"
+  diagnostic_checkpoint="$CHECKPOINT_FILE"
+  if [[ -z "${HERMES_M14_003_CHECKPOINT_FIXTURE:-}" ]]; then
+    diagnostic_checkpoint="$(select_checkpoint_for_read "$requested_run_id")" || diagnostic_checkpoint="$CHECKPOINT_FILE"
+  fi
   if [[ -n "${HERMES_M14_003_POWER_LOG_FIXTURE:-}" ]]; then
     /usr/bin/python3 Scripts/m14_003_power_log_evidence.py diagnose \
-      --checkpoint "${HERMES_M14_003_CHECKPOINT_FIXTURE:-$CHECKPOINT_FILE}" \
+      --checkpoint "${HERMES_M14_003_CHECKPOINT_FIXTURE:-$diagnostic_checkpoint}" \
       --run-id "${HERMES_M14_003_RUN_ID:-}" \
       --fixture-log "$HERMES_M14_003_POWER_LOG_FIXTURE" \
       --fixture-prepare-epoch "${HERMES_M14_003_FIXTURE_PREPARE_EPOCH:-0}" \
       --fixture-resume-epoch "${HERMES_M14_003_FIXTURE_RESUME_EPOCH:-$(date -u +%s)}"
   else
     capture_pmset_log | /usr/bin/python3 Scripts/m14_003_power_log_evidence.py diagnose \
-      --checkpoint "$CHECKPOINT_FILE" \
+      --checkpoint "$diagnostic_checkpoint" \
       --run-id "${HERMES_M14_003_RUN_ID:-}" \
       --fixture-resume-epoch "$(date -u +%s)"
   fi
+}
+
+select_checkpoint_for_read() {
+  local requested_run_id="$1"
+  /usr/bin/python3 - "$CHECKPOINT_FILE" "$DIAGNOSTIC_DIR" "$requested_run_id" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+active = Path(sys.argv[1])
+diagnostics = Path(sys.argv[2])
+requested_run_id = sys.argv[3]
+
+def matching(path):
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if requested_run_id:
+        return data.get("runIdentifier") == requested_run_id
+    return isinstance(data.get("runIdentifier"), str) and bool(data.get("runIdentifier"))
+
+def has_power_boundary(path):
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    boundary = data.get("powerLogCheckpoint")
+    return (
+        isinstance(boundary, dict)
+        and boundary.get("runIdentifier") == data.get("runIdentifier")
+        and isinstance(boundary.get("epochSeconds"), int)
+        and not isinstance(boundary.get("epochSeconds"), bool)
+        and isinstance(boundary.get("utcISO8601"), str)
+        and isinstance(boundary.get("localTimezoneOffset"), str)
+        and isinstance(boundary.get("systemUptime"), (int, float))
+        and not isinstance(boundary.get("systemUptime"), bool)
+        and isinstance(boundary.get("createdAtMonotonic"), (int, float))
+        and not isinstance(boundary.get("createdAtMonotonic"), bool)
+    )
+
+if active.exists() and matching(active) and has_power_boundary(active):
+    print(active)
+    raise SystemExit(0)
+matches = []
+if diagnostics.exists():
+    for candidate in diagnostics.glob("*-checkpoint.json"):
+        if matching(candidate) and has_power_boundary(candidate):
+            matches.append(candidate)
+if matches:
+    print(max(matches, key=lambda path: path.stat().st_mtime))
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
 }
 
 write_real_home_integrity_snapshot() {
@@ -1076,12 +1139,93 @@ checkpoint_write_failed() {
   local checkpoint_tmp="$1"
   rm -f "$checkpoint_tmp"
   RESULT[M14_003_RESULT]=FAIL
+  preserve_diagnostic_checkpoint "checkpoint-write-failed" 2>/dev/null || true
   cleanup_owned_state
   write_result
   restore_real_hermes_after_final_decision
   trap - EXIT INT TERM HUP
   FINISHED="yes"
   exit 1
+}
+
+preserve_diagnostic_checkpoint() {
+  local failure_reason="$1"
+  [[ -r "$CHECKPOINT_FILE" ]] || return 0
+  mkdir -p "$DIAGNOSTIC_DIR"
+  local diagnostic_tmp="$DIAGNOSTIC_DIR/.checkpoint.$RUN_ID.$$.$RANDOM.tmp"
+  local diagnostic_target="$DIAGNOSTIC_DIR/$RUN_ID-checkpoint.json"
+  /usr/bin/python3 - "$CHECKPOINT_FILE" "$PHASE_MARKERS_FILE" "$diagnostic_tmp" "$diagnostic_target" "$RUN_ID" "$failure_reason" <<'PY'
+import json
+import os
+import re
+import sys
+import time
+from pathlib import Path
+
+source, markers_path, tmp_path, target_path, run_id, failure_reason = sys.argv[1:]
+try:
+    checkpoint = json.loads(Path(source).read_text(encoding="utf-8"))
+except Exception:
+    raise SystemExit(0)
+if checkpoint.get("runIdentifier") != run_id:
+    raise SystemExit(0)
+
+def safe_string(value):
+    value = re.sub(r"/Users/[^ \t:,'\"]+", "/Users/<redacted>", value)
+    if value.startswith("/") and not value.startswith("/Users/<redacted>"):
+        return "<redacted-path>"
+    return value
+
+def sanitize(value):
+    if isinstance(value, dict):
+        return {str(key): sanitize(child) for key, child in value.items()}
+    if isinstance(value, list):
+        return [sanitize(child) for child in value]
+    if isinstance(value, str):
+        return safe_string(value)
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+phase_ordering = []
+path = Path(markers_path)
+if path.exists():
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            marker = json.loads(line)
+        except Exception:
+            continue
+        if marker.get("runIdentifier") == run_id:
+            phase_ordering.append({
+                "marker": sanitize(marker.get("marker")),
+                "epochSeconds": marker.get("epochSeconds"),
+                "utc": marker.get("utc"),
+            })
+
+diagnostic = sanitize(checkpoint)
+diagnostic["diagnosticSchemaVersion"] = 1
+diagnostic["diagnosticCreatedAtEpochSeconds"] = int(time.time())
+diagnostic["failureReason"] = safe_string(failure_reason)
+diagnostic["phaseOrdering"] = phase_ordering
+
+tmp = Path(tmp_path)
+target = Path(target_path)
+if tmp.parent != target.parent:
+    raise SystemExit("temporary diagnostic checkpoint must share final directory")
+payload = json.dumps(diagnostic, indent=2, sort_keys=True) + "\n"
+with tmp.open("w", encoding="utf-8") as handle:
+    handle.write(payload)
+    handle.flush()
+    os.fsync(handle.fileno())
+os.replace(tmp, target)
+directory_fd = os.open(str(target.parent), os.O_RDONLY)
+try:
+    os.fsync(directory_fd)
+finally:
+    os.close(directory_fd)
+PY
 }
 
 write_checkpoint() {
@@ -1111,6 +1255,31 @@ from pathlib import Path
     power_log_prepare_utc, power_log_prepare_epoch, power_log_prepare_local_offset,
     power_log_prepare_uptime, power_log_prepare_monotonic,
 ) = sys.argv[1:]
+final = Path(final_path)
+if final.exists():
+    try:
+        checkpoint = json.loads(final.read_text(encoding="utf-8"))
+    except Exception as error:
+        raise SystemExit(f"invalid existing checkpoint: {error}")
+    if not isinstance(checkpoint, dict):
+        raise SystemExit("invalid existing checkpoint")
+    if checkpoint.get("runIdentifier") != run_id:
+        raise SystemExit("run-id-mismatch")
+else:
+    checkpoint = {
+        "schemaVersion": 1,
+        "runIdentifier": run_id,
+        "createdAtMonotonicUptime": time.monotonic(),
+    }
+
+def merge_dict(base, updates):
+    for key, value in updates.items():
+        if isinstance(value, dict) and isinstance(base.get(key), dict):
+            merge_dict(base[key], value)
+        else:
+            base[key] = value
+    return base
+
 real_hermes_records = []
 records_path = Path(real_hermes_records_path)
 if records_path.exists():
@@ -1118,12 +1287,11 @@ if records_path.exists():
     if not isinstance(loaded_records, list):
         raise SystemExit("invalid real Hermes quiescence records")
     real_hermes_records = loaded_records
-checkpoint = {
+updates = {
     "schemaVersion": 1,
     "runIdentifier": run_id,
     "phase": phase,
     "status": checkpoint_state,
-    "createdAtMonotonicUptime": time.monotonic(),
     "updatedAtEpochSeconds": int(time.time()),
     "serviceDomain": "gui/current-user",
     "serviceLabel": service_label,
@@ -1158,6 +1326,7 @@ checkpoint = {
         "records": real_hermes_records,
     },
 }
+checkpoint = merge_dict(checkpoint, updates)
 if power_log_prepare_utc:
     try:
         power_log_epoch_value = int(power_log_prepare_epoch)
@@ -1173,6 +1342,8 @@ if power_log_prepare_utc:
         "systemUptime": power_log_uptime_value,
         "createdAtMonotonic": power_log_monotonic_value,
     }
+if "createdAtMonotonicUptime" not in checkpoint:
+    checkpoint["createdAtMonotonicUptime"] = time.monotonic()
 required = [
     ("schemaVersion", int),
     ("runIdentifier", str),
@@ -1214,7 +1385,6 @@ if os.environ.get("HERMES_M14_003_CHECKPOINT_TEST_FAIL_AFTER_TEMP") == "YES":
     raise SystemExit("injected checkpoint failure")
 payload = json.dumps(checkpoint, indent=2, sort_keys=True) + "\n"
 tmp = Path(tmp_path)
-final = Path(final_path)
 if tmp.parent != final.parent:
     raise SystemExit("temporary checkpoint must share final directory")
 with tmp.open("w", encoding="utf-8") as handle:
@@ -1330,6 +1500,140 @@ value = data
 for part in sys.argv[2].split("."):
     value = value[part]
 print(value)
+PY
+}
+
+validate_checkpoint_before_waiting() {
+  /usr/bin/python3 - "$CHECKPOINT_FILE" "$RUN_ID" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+run_id = sys.argv[2]
+try:
+    data = json.loads(path.read_text(encoding="utf-8"))
+except Exception as error:
+    raise SystemExit(f"checkpoint-readback-invalid: {error}")
+if data.get("runIdentifier") != run_id:
+    raise SystemExit("checkpoint-readback-run-id-mismatch")
+if data.get("phase") != "prepare" or data.get("status") != "waiting-for-manual-sleep":
+    raise SystemExit("checkpoint-readback-phase-invalid")
+
+def require_type(container, key, expected, reason):
+    value = container.get(key)
+    if not isinstance(value, expected) or isinstance(value, bool):
+        raise SystemExit(reason)
+    return value
+
+boundary = data.get("powerLogCheckpoint")
+if not isinstance(boundary, dict):
+    raise SystemExit("power-log-boundary-invalid")
+if boundary.get("runIdentifier") != run_id:
+    raise SystemExit("power-log-boundary-invalid")
+require_type(boundary, "epochSeconds", int, "power-log-boundary-invalid")
+require_type(boundary, "utcISO8601", str, "power-log-boundary-invalid")
+require_type(boundary, "localTimezoneOffset", str, "power-log-boundary-invalid")
+require_type(boundary, "systemUptime", (int, float), "power-log-boundary-invalid")
+require_type(boundary, "createdAtMonotonic", (int, float), "power-log-boundary-invalid")
+
+for key in ["systemPowerLogEvidence", "wakeEvidence", "realHomeSnapshotBefore"]:
+    value = require_type(data, key, str, f"checkpoint-readback-missing-{key}")
+    if value.startswith("/") or ".." in value.split("/"):
+        raise SystemExit(f"checkpoint-readback-unsafe-{key}")
+require_type(data, "recorderLabel", str, "checkpoint-readback-recorder-invalid")
+if data["recorderLabel"].split(".")[-1] != run_id:
+    raise SystemExit("checkpoint-readback-recorder-invalid")
+owned = data.get("ownedPids")
+if not isinstance(owned, dict) or not isinstance(owned.get("recorder"), int):
+    raise SystemExit("checkpoint-readback-recorder-invalid")
+quiescence = data.get("realHermesQuiescence")
+if not isinstance(quiescence, dict):
+    raise SystemExit("checkpoint-readback-quiescence-invalid")
+records = quiescence.get("records")
+if not isinstance(records, list):
+    raise SystemExit("checkpoint-readback-quiescence-invalid")
+for record in records:
+    if not isinstance(record, dict):
+        raise SystemExit("checkpoint-readback-quiescence-invalid")
+    for key in ["pid", "uid", "pgid", "executableBasename", "processStartTime", "suspendedByM14003"]:
+        if key not in record:
+            raise SystemExit("checkpoint-readback-quiescence-invalid")
+    if record.get("suspendedByM14003") is not True:
+        raise SystemExit("checkpoint-readback-quiescence-incomplete")
+    if "/" in str(record.get("executableBasename", "")):
+        raise SystemExit("checkpoint-readback-quiescence-invalid")
+PY
+}
+
+inspect_checkpoint() {
+  local inspected_checkpoint
+  local requested_run_id="${HERMES_M14_003_RUN_ID:-}"
+  inspected_checkpoint="$(select_checkpoint_for_read "$requested_run_id")" || inspected_checkpoint="$CHECKPOINT_FILE"
+  /usr/bin/python3 - "$inspected_checkpoint" "$requested_run_id" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+expected_run_id = sys.argv[2]
+try:
+    data = json.loads(path.read_text(encoding="utf-8"))
+except Exception:
+    print("run_id_match=no")
+    print("required_fields=invalid")
+    print("power_boundary_epoch=missing")
+    print("utc_timestamp=missing")
+    print("timezone_offset=missing")
+    print("recorder_identity=missing")
+    print("quiescence_completeness=missing")
+    print("checkpoint_schema_version=missing")
+    raise SystemExit(1)
+
+def typed(container, key, expected):
+    value = container.get(key) if isinstance(container, dict) else None
+    return isinstance(value, expected) and not isinstance(value, bool)
+
+boundary = data.get("powerLogCheckpoint")
+required_ok = (
+    typed(data, "schemaVersion", int)
+    and typed(data, "runIdentifier", str)
+    and isinstance(boundary, dict)
+    and boundary.get("runIdentifier") == data.get("runIdentifier")
+    and typed(boundary, "epochSeconds", int)
+    and typed(boundary, "utcISO8601", str)
+    and typed(boundary, "localTimezoneOffset", str)
+    and typed(boundary, "systemUptime", (int, float))
+    and typed(boundary, "createdAtMonotonic", (int, float))
+)
+records = data.get("realHermesQuiescence", {}).get("records", [])
+quiescence_ok = isinstance(records, list) and all(
+    isinstance(record, dict)
+    and record.get("suspendedByM14003") is True
+    and isinstance(record.get("pid"), int)
+    and isinstance(record.get("uid"), int)
+    and isinstance(record.get("pgid"), int)
+    and isinstance(record.get("executableBasename"), str)
+    and "/" not in record.get("executableBasename", "")
+    for record in records
+)
+owned = data.get("ownedPids", {})
+recorder_ok = (
+    typed(data, "recorderLabel", str)
+    and data.get("recorderLabel", "").startswith("com.hermes.bridge.m14-003.wake-recorder.")
+    and isinstance(owned, dict)
+    and (owned.get("recorder") is None or isinstance(owned.get("recorder"), int))
+)
+effective_run_id = expected_run_id or data.get("runIdentifier")
+print(f"run_id_match={'yes' if data.get('runIdentifier') == effective_run_id else 'no'}")
+print(f"required_fields={'ok' if required_ok else 'invalid'}")
+print(f"power_boundary_epoch={boundary.get('epochSeconds') if isinstance(boundary, dict) and typed(boundary, 'epochSeconds', int) else 'missing'}")
+print(f"utc_timestamp={'present-string' if isinstance(boundary, dict) and typed(boundary, 'utcISO8601', str) else 'missing'}")
+print(f"timezone_offset={'present-string' if isinstance(boundary, dict) and typed(boundary, 'localTimezoneOffset', str) else 'missing'}")
+print(f"recorder_identity={'ok' if recorder_ok else 'invalid'}")
+print(f"quiescence_completeness={'complete' if quiescence_ok else 'incomplete'}")
+print(f"checkpoint_schema_version={data.get('schemaVersion') if typed(data, 'schemaVersion', int) else 'missing'}")
+raise SystemExit(0 if required_ok else 1)
 PY
 }
 
@@ -2089,6 +2393,7 @@ prepare() {
   verify_recorder_ready || fail "${RECORDER_FAILURE_REASON:-recorder-not-ready}"
   record_power_log_prepare_checkpoint || fail "power-log-boundary-invalid"
   write_checkpoint "prepare" "waiting-for-manual-sleep"
+  validate_checkpoint_before_waiting || fail "checkpoint-readback-validation-failed"
   RESULT[WAITING_FOR_MANUAL_SLEEP]=yes
   RESULT[M14_003_RESULT]=WAITING
   finish_result
@@ -2187,6 +2492,12 @@ main() {
     diagnose-power-evidence)
       trap - EXIT INT TERM HUP
       diagnose_power_evidence
+      FINISHED="yes"
+      exit $?
+      ;;
+    inspect-checkpoint)
+      trap - EXIT INT TERM HUP
+      inspect_checkpoint
       FINISHED="yes"
       exit $?
       ;;
