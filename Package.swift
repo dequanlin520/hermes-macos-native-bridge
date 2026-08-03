@@ -13,6 +13,10 @@ let package = Package(
       targets: ["HermesRuntimeFoundation"]
     ),
     .library(
+      name: "HermesReleaseVersion",
+      targets: ["HermesReleaseVersion"]
+    ),
+    .library(
       name: "HermesBridgeXPC",
       targets: ["HermesBridgeXPC"]
     ),
@@ -129,6 +133,10 @@ let package = Package(
       targets: ["HermesReleaseAgentPreflight"]
     ),
     .executable(
+      name: "HermesReleaseVersionPrinter",
+      targets: ["HermesReleaseVersionPrinter"]
+    ),
+    .executable(
       name: "HermesBridgeAppAcceptanceHarness",
       targets: ["HermesBridgeAppAcceptanceHarness"]
     ),
@@ -142,6 +150,9 @@ let package = Package(
     ),
   ],
   targets: [
+    .target(
+      name: "HermesReleaseVersion"
+    ),
     .target(
       name: "HermesRuntimeFoundation"
     ),
@@ -275,7 +286,14 @@ let package = Package(
     ),
     .executableTarget(
       name: "HermesReleaseAgentPreflight",
-      dependencies: ["HermesBridgeService", "HermesBridgeXPC", "HermesRuntimeFoundation"]
+      dependencies: [
+        "HermesBridgeService", "HermesBridgeXPC", "HermesRuntimeFoundation",
+        "HermesReleaseVersion",
+      ]
+    ),
+    .executableTarget(
+      name: "HermesReleaseVersionPrinter",
+      dependencies: ["HermesReleaseVersion"]
     ),
     .target(
       name: "HermesBridgeAppAcceptanceSupport",
@@ -470,7 +488,7 @@ let package = Package(
       name: "HermesReleaseTests",
       dependencies: [
         "HermesAppIntents", "HermesBridgeMenuBar", "HermesBridgeXPC",
-        "HermesRuntimeFoundation",
+        "HermesRuntimeFoundation", "HermesReleaseVersion",
       ]
     ),
     .testTarget(
