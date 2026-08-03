@@ -14,7 +14,11 @@ final class HermesProductE2EAcceptanceTests: XCTestCase {
     "INITIAL_XPC_CONNECTED",
     "PRODUCT_CAPABILITY_SNAPSHOT_RECEIVED",
     "HERMES_EXECUTABLE_AVAILABLE",
+    "HERMES_EXECUTABLE_FAMILY",
+    "HERMES_EXECUTABLE_SOURCE",
+    "HERMES_VERSION_STATUS",
     "HERMES_VERSION",
+    "DISCOVERY_PARITY",
     "ISOLATED_AGENT_START_REQUESTED_THROUGH_SERVICE",
     "ISOLATED_AGENT_READY",
     "ENDPOINT_OWNERSHIP_PROVEN",
@@ -53,8 +57,44 @@ final class HermesProductE2EAcceptanceTests: XCTestCase {
     }
     XCTAssertTrue(script.contains("HERMES_M14_009_ACCEPTANCE=YES"))
     XCTAssertTrue(script.contains("inspect|run|cleanup"))
+    XCTAssertTrue(script.contains("HermesReleaseAgentPreflight m14-009-inspect"))
+    XCTAssertFalse(script.contains("safe_version()"))
+    XCTAssertFalse(script.contains("hermes --version"))
     XCTAssertTrue(script.contains("transport.route-unsupported"))
-    XCTAssertTrue(script.contains("private-route.not-assumed"))
+    XCTAssertTrue(
+      try read("Sources/HermesRuntimeFoundation/HermesProductCapabilities.swift")
+        .contains("private-route.not-assumed")
+    )
+  }
+
+  func testInspectUsesAuthoritativeProductSnapshotKeys() throws {
+    let script = try read("Scripts/m14_009_product_e2e_acceptance.sh")
+    let helper = try read("Sources/HermesReleaseAgentPreflight/HermesReleaseAgentPreflight.swift")
+
+    for key in [
+      "XPC_PROTOCOL_VERSION",
+      "HERMES_EXECUTABLE_AVAILABLE",
+      "HERMES_EXECUTABLE_FAMILY",
+      "HERMES_EXECUTABLE_SOURCE",
+      "HERMES_VERSION_STATUS",
+      "HERMES_VERSION",
+      "DISCOVERY_PARITY",
+      "REQUEST_CAPABILITY",
+      "REQUEST_CAPABILITY_REASON",
+      "CANCEL_CAPABILITY",
+      "CANCEL_CAPABILITY_REASON",
+      "APPROVAL_CAPABILITY",
+      "APPROVAL_CAPABILITY_REASON",
+      "RC_SCOPE_STATUS",
+      "M14_009_EXPECTED_RESULT",
+    ] {
+      XCTAssertTrue(helper.contains("\"\(key)\""), "missing \(key)")
+    }
+    XCTAssertTrue(helper.contains("HermesBridgeServiceConfiguration.productionDefault()"))
+    XCTAssertTrue(helper.contains("HermesDiscovery("))
+    XCTAssertTrue(helper.contains("HermesAgentVersionDescriptor(result: result, sourceCategory: \"PATH\")"))
+    XCTAssertTrue(helper.contains("HermesProductCapabilitySnapshot.rc1("))
+    XCTAssertTrue(script.contains("preflight_inspect"))
   }
 
   func testAcceptanceScriptDoesNotUsePrivateRoutesOrDirectHermesProtocolRequests() throws {
@@ -84,6 +124,19 @@ final class HermesProductE2EAcceptanceTests: XCTestCase {
     XCTAssertEqual(state.requestControl.reasonCode, "transport.route-unsupported")
     XCTAssertEqual(state.cancelControl.reasonCode, "transport.route-unsupported")
     XCTAssertEqual(state.approvalControl.reasonCode, "transport.route-unsupported")
+    XCTAssertEqual(state.productCapabilitySnapshot?.observedHermesVersion, "0.18.2")
+  }
+
+  func testAppIntentHealthReceivesTypedSnapshotVersion() async throws {
+    let operations = HermesAppIntentOperations(client: UnsupportedRequestClient(snapshot: productSnapshot()))
+
+    let health = try await operations.health()
+
+    XCTAssertEqual(health.productCapabilitySnapshot?.observedHermesVersion, "0.18.2")
+    XCTAssertEqual(
+      health.productCapabilitySnapshot?.capability(.approvalResponse)?.observedHermesVersion,
+      "0.18.2"
+    )
   }
 
   func testAppIntentRequestOperationsFailWithTypedCapabilityReason() async throws {

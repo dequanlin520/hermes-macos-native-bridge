@@ -21,7 +21,11 @@ ORDERED_KEYS=(
   INITIAL_XPC_CONNECTED
   PRODUCT_CAPABILITY_SNAPSHOT_RECEIVED
   HERMES_EXECUTABLE_AVAILABLE
+  HERMES_EXECUTABLE_FAMILY
+  HERMES_EXECUTABLE_SOURCE
+  HERMES_VERSION_STATUS
   HERMES_VERSION
+  DISCOVERY_PARITY
   ISOLATED_AGENT_START_REQUESTED_THROUGH_SERVICE
   ISOLATED_AGENT_READY
   ENDPOINT_OWNERSHIP_PROVEN
@@ -58,22 +62,21 @@ usage() {
   print -u2 "run requires HERMES_M14_009_ACCEPTANCE=YES"
 }
 
-safe_version() {
-  print -r -- "$1" | /usr/bin/sed -E 's/[^0-9.].*$//' | /usr/bin/cut -c 1-32
-}
-
-detect_hermes_version() {
-  local executable
-  executable="$(command -v hermes 2>/dev/null || true)"
-  if [[ -z "$executable" ]]; then
-    print -r -- "unknown"
+preflight_inspect() {
+  local helper="$ROOT_DIR/.build/debug/HermesReleaseAgentPreflight"
+  if [[ -x "$helper" ]]; then
+    "$helper" m14-009-inspect
     return
   fi
-  local raw
-  raw="$(hermes --version 2>/dev/null | /usr/bin/head -n 1 || true)"
-  local version
-  version="$(safe_version "$raw")"
-  [[ -n "$version" ]] && print -r -- "$version" || print -r -- "unknown"
+  swift run --silent --package-path "$ROOT_DIR" HermesReleaseAgentPreflight m14-009-inspect
+}
+
+product_inspect_value() {
+  local key="$1"
+  preflight_inspect 2>/dev/null | /usr/bin/awk -F= -v key="$key" '
+    $1 == key { print $2; found = 1; exit }
+    END { if (!found) print "unknown" }
+  '
 }
 
 set_default_results() {
@@ -87,7 +90,11 @@ set_default_results() {
     INITIAL_XPC_CONNECTED no
     PRODUCT_CAPABILITY_SNAPSHOT_RECEIVED no
     HERMES_EXECUTABLE_AVAILABLE no
+    HERMES_EXECUTABLE_FAMILY unknown
+    HERMES_EXECUTABLE_SOURCE unknown
+    HERMES_VERSION_STATUS unknown
     HERMES_VERSION unknown
+    DISCOVERY_PARITY unknown
     ISOLATED_AGENT_START_REQUESTED_THROUGH_SERVICE no
     ISOLATED_AGENT_READY no
     ENDPOINT_OWNERSHIP_PROVEN no
@@ -221,18 +228,7 @@ PY
 }
 
 inspect() {
-  local hermes_version hermes_available
-  hermes_version="$(detect_hermes_version)"
-  hermes_available=no
-  command -v hermes >/dev/null 2>&1 && hermes_available=yes
-  print -r -- "M14-009 Product End-to-End Acceptance inspect"
-  print -r -- "build_system=SwiftPM"
-  print -r -- "xpc_protocol=1.8"
-  print -r -- "hermes_executable_available=$hermes_available"
-  print -r -- "hermes_version=$hermes_version"
-  print -r -- "rc_supported=native-app-launch,menu-bar-status,service-connection,xpc-compatibility,hermes-discovery,isolated-agent-start,status-readiness,dynamic-endpoint-ownership,reconnect,exact-shutdown,diagnostics,permissions,audit,emergency-stop,install-uninstall"
-  print -r -- "rc_unsupported=request-submission:transport.route-unsupported,request-cancellation:transport.route-unsupported,approval-response:transport.route-unsupported,arbitrary-shell:security.boundary-unsupported,private-api-ws:private-route.not-assumed"
-  print -r -- "expected_sequence=build,install,start,connect,snapshot,start-agent,status,exit,relaunch,restart-service,stop-agent,cleanup"
+  preflight_inspect
 }
 
 cleanup() {
@@ -244,8 +240,12 @@ cleanup() {
 run_acceptance() {
   set_default_results
   RESULT[EXPLICIT_OPT_IN_CONFIRMED]=yes
-  RESULT[HERMES_VERSION]="$(detect_hermes_version)"
-  command -v hermes >/dev/null 2>&1 && RESULT[HERMES_EXECUTABLE_AVAILABLE]=yes
+  RESULT[HERMES_EXECUTABLE_AVAILABLE]="$(product_inspect_value HERMES_EXECUTABLE_AVAILABLE)"
+  RESULT[HERMES_EXECUTABLE_FAMILY]="$(product_inspect_value HERMES_EXECUTABLE_FAMILY)"
+  RESULT[HERMES_EXECUTABLE_SOURCE]="$(product_inspect_value HERMES_EXECUTABLE_SOURCE)"
+  RESULT[HERMES_VERSION_STATUS]="$(product_inspect_value HERMES_VERSION_STATUS)"
+  RESULT[HERMES_VERSION]="$(product_inspect_value HERMES_VERSION)"
+  RESULT[DISCOVERY_PARITY]="$(product_inspect_value DISCOVERY_PARITY)"
 
   if [[ "${HERMES_M14_009_ACCEPTANCE:-}" != "YES" ]]; then
     RESULT[M14_009_REASON_CODE]=acceptance.opt-in-required

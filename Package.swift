@@ -275,7 +275,7 @@ let package = Package(
     ),
     .executableTarget(
       name: "HermesReleaseAgentPreflight",
-      dependencies: ["HermesBridgeService", "HermesRuntimeFoundation"]
+      dependencies: ["HermesBridgeService", "HermesBridgeXPC", "HermesRuntimeFoundation"]
     ),
     .target(
       name: "HermesBridgeAppAcceptanceSupport",

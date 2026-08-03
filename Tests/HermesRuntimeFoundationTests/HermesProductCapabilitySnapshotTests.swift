@@ -98,4 +98,43 @@ final class HermesProductCapabilitySnapshotTests: XCTestCase {
     XCTAssertEqual(snapshot.capability(.privateWebSocketRoute)?.status, .unsupported)
     XCTAssertEqual(snapshot.capability(.privateWebSocketRoute)?.reasonCode, "private-route.not-assumed")
   }
+
+  func testValidObservedVersionIsPreservedAcrossSnapshotAndCapabilityRows() {
+    let snapshot = HermesProductCapabilitySnapshot.rc1(
+      xpcProtocolVersion: "1.8",
+      bridgeServiceConnected: true,
+      executableAvailable: true,
+      observedHermesVersion: "0.18.2",
+      compatibilityLevel: .partiallyCompatible
+    )
+
+    XCTAssertEqual(snapshot.observedHermesVersion, "0.18.2")
+    for identifier in [
+      HermesProductCapabilityIdentifier.requestSubmission,
+      .requestCancellation,
+      .approvalResponse,
+      .hermesVersionDiscovery,
+    ] {
+      XCTAssertEqual(snapshot.capability(identifier)?.observedHermesVersion, "0.18.2")
+    }
+    XCTAssertEqual(snapshot.capability(.hermesVersionDiscovery)?.status, .supported)
+  }
+
+  func testSnapshotRoundTripPreservesSemanticVersionAndCapabilityReasons() throws {
+    let snapshot = HermesProductCapabilitySnapshot.rc1(
+      xpcProtocolVersion: "1.8",
+      bridgeServiceConnected: true,
+      executableAvailable: true,
+      observedHermesVersion: "0.18.2",
+      compatibilityLevel: .partiallyCompatible
+    )
+
+    let data = try JSONEncoder().encode(snapshot)
+    let decoded = try JSONDecoder().decode(HermesProductCapabilitySnapshot.self, from: data)
+
+    XCTAssertEqual(decoded.observedHermesVersion, "0.18.2")
+    XCTAssertEqual(decoded.capability(.requestSubmission)?.reasonCode, "transport.route-unsupported")
+    XCTAssertEqual(decoded.capability(.requestCancellation)?.reasonCode, "transport.route-unsupported")
+    XCTAssertEqual(decoded.capability(.approvalResponse)?.reasonCode, "transport.route-unsupported")
+  }
 }
