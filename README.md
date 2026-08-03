@@ -4,10 +4,15 @@ Native macOS control plane and system bridge for Hermes Agent.
 
 ## Project Status
 
-Release-candidate engineering validation in progress.
+RC1 engineering validation complete for the status-only, user-scoped product
+path.
 
 This repository is validating a narrow, service-owned product path. It does not
 claim production readiness or external adoption.
+
+The RC1 release pipeline can assemble an unsigned internal artifact for
+controlled validation. Status: public signed release still blocked until
+Developer ID Application signing and Apple notarization pass.
 
 ## Verified Architecture
 
@@ -81,12 +86,22 @@ Unsupported controls must be disabled with factual typed reasons.
 
 See [RC1Scope.md](Docs/Release/RC1Scope.md).
 
+RC1 publication handoff:
+
+- [RC1 release notes](Docs/Release/v0.1.0-rc.1.md)
+- [External installation checklist](Docs/Release/M14_011ExternalInstallationChecklist.md)
+- Distribution classification: `unsigned-internal-validation`
+- Public distribution allowed: `no`
+- Signed-release blocking reason:
+  `signing.application-identity-unavailable`
+
 ## Operator Quick Start
 
 ```zsh
 swift build
 swift test
 Scripts/m14_009_product_e2e_acceptance.sh inspect
+Scripts/m14_011_rc1_publication.sh inspect
 ```
 
 Opt-in product acceptance is explicit:
@@ -97,6 +112,18 @@ Scripts/m14_009_product_e2e_acceptance.sh cleanup
 ```
 
 Evidence is written under `artifacts/m14-009` and is ignored by git.
+
+RC1 publication assembly is also explicit and remains unsigned unless a future
+signed/notarized rebuild is approved:
+
+```zsh
+HERMES_M14_011_ACCEPTANCE=YES Scripts/m14_011_rc1_publication.sh assemble
+Scripts/m14_011_rc1_publication.sh verify
+Scripts/m14_011_rc1_publication.sh cleanup
+```
+
+Generated M14-011 handoff artifacts are written under `artifacts/m14-011` and
+are ignored by git.
 
 ## Developer Notes
 
