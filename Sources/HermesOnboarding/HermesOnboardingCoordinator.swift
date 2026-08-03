@@ -176,7 +176,7 @@ public final class HermesOnboardingCoordinator: @unchecked Sendable {
     }
     let permissionActions = permissions.permissions.compactMap(\.remediation)
     let recoveryActions = permissions.permissions.compactMap { permission -> HermesOnboardingRemediationAction? in
-      guard permission.status.isBlocking else { return nil }
+      guard permission.blocksFirstRun else { return nil }
       return .openRecovery(recoveryIssue(for: permission.kind))
     }
     snapshot = HermesOnboardingSnapshot(
@@ -252,9 +252,13 @@ public final class HermesOnboardingCoordinator: @unchecked Sendable {
 
   private func recoveryIssue(for permission: HermesOnboardingPermissionKind) -> HermesRecoveryIssueCategory {
     switch permission {
+    case .inputMonitoring: return .accessibilityPermissionMissing
     case .accessibility: return .accessibilityPermissionMissing
     case .automation: return .automationPermissionMissing
     case .screenRecording: return .screenRecordingPermissionMissing
+    case .fullDiskAccess: return .screenRecordingPermissionMissing
+    case .microphone: return .notificationsPermissionMissing
+    case .camera: return .notificationsPermissionMissing
     case .notifications: return .notificationsPermissionMissing
     }
   }

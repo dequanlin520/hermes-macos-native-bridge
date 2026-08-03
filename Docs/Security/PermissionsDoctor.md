@@ -47,8 +47,9 @@ Each check returns a `HermesPermissionState`:
 
 Diagnostics use public APIs only:
 
-- Accessibility uses `AXIsProcessTrusted`.
-- Screen Recording uses `CGPreflightScreenCaptureAccess` where available.
+- RC1 unsupported privacy capabilities are reported from the production
+  permission policy as `not-required` without invoking AX, Screen Recording,
+  Input Monitoring, Full Disk Access, microphone, or camera permission flows.
 - Signing, sandbox and entitlements use code-signing metadata for the signed
   executable or app bundle.
 - LaunchAgent and Mach service evidence comes from the existing fixed service
@@ -60,8 +61,8 @@ The Doctor does not read private TCC databases, does not modify privacy
 settings, does not request permission during ordinary diagnostics, and does not
 run generic shell, AppleScript or JXA remediation.
 
-Automation is reported from documented state evidence only. When there is no
-non-prompting public probe, it is reported as `notDetermined`.
+Automation is feature-triggered for RC1 and does not block First Run before an
+actual approved Shortcut or Apple Event operation is invoked.
 
 Audit integrity and audit signing diagnostics are read-only. They do not repair
 or rewrite audit history, do not expose raw corrupt records, do not include

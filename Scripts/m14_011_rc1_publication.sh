@@ -519,6 +519,7 @@ patterns = {
     "secret": re.compile(r"(?i)(BEGIN (RSA |OPENSSH |EC |DSA |)?PRIVATE KEY|bearer\s+[A-Za-z0-9._-]+|token\s*[:=]|password\s*[:=]|secret\s*[:=])"),
     "absolute_path": re.compile(r"/Users/[^ \n\t\"]+"),
     "username": re.compile(re.escape(username)) if username else re.compile(r"a^"),
+    "unused_privacy": re.compile(r"(NSInputMonitoringUsageDescription|NSScreenCaptureUsageDescription|NSSystemAdministrationUsageDescription|NSAppleEventsUsageDescription|NSAccessibilityUsageDescription|NSMicrophoneUsageDescription|NSCameraUsageDescription)"),
 }
 hits = []
 for root in roots:

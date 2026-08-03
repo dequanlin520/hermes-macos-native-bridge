@@ -60,7 +60,18 @@ The machine-readable M13-001 result has a fixed key set and order. Every expecte
 
 ## Permission behavior
 
-Permission readiness reuses `HermesPermissionsDoctor` status for Accessibility, Automation, Screen Recording, and Notifications. The UI shows only macOS-reported safe states.
+Permission readiness reuses the typed `HermesPermissionsDoctor` snapshot.
+First Run blocks only on permission rows classified `required-for-core` with
+`blocksFirstRun=true`. RC1 has no core privacy permission grants, so a clean
+user can advance from Permissions to Connection and Ready when the Bridge
+Service and Hermes Agent discovery checks pass.
+
+For RC1, Input Monitoring, Accessibility, Screen Recording, Full Disk Access,
+microphone and camera are not required by the supported product path.
+Automation is feature-triggered and must not block First Run before an actual
+approved Shortcut or Apple Event operation is invoked. Optional or
+feature-triggered permissions remain visible in diagnostics with their exact
+classification and status.
 
 System Settings remediation is limited to existing macOS System Settings panes. Onboarding does not automate dialogs, use AppleScript, or claim a permission is granted unless the system report says it is granted.
 

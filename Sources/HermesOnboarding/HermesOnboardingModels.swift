@@ -25,9 +25,13 @@ public enum HermesOnboardingStep: String, CaseIterable, Equatable, Sendable {
 }
 
 public enum HermesOnboardingPermissionKind: String, CaseIterable, Codable, Equatable, Sendable {
+  case inputMonitoring = "Input Monitoring"
   case accessibility = "Accessibility"
   case automation = "Automation"
   case screenRecording = "Screen Recording"
+  case fullDiskAccess = "Full Disk Access"
+  case microphone = "Microphone"
+  case camera = "Camera"
   case notifications = "Notifications"
 }
 
@@ -39,12 +43,15 @@ public enum HermesOnboardingPermissionStatus: String, Codable, Equatable, Sendab
   case unavailable
   case notApplicable
   case unknown
+  case notRequired = "not-required"
+  case featureTriggered = "feature-triggered"
+  case unsupported
 
   public var isBlocking: Bool {
     switch self {
     case .denied, .restricted, .notDetermined, .unknown:
       return true
-    case .granted, .unavailable, .notApplicable:
+    case .granted, .unavailable, .notApplicable, .notRequired, .featureTriggered, .unsupported:
       return false
     }
   }
@@ -126,23 +133,35 @@ public struct HermesOnboardingPermissionReadiness: Equatable, Sendable {
   }
 
   public var isReady: Bool {
-    permissions.allSatisfy { !$0.status.isBlocking }
+    permissions.allSatisfy { !$0.blocksFirstRun }
   }
 }
 
 public struct HermesOnboardingPermissionCheck: Equatable, Identifiable, Sendable {
   public var id: String { kind.rawValue }
   public let kind: HermesOnboardingPermissionKind
+  public let classification: String
   public let status: HermesOnboardingPermissionStatus
+  public let blocksFirstRun: Bool
+  public let capabilityOwner: String
+  public let reason: String
   public let remediation: HermesOnboardingRemediationAction?
 
   public init(
     kind: HermesOnboardingPermissionKind,
     status: HermesOnboardingPermissionStatus,
+    classification: String = "required-for-core",
+    blocksFirstRun: Bool? = nil,
+    capabilityOwner: String = "unknown",
+    reason: String = "",
     remediation: HermesOnboardingRemediationAction? = nil
   ) {
     self.kind = kind
+    self.classification = classification
     self.status = status
+    self.blocksFirstRun = blocksFirstRun ?? status.isBlocking
+    self.capabilityOwner = HermesOnboardingRedactor.safeMessage(capabilityOwner)
+    self.reason = HermesOnboardingRedactor.safeMessage(reason)
     self.remediation = remediation
   }
 }

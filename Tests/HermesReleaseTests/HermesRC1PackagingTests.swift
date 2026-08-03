@@ -195,6 +195,39 @@ final class HermesRC1PackagingTests: XCTestCase {
     XCTAssertFalse(serviceEntitlements.contains("get-task-allow"))
     XCTAssertFalse(appEntitlements.contains("disable-library-validation"))
     XCTAssertFalse(serviceEntitlements.contains("disable-library-validation"))
+    for forbidden in [
+      "com.apple.security.automation.apple-events",
+      "com.apple.security.device.audio-input",
+      "com.apple.security.device.camera",
+      "com.apple.security.files.all",
+      "com.apple.security.temporary-exception.apple-events",
+    ] {
+      XCTAssertFalse(appEntitlements.contains(forbidden), forbidden)
+      XCTAssertFalse(serviceEntitlements.contains(forbidden), forbidden)
+    }
+  }
+
+  func testInfoPlistDoesNotDeclareUnusedPrivacyAccess() throws {
+    let info = try read("Packaging/HermesBridgeApp/Info.plist")
+    for forbidden in [
+      "NSInputMonitoringUsageDescription",
+      "NSScreenCaptureUsageDescription",
+      "NSSystemAdministrationUsageDescription",
+      "NSAppleEventsUsageDescription",
+      "NSAccessibilityUsageDescription",
+      "NSMicrophoneUsageDescription",
+      "NSCameraUsageDescription",
+    ] {
+      XCTAssertFalse(info.contains(forbidden), forbidden)
+    }
+  }
+
+  func testRC1PackagingScriptAssertsPermissionPolicy() throws {
+    let script = try read("Scripts/m14_010_rc1_release.sh")
+    XCTAssertTrue(script.contains("NSInputMonitoringUsageDescription"))
+    XCTAssertTrue(script.contains("NSAppleEventsUsageDescription"))
+    XCTAssertTrue(script.contains("com.apple.security.automation.apple-events"))
+    XCTAssertTrue(script.contains("com.apple.security.device.camera"))
   }
 
   func testSigningIdentityAndNotarizationRedactionPolicy() throws {

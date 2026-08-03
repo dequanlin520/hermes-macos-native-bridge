@@ -160,12 +160,8 @@ public final class HermesDiagnosticProvider: HermesDiagnosticProviding, @uncheck
     } else if health.backendState == .degraded {
       output.append("Backend degraded")
     }
-    let deniedPermissions = permissionStates.filter {
-      $0.state == HermesPermissionState.denied.rawValue
-        || $0.state == HermesPermissionState.misconfigured.rawValue
-        || $0.state == HermesPermissionState.restricted.rawValue
-    }
-    output.append(contentsOf: deniedPermissions.map { "\($0.kind) \($0.state)" })
+    let blockingPermissions = permissionStates.filter(\.blocksFirstRun)
+    output.append(contentsOf: blockingPermissions.map { "\($0.kind) \($0.currentStatus)" })
     return output
   }
 

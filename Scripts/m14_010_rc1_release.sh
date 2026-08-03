@@ -420,6 +420,10 @@ blocked = {
     "com.apple.security.temporary-exception.files.absolute-path.read-only",
     "com.apple.security.temporary-exception.files.absolute-path.read-write",
     "com.apple.security.temporary-exception.apple-events",
+    "com.apple.security.automation.apple-events",
+    "com.apple.security.device.audio-input",
+    "com.apple.security.device.camera",
+    "com.apple.security.files.all",
 }
 for raw in sys.argv[1:]:
     data = plistlib.loads(Path(raw).read_bytes())
@@ -441,6 +445,7 @@ patterns = {
     "path": re.compile(r"/Users/[^ \n\t\"]+"),
     "acceptance": re.compile(r"(AcceptanceHarness|AcceptanceSupport|M8001ReleaseCandidateAcceptance|fixture_backend|--hermes-m11-003-acceptance)"),
     "private_ws": re.compile(r"/api/ws"),
+    "unused_privacy": re.compile(r"(NSInputMonitoringUsageDescription|NSScreenCaptureUsageDescription|NSSystemAdministrationUsageDescription|NSAppleEventsUsageDescription|NSAccessibilityUsageDescription|NSMicrophoneUsageDescription|NSCameraUsageDescription)"),
 }
 hits = {name: False for name in patterns}
 for path in root.rglob("*"):
