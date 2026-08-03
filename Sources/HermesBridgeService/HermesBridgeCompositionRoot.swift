@@ -29,6 +29,7 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
   public let isolatedAgentSupervisor: HermesAgentSupervisor
   public let isolatedAgentEndpointDiscovery: HermesAgentEndpointDiscovery
   public let isolatedAgentReadinessProbe: HermesAgentReadinessProbe
+  public let isolatedAgentProtocolClientFactory: HermesAgentRequestClientFactory
   public let stateStore: FileBackedHermesRequestStateStore
   public let bindingRegistry: ConfigurationBackedHermesRequestBindingRegistry
   public let authorizedRootRegistry: FileBackedHermesAuthorizedRootRegistry
@@ -168,6 +169,7 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
       serviceDiscovery: ScopedHermesEndpointDiscoveryMatcher(expected: nil),
       timeoutSeconds: configuration.timeouts.gatewayReady
     )
+    self.isolatedAgentProtocolClientFactory = HermesAgentRequestClientFactory()
     self.isolatedAgentSupervisor = HermesAgentSupervisor()
     let runtimeSupervisor = supervisor
     self.runtimeSessionManager = HermesRuntimeSessionManager(
