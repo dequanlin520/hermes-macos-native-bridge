@@ -20,6 +20,18 @@ final class HermesNativeUICompositionTests: XCTestCase {
     XCTAssertFalse(source.contains("HermesProtocolClient("))
   }
 
+  func testMenuBarPerformsNoIndependentHermesExecutableDiscovery() throws {
+    let source = try String(
+      contentsOfFile: "Sources/HermesMenuBar/HermesMenuBarViewModel.swift",
+      encoding: .utf8
+    )
+
+    XCTAssertFalse(source.contains("HermesDiscovery("))
+    XCTAssertFalse(source.contains("/opt/homebrew/bin/hermes"))
+    XCTAssertFalse(source.contains("/usr/local/bin/hermes"))
+    XCTAssertFalse(source.contains(".local/bin/hermes"))
+  }
+
   func testRuntimeCommandsUseClientAbstraction() async {
     let client = RecordingRuntimeClient()
     let root = makeRoot(client: client)

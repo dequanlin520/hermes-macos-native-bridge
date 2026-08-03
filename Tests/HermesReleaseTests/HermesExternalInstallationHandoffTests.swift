@@ -191,7 +191,11 @@ final class HermesExternalInstallationHandoffTests: XCTestCase {
     XCTAssertTrue(FileManager.default.fileExists(atPath: support.appendingPathComponent("HermesBridgeControl").path))
     XCTAssertTrue(FileManager.default.fileExists(atPath: support.appendingPathComponent("HermesBridgeServiceLifecycle").path))
     XCTAssertEqual(try plistValue(installedPlist, keyPath: "ProgramArguments:0"), support.appendingPathComponent("HermesBridgeService").path)
-    XCTAssertFalse(try String(contentsOf: installedPlist, encoding: .utf8).contains(fixture.staging.path))
+    let installedPlistText = try String(contentsOf: installedPlist, encoding: .utf8)
+    XCTAssertFalse(installedPlistText.contains(fixture.staging.path))
+    XCTAssertFalse(installedPlistText.contains("<key>PATH</key>"))
+    XCTAssertFalse(installedPlistText.contains(".local/bin"))
+    XCTAssertFalse(installedPlistText.contains(fakeBin.path))
     XCTAssertFalse(FileManager.default.fileExists(atPath: buildLog.path))
 
     let firstUninstall = try runProcess("/bin/zsh", arguments: [uninstallScript.path, "--uninstall-user-app"], environment: environment, currentDirectory: unrelated)

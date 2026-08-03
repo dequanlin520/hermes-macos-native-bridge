@@ -150,7 +150,7 @@ final class HermesIsolatedAgentLifecycleAcceptanceTests: XCTestCase {
     XCTAssertTrue(helper.contains("\"BROAD_SHUTDOWN_SAFE_FOR_ISOLATED_LIFECYCLE\""))
     XCTAssertTrue(helper.contains("\"EXACT_ISOLATED_SHUTDOWN_ADVERTISED\""))
     XCTAssertTrue(helper.contains("HermesAgentLaunchContractSelector.select"))
-    XCTAssertTrue(helper.contains("HermesAgentVersionDescriptor(result: result, sourceCategory: \"PATH\")"))
+    XCTAssertTrue(helper.contains("sourceCategory: result.candidate.sourceCategory"))
   }
 
   func testGeneratedArtifactsRemainIgnoredAndRedacted() throws {
@@ -186,7 +186,7 @@ final class HermesIsolatedAgentLifecycleAcceptanceTests: XCTestCase {
     XCTAssertTrue(service.contains("isolatedAgentLaunchContract"))
     XCTAssertTrue(service.contains("isolatedAgentLifecycleCoordinator"))
     XCTAssertTrue(service.contains("HermesAgentLifecycleCoordinator("))
-    XCTAssertTrue(service.contains("self.discovery = HermesDiscovery("))
+    XCTAssertTrue(service.contains("let serviceDiscovery = HermesDiscovery("))
     XCTAssertFalse(app.contains("HermesAgentLifecycleCoordinator("))
     XCTAssertFalse(app.contains("HermesAgentLaunchContractSelector"))
   }

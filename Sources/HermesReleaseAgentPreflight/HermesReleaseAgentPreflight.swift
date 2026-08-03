@@ -19,6 +19,10 @@ struct HermesReleaseAgentPreflight {
       printM14010Version()
       return
     }
+    if CommandLine.arguments.dropFirst().first == "hermes-discovery-inspect" {
+      printHermesDiscoveryInspect()
+      return
+    }
     if CommandLine.arguments.dropFirst().first == "m14-008-exercise-protocol" {
       runM14008ExerciseProtocol()
       return
@@ -32,33 +36,27 @@ struct HermesReleaseAgentPreflight {
       let configuration = try HermesBridgeServiceConfiguration.productionDefault()
       let discovery = HermesDiscovery(
         allowlistedExecutableCandidates: configuration.allowlistedHermesExecutableCandidates,
+        sourceCategoriesByCandidatePath: HermesDiscovery.productionSourceCategoriesByCandidatePath(
+          candidates: configuration.allowlistedHermesExecutableCandidates
+        ),
+        approvedResolvedPathPrefixes: HermesDiscovery.approvedProductionResolvedPathPrefixes(),
+        currentUserHomeURL: HermesDiscovery.currentUserHomeURL(),
+        enforceCurrentUserSafety: true,
         timeoutSeconds: 5,
         outputLimitBytes: 16 * 1024
       )
 
-      var sawCandidate = false
-      for candidate in configuration.allowlistedHermesExecutableCandidates {
-        do {
-          _ = try discovery.discover(at: candidate)
-          return "available"
-        } catch HermesDiscoveryError.executableNotFound {
-          continue
-        } catch HermesDiscoveryError.executableNotRunnable {
-          sawCandidate = true
-          continue
-        } catch HermesDiscoveryError.malformedVersionOutput {
-          return "incompatible"
-        } catch HermesDiscoveryError.versionCommandFailed {
-          return "incompatible"
-        } catch HermesDiscoveryError.timeout {
-          return "unknown"
-        } catch HermesDiscoveryError.pathNotAllowlisted {
-          return "unknown"
-        } catch {
-          return "unknown"
-        }
-      }
-      return sawCandidate ? "unknown" : "unavailable"
+      _ = try discovery.discoverFirstAvailable(
+        candidates: configuration.allowlistedHermesExecutableCandidates)
+      return "available"
+    } catch HermesDiscoveryError.executableNotFound {
+      return "unavailable"
+    } catch HermesDiscoveryError.malformedVersionOutput, HermesDiscoveryError.versionCommandFailed {
+      return "incompatible"
+    } catch HermesDiscoveryError.timeout, HermesDiscoveryError.pathNotAllowlisted,
+      HermesDiscoveryError.executableNotRunnable, HermesDiscoveryError.unsafeExecutablePath
+    {
+      return "unknown"
     } catch {
       return "unknown"
     }
@@ -106,6 +104,76 @@ struct HermesReleaseAgentPreflight {
     print("MINIMUM_MACOS=\(HermesReleaseVersion.minimumMacOS)")
     print("PACKAGE_TYPE=\(HermesReleaseVersion.packageType)")
   }
+
+  private static func printHermesDiscoveryInspect() {
+    let report = HermesDiscoveryInspector.inspect()
+    for key in HermesDiscoveryInspector.orderedKeys {
+      print("\(key)=\(report[key] ?? "unknown")")
+    }
+  }
+}
+
+private enum HermesDiscoveryInspector {
+  static let orderedKeys = [
+    "HERMES_DISCOVERY_STATUS",
+    "HERMES_DISCOVERY_SOURCE",
+    "HERMES_EXECUTABLE_FAMILY",
+    "HERMES_VERSION_STATUS",
+    "HERMES_VERSION",
+    "DISCOVERY_CURRENT_USER_ONLY",
+    "DISCOVERY_PATH_SAFE",
+  ]
+
+  static func inspect() -> [String: String] {
+    var values = [
+      "HERMES_DISCOVERY_STATUS": "unavailable",
+      "HERMES_DISCOVERY_SOURCE": "none",
+      "HERMES_EXECUTABLE_FAMILY": "unknown",
+      "HERMES_VERSION_STATUS": "unavailable",
+      "HERMES_VERSION": "unknown",
+      "DISCOVERY_CURRENT_USER_ONLY": "yes",
+      "DISCOVERY_PATH_SAFE": "yes",
+    ]
+    do {
+      let configuration = try HermesBridgeServiceConfiguration.productionDefault()
+      let discovery = HermesDiscovery(
+        allowlistedExecutableCandidates: configuration.allowlistedHermesExecutableCandidates,
+        sourceCategoriesByCandidatePath: HermesDiscovery.productionSourceCategoriesByCandidatePath(
+          candidates: configuration.allowlistedHermesExecutableCandidates
+        ),
+        approvedResolvedPathPrefixes: HermesDiscovery.approvedProductionResolvedPathPrefixes(),
+        currentUserHomeURL: HermesDiscovery.currentUserHomeURL(),
+        enforceCurrentUserSafety: true,
+        timeoutSeconds: 5,
+        outputLimitBytes: 16 * 1024
+      )
+      let result = try discovery.discoverFirstAvailable(
+        candidates: configuration.allowlistedHermesExecutableCandidates)
+      let descriptor = HermesAgentVersionDescriptor(
+        result: result,
+        sourceCategory: result.candidate.sourceCategory
+      )
+      values["HERMES_DISCOVERY_STATUS"] = descriptor.discoveryStatus
+      values["HERMES_DISCOVERY_SOURCE"] = descriptor.sourceCategory
+      values["HERMES_EXECUTABLE_FAMILY"] = descriptor.executableFamily
+      values["HERMES_VERSION_STATUS"] = descriptor.semanticVersion == nil ? "unknown" : "available"
+      values["HERMES_VERSION"] = descriptor.semanticVersion ?? "unknown"
+      return values
+    } catch HermesDiscoveryError.unsafeExecutablePath {
+      values["HERMES_DISCOVERY_STATUS"] = "invalid"
+      values["DISCOVERY_PATH_SAFE"] = "no"
+      return values
+    } catch HermesDiscoveryError.executableNotRunnable {
+      values["HERMES_DISCOVERY_STATUS"] = "invalid"
+      return values
+    } catch HermesDiscoveryError.malformedVersionOutput, HermesDiscoveryError.versionCommandFailed {
+      values["HERMES_DISCOVERY_STATUS"] = "invalid"
+      values["HERMES_VERSION_STATUS"] = "unknown"
+      return values
+    } catch {
+      return values
+    }
+  }
 }
 
 private enum M14009ProductionInspector {
@@ -133,6 +201,12 @@ private enum M14009ProductionInspector {
       let configuration = try HermesBridgeServiceConfiguration.productionDefault()
       let discovery = HermesDiscovery(
         allowlistedExecutableCandidates: configuration.allowlistedHermesExecutableCandidates,
+        sourceCategoriesByCandidatePath: HermesDiscovery.productionSourceCategoriesByCandidatePath(
+          candidates: configuration.allowlistedHermesExecutableCandidates
+        ),
+        approvedResolvedPathPrefixes: HermesDiscovery.approvedProductionResolvedPathPrefixes(),
+        currentUserHomeURL: HermesDiscovery.currentUserHomeURL(),
+        enforceCurrentUserSafety: true,
         timeoutSeconds: 5,
         outputLimitBytes: 16 * 1024
       )
@@ -144,7 +218,10 @@ private enum M14009ProductionInspector {
         return values
       }
 
-      let descriptor = HermesAgentVersionDescriptor(result: result, sourceCategory: "PATH")
+      let descriptor = HermesAgentVersionDescriptor(
+        result: result,
+        sourceCategory: result.candidate.sourceCategory
+      )
       let versionLevel = HermesAgentCompatibilityReport.compatibilityLevel(
         forSemanticVersion: descriptor.semanticVersion
       )
@@ -249,7 +326,10 @@ private enum M14009ProductionInspector {
     guard let second = try? discovery.discover(at: candidate) else {
       return "no"
     }
-    let secondDescriptor = HermesAgentVersionDescriptor(result: second, sourceCategory: "PATH")
+    let secondDescriptor = HermesAgentVersionDescriptor(
+      result: second,
+      sourceCategory: second.candidate.sourceCategory
+    )
     return descriptor == secondDescriptor ? "yes" : "no"
   }
 }
@@ -479,6 +559,12 @@ private enum M14005ProductionInspector {
       let configuration = try HermesBridgeServiceConfiguration.productionDefault()
       let discovery = HermesDiscovery(
         allowlistedExecutableCandidates: configuration.allowlistedHermesExecutableCandidates,
+        sourceCategoriesByCandidatePath: HermesDiscovery.productionSourceCategoriesByCandidatePath(
+          candidates: configuration.allowlistedHermesExecutableCandidates
+        ),
+        approvedResolvedPathPrefixes: HermesDiscovery.approvedProductionResolvedPathPrefixes(),
+        currentUserHomeURL: HermesDiscovery.currentUserHomeURL(),
+        enforceCurrentUserSafety: true,
         timeoutSeconds: 5,
         outputLimitBytes: 16 * 1024
       )
@@ -497,7 +583,10 @@ private enum M14005ProductionInspector {
         return values
       }
 
-      let descriptor = HermesAgentVersionDescriptor(result: result, sourceCategory: "PATH")
+      let descriptor = HermesAgentVersionDescriptor(
+        result: result,
+        sourceCategory: result.candidate.sourceCategory
+      )
       values["HERMES_EXECUTABLE_STATUS"] = descriptor.discoveryStatus
       values["HERMES_EXECUTABLE_FAMILY"] = descriptor.executableFamily
       values["HERMES_EXECUTABLE_BASENAME"] = descriptor.executableBasename
@@ -601,7 +690,10 @@ private enum M14005ProductionInspector {
     guard let second = try? discovery.discover(at: candidate) else {
       return "no"
     }
-    let secondDescriptor = HermesAgentVersionDescriptor(result: second, sourceCategory: "PATH")
+    let secondDescriptor = HermesAgentVersionDescriptor(
+      result: second,
+      sourceCategory: second.candidate.sourceCategory
+    )
     return descriptor == secondDescriptor ? "yes" : "no"
   }
 }

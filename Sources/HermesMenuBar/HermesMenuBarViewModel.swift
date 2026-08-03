@@ -73,33 +73,3 @@ public final class HermesMenuBarViewModel: ObservableObject {
     }
   }
 }
-
-public enum HermesMenuBarRuntimeFactory {
-  public static func productionCommandAPI() -> HermesRuntimeCommandAPI {
-    let runtimeRoot = FileManager.default
-      .urls(for: .applicationSupportDirectory, in: .userDomainMask)
-      .first?
-      .appendingPathComponent("HermesMenuBar", isDirectory: true)
-      ?? URL(fileURLWithPath: NSTemporaryDirectory())
-        .appendingPathComponent("HermesMenuBar", isDirectory: true)
-
-    let executableCandidates = [
-      URL(fileURLWithPath: "/opt/homebrew/bin/hermes"),
-      URL(fileURLWithPath: "/usr/local/bin/hermes"),
-    ]
-    let configuration = HermesBackendAdapterConfiguration(
-      executableURL: executableCandidates[0],
-      port: 19123,
-      runtimeRoot: runtimeRoot
-    )
-    let manager = HermesRuntimeSessionManager(
-      backendFactory: {
-        HermesBackendAdapter(
-          allowlistedExecutableCandidates: executableCandidates,
-          configuration: configuration
-        )
-      }
-    )
-    return HermesRuntimeCommandAPI(sessionManager: manager)
-  }
-}

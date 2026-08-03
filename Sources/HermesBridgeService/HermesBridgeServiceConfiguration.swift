@@ -249,13 +249,7 @@ public struct HermesBridgeServiceConfiguration: Codable, Equatable, Sendable {
       for: .applicationSupportDirectory, in: .userDomainMask
     ).first!
     .appendingPathComponent("HermesBridge", isDirectory: true)
-    let candidates = uniqueExecutableCandidates(
-      [
-        pathHermesExecutableCandidate(),
-        URL(fileURLWithPath: "/opt/hermes/bin/hermes"),
-        URL(fileURLWithPath: "/usr/local/bin/hermes"),
-      ].compactMap { $0 }
-    )
+    let candidates = productionHermesExecutableCandidates()
     return try HermesBridgeServiceConfiguration(
       runtimeRoot: support.appendingPathComponent("Runtime", isDirectory: true),
       requestStateRoot: support.appendingPathComponent("RequestState", isDirectory: true),
@@ -271,8 +265,22 @@ public struct HermesBridgeServiceConfiguration: Codable, Equatable, Sendable {
     )
   }
 
-  private static func pathHermesExecutableCandidate() -> URL? {
-    let path = ProcessInfo.processInfo.environment["PATH"] ?? ""
+  public static func productionHermesExecutableCandidates(
+    environment: [String: String] = ProcessInfo.processInfo.environment,
+    currentUserHomeURL: URL = HermesDiscovery.currentUserHomeURL()
+  ) -> [URL] {
+    uniqueExecutableCandidates(
+      [
+        pathHermesExecutableCandidate(environment: environment),
+        currentUserHomeURL.appendingPathComponent(".local/bin/hermes"),
+        URL(fileURLWithPath: "/opt/homebrew/bin/hermes"),
+        URL(fileURLWithPath: "/usr/local/bin/hermes"),
+      ].compactMap { $0 }
+    )
+  }
+
+  private static func pathHermesExecutableCandidate(environment: [String: String]) -> URL? {
+    let path = environment["PATH"] ?? ""
     for directory in path.split(separator: ":", omittingEmptySubsequences: true) {
       let candidate = URL(fileURLWithPath: String(directory), isDirectory: true)
         .appendingPathComponent("hermes")

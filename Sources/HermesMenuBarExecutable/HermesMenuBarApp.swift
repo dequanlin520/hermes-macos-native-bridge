@@ -1,13 +1,20 @@
 import AppKit
+import HermesBridgeXPC
 import HermesMenuBar
 import HermesRuntimeFoundation
 import SwiftUI
+
+extension HermesBridgeRuntimeClientAdapter: HermesRuntimeCommandExecuting {}
 
 @main
 struct HermesMenuBarApp: App {
   @NSApplicationDelegateAdaptor(HermesMenuBarAppDelegate.self) private var appDelegate
   @StateObject private var viewModel = HermesMenuBarViewModel(
-    commandAPI: HermesMenuBarRuntimeFactory.productionCommandAPI()
+    commandAPI: HermesBridgeRuntimeClientAdapter(
+      client: HermesBridgeXPCClient(
+        machServiceName: try! HermesBridgeMachServiceName("com.hermes.bridge.xpc")
+      )
+    )
   )
   @Environment(\.openWindow) private var openWindow
 

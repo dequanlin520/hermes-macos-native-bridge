@@ -184,7 +184,7 @@ final class HermesCompatibilityAcceptanceTests: XCTestCase {
     let app = try read("Sources/HermesBridgeApp/HermesAppCompositionRoot.swift")
 
     XCTAssertTrue(script.contains("SERVICE_OWNED_DISCOVERY_USED"))
-    XCTAssertTrue(service.contains("self.discovery = HermesDiscovery("))
+    XCTAssertTrue(service.contains("let serviceDiscovery = HermesDiscovery("))
     XCTAssertTrue(service.contains("agentDiscovery: discovery"))
     XCTAssertFalse(app.contains("HermesDiscovery("))
     XCTAssertFalse(app.contains("HermesRuntimeSessionManager("))

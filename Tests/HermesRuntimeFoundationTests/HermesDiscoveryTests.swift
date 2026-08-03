@@ -254,8 +254,203 @@ final class HermesDiscoveryTests: XCTestCase {
     XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
   }
 
+  func testCurrentUserLocalBinSymlinkToHermesVenvExecutableIsAccepted() throws {
+    let home = try fixtureHome()
+    let localBin = home.appendingPathComponent(".local/bin", isDirectory: true)
+    let venvBin = home.appendingPathComponent(".hermes/hermes-agent/venv/bin", isDirectory: true)
+    try FileManager.default.createDirectory(at: localBin, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: venvBin, withIntermediateDirectories: true)
+    let target = try fixtureExecutable(
+      at: venvBin.appendingPathComponent("hermes"),
+      body: "printf 'Hermes Agent v0.18.2 (2026.7.7.2)\\n'"
+    )
+    let symlink = localBin.appendingPathComponent("hermes")
+    try FileManager.default.createSymbolicLink(atPath: symlink.path, withDestinationPath: target.path)
+
+    let result = try productionStyleDiscovery(
+      candidates: [symlink],
+      sources: [symlink.path: "user-local-bin"],
+      home: home
+    ).discoverFirstAvailable(candidates: [symlink])
+
+    XCTAssertEqual(result.candidate.sourceCategory, "user-local-bin")
+    XCTAssertEqual(result.candidate.symlinkStatus, .symlink(resolved: true))
+    XCTAssertEqual(result.versionInfo.semanticVersion, "0.18.2")
+  }
+
+  func testBrokenSymlinkRejected() throws {
+    let home = try fixtureHome()
+    let localBin = home.appendingPathComponent(".local/bin", isDirectory: true)
+    try FileManager.default.createDirectory(at: localBin, withIntermediateDirectories: true)
+    let symlink = localBin.appendingPathComponent("hermes")
+    try FileManager.default.createSymbolicLink(
+      atPath: symlink.path,
+      withDestinationPath: home.appendingPathComponent(".hermes/missing/hermes").path
+    )
+
+    XCTAssertThrowsError(
+      try productionStyleDiscovery(candidates: [symlink], home: home)
+        .discoverFirstAvailable(candidates: [symlink])
+    ) { error in
+      guard case .executableNotFound = error as? HermesDiscoveryError else {
+        return XCTFail("expected executableNotFound, got \(error)")
+      }
+    }
+  }
+
+  func testAnotherUsersHomeRejectedByCurrentUserInvariant() throws {
+    let home = try fixtureHome()
+    let otherHome = temporaryDirectory.appendingPathComponent("other-home", isDirectory: true)
+    let otherBin = otherHome.appendingPathComponent(".local/bin", isDirectory: true)
+    try FileManager.default.createDirectory(at: otherBin, withIntermediateDirectories: true)
+    let candidate = try fixtureExecutable(
+      at: otherBin.appendingPathComponent("hermes"),
+      body: "printf 'Hermes Agent v0.18.2 (2026.7.7.2)\\n'"
+    )
+
+    XCTAssertThrowsError(
+      try productionStyleDiscovery(candidates: [candidate], home: home)
+        .discoverFirstAvailable(candidates: [candidate])
+    ) { error in
+      XCTAssertEqual(error as? HermesDiscoveryError, .unsafeExecutablePath(path: candidate.path))
+    }
+  }
+
+  func testWorldWritableParentRejected() throws {
+    let home = try fixtureHome()
+    let localBin = home.appendingPathComponent(".local/bin", isDirectory: true)
+    try FileManager.default.createDirectory(at: localBin, withIntermediateDirectories: true)
+    try FileManager.default.setAttributes([.posixPermissions: 0o777], ofItemAtPath: localBin.path)
+    let candidate = try fixtureExecutable(
+      at: localBin.appendingPathComponent("hermes"),
+      body: "printf 'Hermes Agent v0.18.2 (2026.7.7.2)\\n'"
+    )
+
+    XCTAssertThrowsError(
+      try productionStyleDiscovery(candidates: [candidate], home: home)
+        .discoverFirstAvailable(candidates: [candidate])
+    ) { error in
+      XCTAssertEqual(error as? HermesDiscoveryError, .unsafeExecutablePath(path: candidate.path))
+    }
+  }
+
+  func testNonExecutableProductionCandidateRejected() throws {
+    let home = try fixtureHome()
+    let localBin = home.appendingPathComponent(".local/bin", isDirectory: true)
+    try FileManager.default.createDirectory(at: localBin, withIntermediateDirectories: true)
+    let candidate = localBin.appendingPathComponent("hermes")
+    try "Hermes Agent v0.18.2\n".write(to: candidate, atomically: true, encoding: .utf8)
+
+    XCTAssertThrowsError(
+      try productionStyleDiscovery(candidates: [candidate], home: home)
+        .discoverFirstAvailable(candidates: [candidate])
+    ) { error in
+      XCTAssertEqual(error as? HermesDiscoveryError, .executableNotRunnable(path: candidate.path))
+    }
+  }
+
+  func testDirectoryProductionCandidateRejected() throws {
+    let home = try fixtureHome()
+    let candidate = home.appendingPathComponent(".local/bin/hermes", isDirectory: true)
+    try FileManager.default.createDirectory(at: candidate, withIntermediateDirectories: true)
+
+    XCTAssertThrowsError(
+      try productionStyleDiscovery(candidates: [candidate], home: home)
+        .discoverFirstAvailable(candidates: [candidate])
+    ) { error in
+      XCTAssertEqual(error as? HermesDiscoveryError, .executableNotFound(path: candidate.path))
+    }
+  }
+
+  func testExplicitCandidateWinsBeforePathCandidate() throws {
+    let explicit = try fixtureExecutable(
+      named: "explicit-hermes",
+      body: "printf 'Hermes Agent v0.18.2 (2026.7.7.2)\\n'"
+    )
+    let path = try fixtureExecutable(
+      named: "path-hermes",
+      body: "printf 'Hermes Agent v0.19.0 (2026.7.7.2)\\n'"
+    )
+
+    let result = try HermesDiscovery(
+      allowlistedExecutableCandidates: [explicit, path],
+      sourceCategoriesByCandidatePath: [explicit.path: "explicit", path.path: "path"]
+    ).discoverFirstAvailable(candidates: [explicit, path])
+
+    XCTAssertEqual(result.candidate.sourceCategory, "explicit")
+    XCTAssertEqual(result.versionInfo.semanticVersion, "0.18.2")
+  }
+
+  func testPathCandidateWorksBeforeFallbacks() throws {
+    let path = try fixtureExecutable(
+      named: "path-hermes",
+      body: "printf 'Hermes Agent v0.18.2 (2026.7.7.2)\\n'"
+    )
+    let fallback = try fixtureExecutable(
+      named: "fallback-hermes",
+      body: "printf 'Hermes Agent v0.19.0 (2026.7.7.2)\\n'"
+    )
+
+    let result = try HermesDiscovery(
+      allowlistedExecutableCandidates: [path, fallback],
+      sourceCategoriesByCandidatePath: [path.path: "path", fallback.path: "homebrew"]
+    ).discoverFirstAvailable(candidates: [path, fallback])
+
+    XCTAssertEqual(result.candidate.sourceCategory, "path")
+    XCTAssertEqual(result.versionInfo.semanticVersion, "0.18.2")
+  }
+
+  func testHomebrewAndUsrLocalFallbackSourcesWork() throws {
+    let missingPath = temporaryDirectory.appendingPathComponent("missing-path-hermes")
+    let homebrew = try fixtureExecutable(
+      named: "homebrew-hermes",
+      body: "printf 'Hermes Agent v0.18.2 (2026.7.7.2)\\n'"
+    )
+    let usrLocal = try fixtureExecutable(
+      named: "usr-local-hermes",
+      body: "printf 'Hermes Agent v0.19.0 (2026.7.7.2)\\n'"
+    )
+
+    let discovery = HermesDiscovery(
+      allowlistedExecutableCandidates: [missingPath, homebrew, usrLocal],
+      sourceCategoriesByCandidatePath: [
+        missingPath.path: "path",
+        homebrew.path: "homebrew",
+        usrLocal.path: "usr-local",
+      ]
+    )
+    let result = try discovery.discoverFirstAvailable(candidates: [missingPath, homebrew, usrLocal])
+
+    XCTAssertEqual(result.candidate.sourceCategory, "homebrew")
+    XCTAssertEqual(result.versionInfo.semanticVersion, "0.18.2")
+  }
+
+  func testAbsolutePathNotExposedInVersionDescriptor() throws {
+    let executable = try fixtureExecutable(
+      named: "descriptor-hermes",
+      body: "printf 'Hermes Agent v0.18.2 (2026.7.7.2)\\n'"
+    )
+    let result = try HermesDiscovery(
+      allowlistedExecutableCandidates: [executable],
+      sourceCategoriesByCandidatePath: [executable.path: "path"]
+    ).discover(at: executable)
+    let descriptor = HermesAgentVersionDescriptor(
+      result: result,
+      sourceCategory: result.candidate.sourceCategory
+    )
+    let encoded = String(data: try JSONEncoder().encode(descriptor), encoding: .utf8)!
+
+    XCTAssertFalse(encoded.contains(temporaryDirectory.path))
+    XCTAssertEqual(descriptor.semanticVersion, "0.18.2")
+    XCTAssertEqual(descriptor.executableBasename, "descriptor-hermes")
+  }
+
   private func fixtureExecutable(named name: String, body: String) throws -> URL {
     let url = temporaryDirectory.appendingPathComponent(name)
+    return try fixtureExecutable(at: url, body: body)
+  }
+
+  private func fixtureExecutable(at url: URL, body: String) throws -> URL {
     let script = """
       #!/bin/sh
       \(body)
@@ -266,5 +461,28 @@ final class HermesDiscoveryTests: XCTestCase {
       ofItemAtPath: url.path
     )
     return url
+  }
+
+  private func fixtureHome() throws -> URL {
+    let home = temporaryDirectory.appendingPathComponent("home", isDirectory: true)
+    try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+    return home
+  }
+
+  private func productionStyleDiscovery(
+    candidates: [URL],
+    sources: [String: String] = [:],
+    home: URL
+  ) -> HermesDiscovery {
+    HermesDiscovery(
+      allowlistedExecutableCandidates: candidates,
+      sourceCategoriesByCandidatePath: sources,
+      approvedResolvedPathPrefixes: [
+        home.appendingPathComponent(".local/bin", isDirectory: true),
+        home.appendingPathComponent(".hermes", isDirectory: true),
+      ],
+      currentUserHomeURL: home,
+      enforceCurrentUserSafety: true
+    )
   }
 }
