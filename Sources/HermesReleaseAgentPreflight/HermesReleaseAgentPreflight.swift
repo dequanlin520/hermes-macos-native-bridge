@@ -2,6 +2,7 @@ import Foundation
 import HermesBridgeXPC
 import HermesBridgeService
 import HermesRuntimeFoundation
+import HermesReleaseVersion
 
 @main
 struct HermesReleaseAgentPreflight {
@@ -12,6 +13,10 @@ struct HermesReleaseAgentPreflight {
     }
     if CommandLine.arguments.dropFirst().first == "m14-009-inspect" {
       printM14009Inspect()
+      return
+    }
+    if CommandLine.arguments.dropFirst().first == "m14-010-version" {
+      printM14010Version()
       return
     }
     if CommandLine.arguments.dropFirst().first == "m14-008-exercise-protocol" {
@@ -91,6 +96,15 @@ struct HermesReleaseAgentPreflight {
     if result != 0 {
       Foundation.exit(result)
     }
+  }
+
+  private static func printM14010Version() {
+    print("PRODUCT_VERSION=\(HermesReleaseVersion.productVersion)")
+    print("TAG_TARGET=\(HermesReleaseVersion.tagTarget)")
+    print("XPC_PROTOCOL_VERSION=\(HermesReleaseVersion.xpcProtocolVersion)")
+    print("TESTED_HERMES_VERSION=\(HermesReleaseVersion.testedHermesVersion)")
+    print("MINIMUM_MACOS=\(HermesReleaseVersion.minimumMacOS)")
+    print("PACKAGE_TYPE=\(HermesReleaseVersion.packageType)")
   }
 }
 
