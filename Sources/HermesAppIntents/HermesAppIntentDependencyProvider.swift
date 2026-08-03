@@ -49,6 +49,7 @@ public struct HermesAppIntentOperations: Sendable {
   public func submit(bindingID: String, prompt: String) async throws
     -> HermesAppIntentRequestEntity
   {
+    try await requireCapability(.requestSubmission)
     let bindingID = try parseBindingID(bindingID)
     try validate(prompt: prompt)
     let bindings = try await client.listEnabledBindings()
@@ -60,11 +61,13 @@ public struct HermesAppIntentOperations: Sendable {
   }
 
   public func status(requestID: String) async throws -> HermesAppIntentRequestEntity {
+    try await requireCapability(.requestStatus)
     let requestID = try parseRequestID(requestID)
     return HermesAppIntentRequestEntity(status: try await client.status(requestID: requestID))
   }
 
   public func cancel(requestID: String) async throws -> HermesAppIntentRequestEntity {
+    try await requireCapability(.requestCancellation)
     let requestID = try parseRequestID(requestID)
     return HermesAppIntentRequestEntity(status: try await client.cancel(requestID: requestID))
   }
@@ -73,6 +76,7 @@ public struct HermesAppIntentOperations: Sendable {
     requestID: String,
     decision: HermesAppIntentApprovalDecision
   ) async throws -> HermesAppIntentRequestEntity {
+    try await requireCapability(.approvalResponse)
     let requestID = try parseRequestID(requestID)
     return HermesAppIntentRequestEntity(
       status: try await client.respondToApproval(requestID: requestID, decision: decision)
@@ -91,6 +95,16 @@ public struct HermesAppIntentOperations: Sendable {
 
   private func validate(prompt: String) throws {
     try Self.validate(prompt: prompt)
+  }
+
+  private func requireCapability(_ identifier: HermesProductCapabilityIdentifier) async throws {
+    guard let capability = try await client.health().productCapabilitySnapshot?.capability(identifier)
+    else {
+      return
+    }
+    guard capability.status == .supported else {
+      throw HermesAppIntentError.capabilityUnavailable(capability.reasonCode)
+    }
   }
 
   private func parseBindingID(_ value: String) throws -> HermesRequestBindingID {

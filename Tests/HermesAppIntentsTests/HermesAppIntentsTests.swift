@@ -259,7 +259,7 @@ final class HermesAppIntentsTests: XCTestCase {
   }
 
   func testAppShortcutDefinitionsCompile() {
-    XCTAssertEqual(HermesAppShortcutsProvider.appShortcuts.count, 5)
+    XCTAssertEqual(HermesAppShortcutsProvider.appShortcuts.count, 1)
   }
 
   func testIntentTitlesAndDescriptionsAreNonempty() {

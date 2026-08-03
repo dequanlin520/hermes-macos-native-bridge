@@ -89,6 +89,10 @@ public protocol HermesBridgeRequestHandling: Sendable {
   func executeRuntimeCommand(_ command: HermesRuntimeCommand) async throws
     -> HermesRuntimeCommandResult
   func discoverAgent() async throws -> HermesBridgeAgentDiscoveryPayload
+  func productCapabilitySnapshot(
+    protocolVersion: HermesBridgeProtocolVersion,
+    capabilities: [HermesBridgeCapability]
+  ) async throws -> HermesProductCapabilitySnapshot
   func createRuntimeEventSubscription() async throws -> HermesBridgeRuntimeEventSubscriptionPayload
   func pollRuntimeEventSubscription(
     subscriptionID: UUID,
@@ -235,6 +239,19 @@ extension HermesBridgeRequestHandling {
 
   public func updateStatus() async throws -> HermesBridgeUpdateStatusPayload {
     throw HermesBridgeXPCError.unsupportedCapability
+  }
+
+  public func productCapabilitySnapshot(
+    protocolVersion: HermesBridgeProtocolVersion,
+    capabilities _: [HermesBridgeCapability]
+  ) async throws -> HermesProductCapabilitySnapshot {
+    HermesProductCapabilitySnapshot.rc1(
+      xpcProtocolVersion: protocolVersion.description,
+      bridgeServiceConnected: true,
+      executableAvailable: false,
+      observedHermesVersion: nil,
+      compatibilityLevel: .unverified
+    )
   }
 
   public func checkForUpdate() async throws -> HermesBridgeUpdateStatusPayload {
@@ -754,11 +771,16 @@ public actor HermesBridgeXPCRequestDispatcher {
     case .protocolVersion:
       return .protocolVersion(HermesBridgeProtocolVersionPayload(version: .current))
     case .capabilities:
+      let availableCapabilities = HermesBridgeCapability.allCases.filter {
+        $0.isAvailable(in: envelope.protocolVersion)
+      }
       return .capabilities(
         HermesBridgeCapabilitiesPayload(
-          capabilities: HermesBridgeCapability.allCases.filter {
-            $0.isAvailable(in: envelope.protocolVersion)
-          }
+          capabilities: availableCapabilities,
+          productCapabilitySnapshot: try await handler.productCapabilitySnapshot(
+            protocolVersion: .current,
+            capabilities: availableCapabilities
+          )
         ))
     case .listEnabledBindings:
       return .listEnabledBindings(

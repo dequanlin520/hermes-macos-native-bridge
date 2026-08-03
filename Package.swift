@@ -468,7 +468,10 @@ let package = Package(
     ),
     .testTarget(
       name: "HermesReleaseTests",
-      dependencies: []
+      dependencies: [
+        "HermesAppIntents", "HermesBridgeMenuBar", "HermesBridgeXPC",
+        "HermesRuntimeFoundation",
+      ]
     ),
     .testTarget(
       name: "HermesInstallerTests",

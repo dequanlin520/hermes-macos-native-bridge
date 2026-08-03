@@ -174,42 +174,6 @@ public struct CheckHermesBridgeHealthIntent: AppIntent {
 public struct HermesAppShortcutsProvider: AppShortcutsProvider {
   public static var appShortcuts: [AppShortcut] {
     AppShortcut(
-      intent: SubmitHermesRequestIntent(),
-      phrases: [
-        "Submit a Hermes request in \(.applicationName)",
-        "Ask Hermes in \(.applicationName)",
-      ],
-      shortTitle: "Submit Request",
-      systemImageName: "paperplane"
-    )
-    AppShortcut(
-      intent: CheckHermesRequestStatusIntent(),
-      phrases: [
-        "Check Hermes request status in \(.applicationName)",
-        "Get Hermes request status in \(.applicationName)",
-      ],
-      shortTitle: "Request Status",
-      systemImageName: "list.bullet.clipboard"
-    )
-    AppShortcut(
-      intent: CancelHermesRequestIntent(),
-      phrases: [
-        "Cancel a Hermes request in \(.applicationName)",
-        "Stop Hermes request in \(.applicationName)",
-      ],
-      shortTitle: "Cancel Request",
-      systemImageName: "xmark.circle"
-    )
-    AppShortcut(
-      intent: RespondToHermesApprovalIntent(),
-      phrases: [
-        "Respond to Hermes approval in \(.applicationName)",
-        "Send Hermes approval decision in \(.applicationName)",
-      ],
-      shortTitle: "Approval",
-      systemImageName: "checkmark.shield"
-    )
-    AppShortcut(
       intent: CheckHermesBridgeHealthIntent(),
       phrases: [
         "Check Hermes Bridge health in \(.applicationName)",

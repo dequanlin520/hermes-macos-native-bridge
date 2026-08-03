@@ -1238,13 +1238,16 @@ public struct HermesBridgeProtocolVersionPayload: Codable, Equatable, Sendable {
 public struct HermesBridgeCapabilitiesPayload: Codable, Equatable, Sendable {
   public let protocolVersion: HermesBridgeProtocolVersion
   public let capabilities: [HermesBridgeCapability]
+  public let productCapabilitySnapshot: HermesProductCapabilitySnapshot?
 
   public init(
     protocolVersion: HermesBridgeProtocolVersion = .current,
-    capabilities: [HermesBridgeCapability] = HermesBridgeCapability.allCases
+    capabilities: [HermesBridgeCapability] = HermesBridgeCapability.allCases,
+    productCapabilitySnapshot: HermesProductCapabilitySnapshot? = nil
   ) {
     self.protocolVersion = protocolVersion
     self.capabilities = capabilities
+    self.productCapabilitySnapshot = productCapabilitySnapshot
   }
 }
 
