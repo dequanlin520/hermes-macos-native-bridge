@@ -1,18 +1,30 @@
 #!/bin/zsh
 set -euo pipefail
 
-APP_NAME="Hermes Bridge.app"
+APP_NAME="Hermes macOS Native Bridge.app"
 EXPECTED_BUNDLE_ID="com.hermes.bridge.app"
-EXECUTABLE_NAME="HermesBridgeApp"
-SCRIPT_DIR="${0:A:h}"
+APP_EXECUTABLE_NAME="HermesBridgeApp"
+LABEL="com.hermes.bridge"
+
+APP_TARGET="$HOME/Applications/$APP_NAME"
+BRIDGE_SUPPORT="$HOME/Library/Application Support/HermesBridge"
+SERVICE_TARGET="$BRIDGE_SUPPORT/HermesBridgeService"
+CONTROL_TARGET="$BRIDGE_SUPPORT/HermesBridgeControl"
+LIFECYCLE_TARGET="$BRIDGE_SUPPORT/HermesBridgeServiceLifecycle"
+RUNTIME_ROOT="$BRIDGE_SUPPORT/Runtime"
+LAUNCH_AGENT_TARGET="$HOME/Library/LaunchAgents/$LABEL.plist"
+LOGS_ROOT="$HOME/Library/Logs/HermesBridge"
+SERVICE_DOMAIN="gui/$(id -u)"
+FIXTURE_MODE="${HERMES_INSTALLER_FIXTURE_MODE:-NO}"
 
 usage() {
   print -u2 "usage: $0 --uninstall-user-app"
 }
 
 die() {
-  print -u2 "error: $*"
-  exit 1
+  local code="${2:-1}"
+  print -u2 "error: $1"
+  exit "$code"
 }
 
 require_flag() {
@@ -22,103 +34,101 @@ require_flag() {
   fi
 }
 
-repo_root() {
-  local root
-  root="$(cd "${SCRIPT_DIR}/../.." && pwd -P)"
-  print -r -- "$root"
-}
-
-artifact_root() {
-  print -r -- "$(repo_root)/artifacts/m4-003"
-}
-
-user_app_root() {
-  print -r -- "${HOME}/Applications"
-}
-
-installed_app_path() {
-  print -r -- "$(user_app_root)/${APP_NAME}"
+assert_user_scope() {
+  case "$APP_TARGET" in
+    "$HOME/Applications/"*) ;;
+    *) die "app target is outside current HOME: $APP_TARGET" 70 ;;
+  esac
+  case "$LAUNCH_AGENT_TARGET" in
+    "$HOME/Library/LaunchAgents/"*) ;;
+    *) die "LaunchAgent target is outside current HOME: $LAUNCH_AGENT_TARGET" 70 ;;
+  esac
+  case "$BRIDGE_SUPPORT" in
+    "$HOME/Library/Application Support/HermesBridge") ;;
+    *) die "helper target is outside current HOME: $BRIDGE_SUPPORT" 70 ;;
+  esac
+  [[ "$APP_TARGET" != /Applications/* ]] || die "system Applications target is forbidden" 70
+  [[ "$LAUNCH_AGENT_TARGET" != /Library/LaunchAgents/* ]] || die "system LaunchAgents target is forbidden" 70
 }
 
 bundle_id_for_app() {
   local app="$1"
-  /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "${app}/Contents/Info.plist" 2>/dev/null || true
+  /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Contents/Info.plist" 2>/dev/null || true
 }
 
 pid_for_exact_app() {
-  local app="$1"
-  [[ -d "$app" ]] || return 0
-  local app_real line pid proc_path
-  app_real="$(cd "$app" && pwd -P)"
-  while IFS= read -r line; do
-    pid="${line%% *}"
-    [[ -n "$pid" ]] || continue
-    proc_path="$(ps -p "$pid" -o comm= 2>/dev/null || true)"
-    if [[ "$proc_path" == "${app_real}/Contents/MacOS/${EXECUTABLE_NAME}" ]]; then
-      print -r -- "$pid"
-    fi
-  done < <(pgrep -fl "${app_real}/Contents/MacOS/${EXECUTABLE_NAME}" 2>/dev/null || true)
+  [[ -d "$APP_TARGET" ]] || return 0
+  local expected="$APP_TARGET/Contents/MacOS/$APP_EXECUTABLE_NAME"
+  ps -axo pid=,comm= | while read -r pid command; do
+    [[ "$command" == "$expected" ]] && print -r -- "$pid"
+  done
 }
 
 terminate_exact_app() {
-  local app="$1"
-  [[ -d "$app" ]] || return 0
-  local bundle_id
-  bundle_id="$(bundle_id_for_app "$app")"
-  [[ "$bundle_id" == "$EXPECTED_BUNDLE_ID" ]] || die "refusing to terminate unexpected bundle identifier: ${bundle_id}"
-  /usr/bin/osascript -e "tell application id \"${EXPECTED_BUNDLE_ID}\" to quit" >/dev/null 2>&1 || true
-  local deadline=$(( $(date +%s) + 10 ))
-  while [[ -n "$(pid_for_exact_app "$app")" && $(date +%s) -lt $deadline ]]; do
-    sleep 0.5
-  done
   local pids
-  pids=("${(@f)$(pid_for_exact_app "$app" || true)}")
-  if (( ${#pids[@]} > 0 )); then
-    kill -TERM -- "${pids[@]}" 2>/dev/null || true
+  pids=("${(@f)$(pid_for_exact_app || true)}")
+  (( ${#pids[@]} == 0 )) && return 0
+  kill -TERM -- "${pids[@]}" 2>/dev/null || true
+}
+
+launchctl_available_for_gui_domain() {
+  [[ "$FIXTURE_MODE" != "YES" ]] || return 1
+  /bin/launchctl print "$SERVICE_DOMAIN" >/dev/null 2>&1
+}
+
+unload_launch_agent() {
+  if ! launchctl_available_for_gui_domain; then
+    print -r -- "LAUNCH_AGENT_BOOTOUT_SKIPPED=yes"
+    return 0
+  fi
+  if /bin/launchctl print "$SERVICE_DOMAIN/$LABEL" >/dev/null 2>&1; then
+    /bin/launchctl bootout "$SERVICE_DOMAIN/$LABEL" >/dev/null 2>&1 || true
   fi
 }
 
-restore_backup_if_available() {
-  local dest="$1"
-  local artifact="$2"
-  local manifest="${artifact}/last-backup-path.txt"
-  [[ -f "$manifest" ]] || return 0
-  local backup
-  backup="$(cat "$manifest")"
-  [[ -n "$backup" && -d "$backup" ]] || return 0
-  [[ ! -e "$dest" ]] || die "cannot restore backup while destination still exists: ${dest}"
-  mv "$backup" "$dest"
-  : > "$manifest"
+remove_if_product_owned_file() {
+  local target_path="$1"
+  [[ -e "$target_path" || -L "$target_path" ]] || return 0
+  [[ ! -L "$target_path" && -f "$target_path" ]] || die "refusing to remove non-file product target: $target_path" 73
+  rm -f "$target_path"
+}
+
+remove_product_directories_if_empty() {
+  rmdir "$RUNTIME_ROOT" >/dev/null 2>&1 || true
+  rmdir "$BRIDGE_SUPPORT" >/dev/null 2>&1 || true
+  rmdir "$LOGS_ROOT" >/dev/null 2>&1 || true
 }
 
 main() {
   require_flag "$@"
-  local root dest artifact
-  root="$(user_app_root)"
-  dest="$(installed_app_path)"
-  artifact="$(artifact_root)"
-  [[ "$root" == "${HOME}/Applications" ]] || die "destination root is not fixed to current-user Applications"
-  [[ "$root" != "/Applications" ]] || die "system Applications destination is forbidden"
-  [[ ! -L "$root" ]] || die "destination root must not be a symlink: ${root}"
+  assert_user_scope
+  unload_launch_agent
 
-  if [[ -e "$dest" ]]; then
-    [[ -d "$dest" && ! -L "$dest" ]] || die "refusing to remove non-directory or symlink at ${dest}"
-    local bundle_id
-    bundle_id="$(bundle_id_for_app "$dest")"
-    [[ "$bundle_id" == "$EXPECTED_BUNDLE_ID" ]] || die "refusing to remove unexpected bundle identifier: ${bundle_id}"
-    terminate_exact_app "$dest"
-    rm -rf "$dest"
+  if [[ -e "$APP_TARGET" || -L "$APP_TARGET" ]]; then
+    [[ -d "$APP_TARGET" && ! -L "$APP_TARGET" ]] || die "refusing to remove non-directory app target: $APP_TARGET" 73
+    [[ "$(bundle_id_for_app "$APP_TARGET")" == "$EXPECTED_BUNDLE_ID" ]] || die "refusing to remove unexpected app bundle: $APP_TARGET" 73
+    terminate_exact_app
+    rm -rf "$APP_TARGET"
   fi
 
-  restore_backup_if_available "$dest" "$artifact"
-
-  local residual="no"
-  if [[ -d "$dest" && "$(bundle_id_for_app "$dest")" == "$EXPECTED_BUNDLE_ID" && -n "$(pid_for_exact_app "$dest")" ]]; then
-    residual="yes"
+  if [[ -e "$LAUNCH_AGENT_TARGET" || -L "$LAUNCH_AGENT_TARGET" ]]; then
+    [[ ! -L "$LAUNCH_AGENT_TARGET" && -f "$LAUNCH_AGENT_TARGET" ]] || die "refusing to remove non-file LaunchAgent target: $LAUNCH_AGENT_TARGET" 73
+    local label
+    label="$(/usr/libexec/PlistBuddy -c 'Print :Label' "$LAUNCH_AGENT_TARGET" 2>/dev/null || true)"
+    [[ "$label" == "$LABEL" ]] || die "refusing to remove unexpected LaunchAgent label: $label" 73
+    rm -f "$LAUNCH_AGENT_TARGET"
   fi
 
-  print -r -- "APP_UNINSTALL_PASSED=yes"
-  print -r -- "RESIDUAL_APP_PROCESS=${residual}"
+  remove_if_product_owned_file "$SERVICE_TARGET"
+  remove_if_product_owned_file "$CONTROL_TARGET"
+  remove_if_product_owned_file "$LIFECYCLE_TARGET"
+  rm -rf "$RUNTIME_ROOT"
+  rm -f "$LOGS_ROOT/service.stdout.log" "$LOGS_ROOT/service.stderr.log"
+  remove_product_directories_if_empty
+
+  print -r -- "APP_UNINSTALLED=yes"
+  print -r -- "HELPERS_REMOVED=yes"
+  print -r -- "LAUNCH_AGENT_REMOVED=yes"
 }
 
 main "$@"

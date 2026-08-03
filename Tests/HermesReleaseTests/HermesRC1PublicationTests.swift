@@ -150,6 +150,16 @@ final class HermesRC1PublicationTests: XCTestCase {
     XCTAssertEqual(fields["M14_011_RESULT"], "PASS")
   }
 
+  func testVerifyRejectsSourceTreeDependentPackagedInstaller() throws {
+    let fixture = try makePublicationFixture(installerText: "#!/bin/zsh\nxcodebuild -version\nswift build\n")
+    let result = try runPublication(["verify"], artifactDir: fixture.artifactDir)
+    XCTAssertEqual(result.status, 1, result.combinedOutput)
+    let fields = try resultFields(in: fixture.artifactDir)
+    XCTAssertEqual(fields["ZIP_CONTENT_VALID"], "no")
+    XCTAssertEqual(fields["M14_011_REASON_CODE"], "installer.source-tree-dependency")
+    XCTAssertEqual(fields["M14_011_RESULT"], "FAIL")
+  }
+
   func testVerifyMissingSHA256SUMSFailsWithSpecificReasonAndExitOne() throws {
     let fixture = try makePublicationFixture()
     try FileManager.default.removeItem(at: fixture.sha256sums)
@@ -400,7 +410,7 @@ final class HermesRC1PublicationTests: XCTestCase {
     }
   }
 
-  private func makePublicationFixture() throws -> PublicationFixture {
+  private func makePublicationFixture(installerText: String = "fixture\n") throws -> PublicationFixture {
     let artifactDir = try temporaryDirectory().appendingPathComponent("m14-011")
     let outputDir = artifactDir.appendingPathComponent("output")
     let evidenceDir = artifactDir.appendingPathComponent("evidence")
@@ -414,14 +424,20 @@ final class HermesRC1PublicationTests: XCTestCase {
       "Fixture/Hermes macOS Native Bridge.app/Contents/Library/XPCServices/HermesBridgeService.xpc/Contents/Info.plist",
       "Fixture/Hermes macOS Native Bridge.app/Contents/Library/XPCServices/HermesBridgeService.xpc/Contents/MacOS/HermesBridgeService",
       "Fixture/Library/LaunchAgents/com.hermes.bridge.plist",
-      "Fixture/Scripts/install-hermes-bridge-app.zsh",
-      "Fixture/Scripts/uninstall-hermes-bridge-app.zsh",
       "Fixture/bin/HermesBridgeControl",
       "Fixture/bin/HermesBridgeServiceLifecycle",
     ] {
       let url = staging.appendingPathComponent(relative)
       try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
       try "fixture\n".write(to: url, atomically: true, encoding: .utf8)
+    }
+    for relative in [
+      "Fixture/Scripts/install-hermes-bridge-app.zsh",
+      "Fixture/Scripts/uninstall-hermes-bridge-app.zsh",
+    ] {
+      let url = staging.appendingPathComponent(relative)
+      try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+      try installerText.write(to: url, atomically: true, encoding: .utf8)
     }
 
     let archive = outputDir.appendingPathComponent(Self.archiveName)

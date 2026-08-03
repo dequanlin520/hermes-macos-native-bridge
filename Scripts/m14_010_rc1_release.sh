@@ -482,6 +482,37 @@ deny = [item for item in actual if item.startswith(("Sources/", "Tests/", ".git/
 if missing or deny:
     raise SystemExit(f"missing={sorted(missing)} deny={deny}")
 PY
+  local content_status=$?
+  [[ "$content_status" -eq 0 ]] || return "$content_status"
+  /usr/bin/python3 - "$STAGING_DIR/Scripts/install-hermes-bridge-app.zsh" "$STAGING_DIR/Scripts/uninstall-hermes-bridge-app.zsh" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+denied = {
+    "xcodebuild": re.compile(r"\bxcodebuild\b"),
+    "swift build": re.compile(r"\bswift\s+build\b"),
+    "swift run": re.compile(r"\bswift\s+run\b"),
+    "Package.swift lookup": re.compile(r"Package\.swift"),
+    "repository-root discovery": re.compile(r"(repo_root|ROOT_DIR=.*dirname.*\.\.|git -C|rev-parse --show-toplevel)"),
+    "source compilation": re.compile(r"(Sources/|Packaging/HermesBridgeApp|DerivedData|\.build/)"),
+}
+hits = []
+for raw in sys.argv[1:]:
+    text = Path(raw).read_text(encoding="utf-8")
+    for name, pattern in denied.items():
+        if pattern.search(text):
+            hits.append(f"{Path(raw).name}:{name}")
+if hits:
+    print("installer.source-tree-dependency " + ",".join(hits), file=sys.stderr)
+    raise SystemExit(86)
+PY
+  local installer_status=$?
+  if [[ "$installer_status" -eq 86 ]]; then
+    RESULT[M14_010_REASON_CODE]=installer.source-tree-dependency
+    return 1
+  fi
+  [[ "$installer_status" -eq 0 ]] || return "$installer_status"
   RESULT[PACKAGE_CONTENT_VALID]=yes
 }
 
@@ -586,7 +617,7 @@ inspect_package() {
   validate_bundles || { RESULT[M14_010_REASON_CODE]=bundle.invalid; finish_result; return 1; }
   validate_architecture || { RESULT[M14_010_REASON_CODE]=architecture.invalid; finish_result; return 1; }
   validate_entitlements || { RESULT[M14_010_REASON_CODE]=entitlements.invalid; finish_result; return 1; }
-  validate_package_contents || { RESULT[M14_010_REASON_CODE]=package.contents-invalid; finish_result; return 1; }
+  validate_package_contents || { [[ "${RESULT[M14_010_REASON_CODE]}" != "unknown" ]] || RESULT[M14_010_REASON_CODE]=package.contents-invalid; finish_result; return 1; }
   scan_privacy || { RESULT[M14_010_REASON_CODE]=privacy.leak; finish_result; return 1; }
   RESULT[APP_SIGNING_STATUS]="$(signing_category_for "$APP_BUNDLE")"
   RESULT[SERVICE_SIGNING_STATUS]="$(signing_category_for "$SERVICE_EXEC")"
@@ -615,7 +646,7 @@ build_unsigned() {
   validate_bundles || { RESULT[M14_010_REASON_CODE]=bundle.invalid; finish_result; return 1; }
   validate_architecture || { RESULT[M14_010_REASON_CODE]=architecture.invalid; finish_result; return 1; }
   validate_entitlements || { RESULT[M14_010_REASON_CODE]=entitlements.invalid; finish_result; return 1; }
-  validate_package_contents || { RESULT[M14_010_REASON_CODE]=package.contents-invalid; finish_result; return 1; }
+  validate_package_contents || { [[ "${RESULT[M14_010_REASON_CODE]}" != "unknown" ]] || RESULT[M14_010_REASON_CODE]=package.contents-invalid; finish_result; return 1; }
   validate_uninstall_pairing || { RESULT[M14_010_REASON_CODE]=uninstall.invalid; finish_result; return 1; }
   scan_privacy || { RESULT[M14_010_REASON_CODE]=privacy.leak; finish_result; return 1; }
   create_archive_and_manifest
@@ -679,7 +710,7 @@ build_signed() {
   validate_bundles || { RESULT[M14_010_REASON_CODE]=bundle.invalid; finish_result; return 1; }
   validate_architecture || { RESULT[M14_010_REASON_CODE]=architecture.invalid; finish_result; return 1; }
   validate_entitlements || { RESULT[M14_010_REASON_CODE]=entitlements.invalid; finish_result; return 1; }
-  validate_package_contents || { RESULT[M14_010_REASON_CODE]=package.contents-invalid; finish_result; return 1; }
+  validate_package_contents || { [[ "${RESULT[M14_010_REASON_CODE]}" != "unknown" ]] || RESULT[M14_010_REASON_CODE]=package.contents-invalid; finish_result; return 1; }
   validate_uninstall_pairing || { RESULT[M14_010_REASON_CODE]=uninstall.invalid; finish_result; return 1; }
   scan_privacy || { RESULT[M14_010_REASON_CODE]=privacy.leak; finish_result; return 1; }
   RESULT[APP_SIGNING_STATUS]=developer-id-application
@@ -744,7 +775,7 @@ notarize_release() {
   validate_bundles || { RESULT[M14_010_REASON_CODE]=bundle.invalid; finish_result; return 1; }
   validate_architecture || { RESULT[M14_010_REASON_CODE]=architecture.invalid; finish_result; return 1; }
   validate_entitlements || { RESULT[M14_010_REASON_CODE]=entitlements.invalid; finish_result; return 1; }
-  validate_package_contents || { RESULT[M14_010_REASON_CODE]=package.contents-invalid; finish_result; return 1; }
+  validate_package_contents || { [[ "${RESULT[M14_010_REASON_CODE]}" != "unknown" ]] || RESULT[M14_010_REASON_CODE]=package.contents-invalid; finish_result; return 1; }
   validate_uninstall_pairing || { RESULT[M14_010_REASON_CODE]=uninstall.invalid; finish_result; return 1; }
   scan_privacy || { RESULT[M14_010_REASON_CODE]=privacy.leak; finish_result; return 1; }
   RESULT[APP_SIGNING_STATUS]=developer-id-application
