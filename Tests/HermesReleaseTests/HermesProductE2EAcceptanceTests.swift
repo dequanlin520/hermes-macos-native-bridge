@@ -168,7 +168,7 @@ final class HermesProductE2EAcceptanceTests: XCTestCase {
     let m14 = try read("Docs/Release/M14_009ProductE2EAcceptance.md")
 
     XCTAssertFalse(readme.contains("Pre-alpha. Technical validation has not started."))
-    XCTAssertTrue(readme.contains("Release-candidate engineering validation in progress."))
+    XCTAssertTrue(readme.contains("RC1 engineering validation complete"))
     XCTAssertTrue(readme.contains("XPC 1.8"))
     XCTAssertTrue(readme.contains("Hermes Agent 0.18.2"))
     XCTAssertTrue(readme.contains("transport.route-unsupported"))
