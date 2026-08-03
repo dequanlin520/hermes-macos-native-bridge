@@ -53,6 +53,44 @@ final class HermesBridgeXPCTests: XCTestCase {
     XCTAssertEqual(payload.protocolVersion, HermesBridgeProtocolVersion(major: 1, minor: 8))
   }
 
+  func testCapabilitiesPayloadRoundTripPreservesProductSnapshotVersion() throws {
+    let snapshot = productSnapshot()
+    let payload = HermesBridgeCapabilitiesPayload(
+      protocolVersion: HermesBridgeProtocolVersion(major: 1, minor: 8),
+      capabilities: HermesBridgeCapability.allCases,
+      productCapabilitySnapshot: snapshot
+    )
+
+    let data = try JSONEncoder().encode(payload)
+    let decoded = try JSONDecoder().decode(HermesBridgeCapabilitiesPayload.self, from: data)
+
+    XCTAssertEqual(decoded.protocolVersion, HermesBridgeProtocolVersion(major: 1, minor: 8))
+    XCTAssertEqual(decoded.productCapabilitySnapshot?.observedHermesVersion, "0.18.2")
+    XCTAssertEqual(
+      decoded.productCapabilitySnapshot?.capability(.requestSubmission)?.observedHermesVersion,
+      "0.18.2"
+    )
+  }
+
+  func testClientCapabilitiesRoundTripPreservesProductSnapshotVersion() async throws {
+    let transport = RecordingDiscoveryTransport(
+      capabilities: HermesBridgeCapabilitiesPayload(
+        protocolVersion: HermesBridgeProtocolVersion(major: 1, minor: 8),
+        capabilities: HermesBridgeCapability.allCases,
+        productCapabilitySnapshot: productSnapshot()
+      )
+    )
+    let client = HermesBridgeXPCClient(transport: transport, timeout: 1)
+
+    let payload = try await client.capabilities()
+
+    XCTAssertEqual(payload.productCapabilitySnapshot?.observedHermesVersion, "0.18.2")
+    XCTAssertEqual(
+      payload.productCapabilitySnapshot?.capability(.requestCancellation)?.reasonCode,
+      "transport.route-unsupported"
+    )
+  }
+
   func testProtocol17CapabilityResponseOmitsAgentDiscovery() async throws {
     let harness = try Harness()
 
@@ -577,6 +615,22 @@ final class HermesBridgeXPCTests: XCTestCase {
       try decoder.decode(HermesBridgeResponseEnvelope.self, from: data)
     }
   }
+}
+
+private func productSnapshot() -> HermesProductCapabilitySnapshot {
+  HermesProductCapabilitySnapshot.rc1(
+    xpcProtocolVersion: "1.8",
+    bridgeServiceConnected: true,
+    executableAvailable: true,
+    observedHermesVersion: "0.18.2",
+    compatibilityLevel: .partiallyCompatible,
+    runtimeStatus: .ready,
+    statusReady: true,
+    endpointOwnershipProven: true,
+    lifecycleExercised: true,
+    controlledReconnectExercised: true,
+    exactShutdownExercised: true
+  )
 }
 
 private actor FakeBridgeHandler: HermesBridgeRequestHandling {

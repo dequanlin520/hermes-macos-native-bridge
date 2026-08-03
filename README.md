@@ -1,63 +1,111 @@
 # Hermes macOS Native Bridge
 
-Native, bidirectional macOS integration for Hermes Agent.
+Native macOS control plane and system bridge for Hermes Agent.
 
-## Release Candidate Acceptance
+## Project Status
 
-The M8 release-candidate harness composes the app, menu bar, XPC client,
-service, XPC service, request orchestrator, and an artifact-owned fake Hermes
-backend end to end:
+Release-candidate engineering validation in progress.
 
-```zsh
-Scripts/integration/m8-001-release-candidate-acceptance.zsh
+This repository is validating a narrow, service-owned product path. It does not
+claim production readiness or external adoption.
+
+## Verified Architecture
+
+```text
+Native App / Menu Bar / App Intents
+  -> versioned XPC 1.8
+  -> HermesBridgeService
+  -> service-owned isolated Hermes supervisor
+  -> dynamic loopback endpoint ownership
+  -> /api/status
+  -> typed capability/status snapshot
+  -> UI presentation
 ```
 
-Evidence is written under `artifacts/m8-001`.
+The UI does not own Agent processes, endpoints, or protocol clients.
 
-## CI and release pipeline
+## Current Supported Capability Boundary
 
-M8-002 adds reproducible CI and release packaging workflows under
-`.github/workflows/`.
+| Capability | RC status |
+| --- | --- |
+| Native app launch | supported |
+| Menu-bar status | supported |
+| Service connection state | supported |
+| XPC protocol compatibility | supported |
+| Hermes executable/version discovery | supported |
+| Isolated Agent start | supported |
+| Agent readiness/status | supported |
+| Dynamic endpoint ownership | supported |
+| Controlled service restart/reconnect | supported |
+| App exit without accidental runtime destruction | supported |
+| Exact Agent shutdown | supported |
+| Diagnostics, permissions, audit/security | supported |
+| Emergency stop | supported |
+| Installation/uninstallation | supported |
 
-- CI builds and tests the Swift package, builds `HermesBridgeApp` with Xcode,
-  validates scripts, scans privacy/action-surface markers, and retains failure
-  logs.
-- Release-candidate builds run M8-001 once, generate a staged bundle, SPDX
-  SBOM, checksums, manifest, gate summary, artifact attestation, and an
-  unsigned/ad-hoc conditional artifact when Apple credentials are unavailable.
-- Production releases require Developer ID signing, hardened runtime,
-  notarization acceptance, staple verification, Gatekeeper assessment, and a
-  final `PASS` gate before publication.
+## Unsupported Capability Boundary
 
-See `Docs/Release/CI.md`, `Docs/Release/ReleasePipeline.md`,
-`Docs/Release/GitHubSecrets.md`, and `Docs/Release/ReleaseRunbook.md`.
+| Capability | RC status | Reason |
+| --- | --- | --- |
+| Request submission | unsupported | `transport.route-unsupported` |
+| Request status | unsupported | `transport.route-unsupported` |
+| Request cancellation | unsupported | `transport.route-unsupported` |
+| Approval response | unsupported | `transport.route-unsupported` |
+| Arbitrary prompts | unsupported | `rc.scope-unsupported` |
+| Arbitrary shell | unsupported | `security.boundary-unsupported` |
+| GUI Computer Use | unsupported | `rc.scope-unsupported` |
+| Browser automation | unsupported | `rc.scope-unsupported` |
+| Arbitrary AppleScript/JXA | unsupported | `rc.scope-unsupported` |
+| Broad process control | unsupported | `security.boundary-unsupported` |
+| Private `/api/ws` assumptions | unsupported | `private-route.not-assumed` |
 
-## Project status
+Unsupported controls must be disabled with factual typed reasons.
 
-Pre-alpha. Technical validation has not started.
+## Safety Boundaries
 
-## Core scope
+- No arbitrary shell execution API.
+- No GUI computer use or browser automation.
+- No general AppleScript or JXA execution.
+- No arbitrary executable paths.
+- No UI-owned Agent processes or endpoint discovery.
+- No raw endpoint ports, PIDs, paths, tokens, or internal URLs in UI status.
+- No private Hermes route guessing.
 
-- Hermes lifecycle management
-- Siri and Shortcuts to Hermes
-- Hermes to approved macOS Shortcuts
-- macOS event bridge
-- Permissions Doctor
-- Native menu bar
-- Pause, stop, emergency stop, audit and diagnostics
+## Tested Baseline
 
-## Explicit non-goals
+- Apple Silicon baseline
+- macOS 13+ package baseline
+- Hermes Agent 0.18.2
+- XPC protocol 1.8
+- Status-only Hermes integration through `/api/status`
 
-- GUI computer use
-- Browser automation
-- General-purpose AppleScript or JXA
-- Arbitrary shell execution
-- Hermes Desktop replacement
-- Knowledge base or workspace
-- Manufacturing-specific functionality
-- Remote control API
+See [RC1Scope.md](Docs/Release/RC1Scope.md).
 
-## Project relationship
+## Operator Quick Start
+
+```zsh
+swift build
+swift test
+Scripts/m14_009_product_e2e_acceptance.sh inspect
+```
+
+Opt-in product acceptance is explicit:
+
+```zsh
+HERMES_M14_009_ACCEPTANCE=YES Scripts/m14_009_product_e2e_acceptance.sh run
+Scripts/m14_009_product_e2e_acceptance.sh cleanup
+```
+
+Evidence is written under `artifacts/m14-009` and is ignored by git.
+
+## Developer Notes
+
+The product capability snapshot is `HermesProductCapabilitySnapshot`. It is
+delivered through the existing XPC 1.8 capabilities response so UI and App
+Intents consume typed capability evidence rather than inferring support from
+operation failures.
+
+## Project Relationship
 
 This is currently an independent community project.
 

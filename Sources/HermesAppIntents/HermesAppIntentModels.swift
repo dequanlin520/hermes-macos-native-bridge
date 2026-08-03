@@ -198,17 +198,20 @@ public struct HermesAppIntentHealthStatus: Equatable, Sendable {
   public let compatible: Bool
   public let protocolVersion: String?
   public let supportedCapabilities: [String]
+  public let productCapabilitySnapshot: HermesProductCapabilitySnapshot?
 
   public init(
     available: Bool,
     compatible: Bool,
     protocolVersion: String?,
-    supportedCapabilities: [String]
+    supportedCapabilities: [String],
+    productCapabilitySnapshot: HermesProductCapabilitySnapshot? = nil
   ) {
     self.available = available
     self.compatible = compatible
     self.protocolVersion = protocolVersion
     self.supportedCapabilities = supportedCapabilities
+    self.productCapabilitySnapshot = productCapabilitySnapshot
   }
 }
 

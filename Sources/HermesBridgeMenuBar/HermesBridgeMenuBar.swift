@@ -191,6 +191,35 @@ public struct HermesBridgeMenuBarApprovalSummary: Codable, Equatable, Identifiab
   }
 }
 
+public struct HermesBridgeMenuBarUnsupportedControlState: Codable, Equatable, Sendable {
+  public let enabled: Bool
+  public let reasonCode: String
+  public let safeExplanation: String
+
+  public init(capability: HermesProductCapability?) {
+    self.enabled = capability?.status == .supported
+    self.reasonCode = Self.safeToken(capability?.reasonCode ?? "capability.unavailable")
+    self.safeExplanation = Self.safeText(
+      capability?.privacySafeExplanation ?? "Capability is unavailable.",
+      maximumCharacters: 160
+    )
+  }
+
+  private static func safeToken(_ value: String) -> String {
+    let filtered = value.filter {
+      $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "." || $0 == "-" || $0 == "_")
+    }
+    return filtered.isEmpty ? "unknown" : String(filtered.prefix(96))
+  }
+
+  private static func safeText(_ value: String, maximumCharacters: Int) -> String {
+    let filtered = value.unicodeScalars.filter { scalar in
+      scalar.value >= 0x20 && scalar.value != 0x7F
+    }
+    return String(String.UnicodeScalarView(filtered)).prefixString(maximumCharacters)
+  }
+}
+
 public struct HermesBridgeMenuBarState: Codable, Equatable, Sendable {
   public var serviceStatus: HermesBridgeMenuBarServiceStatus
   public var installed: Bool
@@ -216,6 +245,10 @@ public struct HermesBridgeMenuBarState: Codable, Equatable, Sendable {
   public var approvalInboxUnavailable: Bool
   public var serviceDegraded: Bool
   public var lastActionMessage: String?
+  public var productCapabilitySnapshot: HermesProductCapabilitySnapshot?
+  public var requestControl: HermesBridgeMenuBarUnsupportedControlState
+  public var cancelControl: HermesBridgeMenuBarUnsupportedControlState
+  public var approvalControl: HermesBridgeMenuBarUnsupportedControlState
 
   public init(
     serviceStatus: HermesBridgeMenuBarServiceStatus = .loading,
@@ -241,7 +274,8 @@ public struct HermesBridgeMenuBarState: Codable, Equatable, Sendable {
     recentCompletedApprovals: [HermesBridgeMenuBarApprovalSummary] = [],
     approvalInboxUnavailable: Bool = false,
     serviceDegraded: Bool = false,
-    lastActionMessage: String? = nil
+    lastActionMessage: String? = nil,
+    productCapabilitySnapshot: HermesProductCapabilitySnapshot? = nil
   ) {
     self.serviceStatus = serviceStatus
     self.installed = installed
@@ -268,6 +302,13 @@ public struct HermesBridgeMenuBarState: Codable, Equatable, Sendable {
     self.approvalInboxUnavailable = approvalInboxUnavailable
     self.serviceDegraded = serviceDegraded
     self.lastActionMessage = lastActionMessage.map { String($0.prefix(120)) }
+    self.productCapabilitySnapshot = productCapabilitySnapshot
+    self.requestControl = HermesBridgeMenuBarUnsupportedControlState(
+      capability: productCapabilitySnapshot?.capability(.requestSubmission))
+    self.cancelControl = HermesBridgeMenuBarUnsupportedControlState(
+      capability: productCapabilitySnapshot?.capability(.requestCancellation))
+    self.approvalControl = HermesBridgeMenuBarUnsupportedControlState(
+      capability: productCapabilitySnapshot?.capability(.approvalResponse))
   }
 }
 
@@ -1480,6 +1521,13 @@ public actor HermesBridgeMenuBarViewModel {
       next.serviceStatus = compatible ? next.serviceStatus : .protocolIncompatible
       next.protocolVersion = version.version.description
       next.capabilities = capabilities.capabilities.map(\.rawValue).sorted()
+      next.productCapabilitySnapshot = capabilities.productCapabilitySnapshot
+      next.requestControl = HermesBridgeMenuBarUnsupportedControlState(
+        capability: capabilities.productCapabilitySnapshot?.capability(.requestSubmission))
+      next.cancelControl = HermesBridgeMenuBarUnsupportedControlState(
+        capability: capabilities.productCapabilitySnapshot?.capability(.requestCancellation))
+      next.approvalControl = HermesBridgeMenuBarUnsupportedControlState(
+        capability: capabilities.productCapabilitySnapshot?.capability(.approvalResponse))
       next.enabledBindingCount = bindings.count
       next.recentRequests = Array(requests.prefix(8))
       if let systemStatus {

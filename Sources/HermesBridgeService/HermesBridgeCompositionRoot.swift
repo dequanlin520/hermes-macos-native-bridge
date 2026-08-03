@@ -638,6 +638,47 @@ public struct HermesBridgeServiceRequestHandler: HermesBridgeRequestHandling {
     }
   }
 
+  public func productCapabilitySnapshot(
+    protocolVersion: HermesBridgeProtocolVersion,
+    capabilities _: [HermesBridgeCapability]
+  ) async throws -> HermesProductCapabilitySnapshot {
+    let discovery = try await discoverAgent()
+    let executableAvailable = discovery.status == .available || discovery.status == .incompatible
+    let compatibilityLevel: HermesAgentCompatibilityLevel
+    switch discovery.compatibility {
+    case .compatible:
+      compatibilityLevel = .partiallyCompatible
+    case .incompatible:
+      compatibilityLevel = .incompatible
+    case .unknown:
+      compatibilityLevel = .unverified
+    }
+    let runtimeStatus: HermesProductRuntimeStatus
+    let statusReady: Bool
+    if case .sessionList(let sessions) = try? await runtimeCommandAPI.execute(.listSessions),
+      sessions.contains(where: { $0.currentStatus == .running })
+    {
+      runtimeStatus = .ready
+      statusReady = true
+    } else {
+      runtimeStatus = .stopped
+      statusReady = false
+    }
+    return HermesProductCapabilitySnapshot.rc1(
+      xpcProtocolVersion: protocolVersion.description,
+      bridgeServiceConnected: true,
+      executableAvailable: executableAvailable,
+      observedHermesVersion: discovery.semanticVersion,
+      compatibilityLevel: compatibilityLevel,
+      runtimeStatus: runtimeStatus,
+      statusReady: statusReady,
+      endpointOwnershipProven: statusReady,
+      lifecycleExercised: statusReady,
+      controlledReconnectExercised: false,
+      exactShutdownExercised: false
+    )
+  }
+
   public func createRuntimeEventSubscription() async throws -> HermesBridgeRuntimeEventSubscriptionPayload {
     try await runtimeEvents.createSubscription()
   }

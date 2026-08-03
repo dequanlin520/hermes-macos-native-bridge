@@ -12,6 +12,7 @@ public enum HermesAppIntentError: Error, Equatable, Sendable, CustomStringConver
   case protocolIncompatible
   case requestNotFound
   case operationRejected
+  case capabilityUnavailable(String)
   case internalRedactedFailure
 
   public var description: String {
@@ -28,6 +29,8 @@ public enum HermesAppIntentError: Error, Equatable, Sendable, CustomStringConver
       return "The Hermes Request ID was not found."
     case .operationRejected:
       return "Hermes Bridge rejected the operation."
+    case .capabilityUnavailable(let reasonCode):
+      return "Hermes capability is unavailable: \(reasonCode)."
     case .internalRedactedFailure:
       return "Hermes Bridge returned a redacted internal failure."
     }
@@ -146,7 +149,8 @@ public actor HermesAppIntentXPCClient: HermesAppIntentClient {
         available: true,
         compatible: compatible,
         protocolVersion: version.version.description,
-        supportedCapabilities: capabilities.capabilities.map(\.rawValue).sorted()
+        supportedCapabilities: capabilities.capabilities.map(\.rawValue).sorted(),
+        productCapabilitySnapshot: capabilities.productCapabilitySnapshot
       )
     } catch {
       if Self.map(error) == .serviceUnavailable {
@@ -154,7 +158,8 @@ public actor HermesAppIntentXPCClient: HermesAppIntentClient {
           available: false,
           compatible: false,
           protocolVersion: nil,
-          supportedCapabilities: []
+          supportedCapabilities: [],
+          productCapabilitySnapshot: nil
         )
       }
       throw Self.map(error)

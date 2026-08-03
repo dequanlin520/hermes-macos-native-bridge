@@ -1,4 +1,5 @@
 import Foundation
+import HermesBridgeXPC
 import HermesBridgeService
 import HermesRuntimeFoundation
 
@@ -7,6 +8,10 @@ struct HermesReleaseAgentPreflight {
   static func main() {
     if CommandLine.arguments.dropFirst().first == "m14-005-inspect" {
       printM14005Inspect()
+      return
+    }
+    if CommandLine.arguments.dropFirst().first == "m14-009-inspect" {
+      printM14009Inspect()
       return
     }
     if CommandLine.arguments.dropFirst().first == "m14-008-exercise-protocol" {
@@ -61,6 +66,13 @@ struct HermesReleaseAgentPreflight {
     }
   }
 
+  private static func printM14009Inspect() {
+    let report = M14009ProductionInspector.inspect()
+    for key in M14009ProductionInspector.orderedKeys {
+      print("\(key)=\(report[key] ?? "unknown")")
+    }
+  }
+
   private static func runM14008ExerciseProtocol() {
     let args = Array(CommandLine.arguments.dropFirst().dropFirst())
     guard args.count == 4, let port = Int(args[0]) else {
@@ -79,6 +91,152 @@ struct HermesReleaseAgentPreflight {
     if result != 0 {
       Foundation.exit(result)
     }
+  }
+}
+
+private enum M14009ProductionInspector {
+  static let orderedKeys = [
+    "XPC_PROTOCOL_VERSION",
+    "HERMES_EXECUTABLE_AVAILABLE",
+    "HERMES_EXECUTABLE_FAMILY",
+    "HERMES_EXECUTABLE_SOURCE",
+    "HERMES_VERSION_STATUS",
+    "HERMES_VERSION",
+    "DISCOVERY_PARITY",
+    "REQUEST_CAPABILITY",
+    "REQUEST_CAPABILITY_REASON",
+    "CANCEL_CAPABILITY",
+    "CANCEL_CAPABILITY_REASON",
+    "APPROVAL_CAPABILITY",
+    "APPROVAL_CAPABILITY_REASON",
+    "RC_SCOPE_STATUS",
+    "M14_009_EXPECTED_RESULT",
+  ]
+
+  static func inspect() -> [String: String] {
+    var values = defaults()
+    do {
+      let configuration = try HermesBridgeServiceConfiguration.productionDefault()
+      let discovery = HermesDiscovery(
+        allowlistedExecutableCandidates: configuration.allowlistedHermesExecutableCandidates,
+        timeoutSeconds: 5,
+        outputLimitBytes: 16 * 1024
+      )
+      guard let result = firstDiscoveryResult(
+        discovery: discovery,
+        candidates: configuration.allowlistedHermesExecutableCandidates
+      ) else {
+        values["M14_009_EXPECTED_RESULT"] = "BLOCKED"
+        return values
+      }
+
+      let descriptor = HermesAgentVersionDescriptor(result: result, sourceCategory: "PATH")
+      let versionLevel = HermesAgentCompatibilityReport.compatibilityLevel(
+        forSemanticVersion: descriptor.semanticVersion
+      )
+      let compatibilityLevel: HermesAgentCompatibilityLevel =
+        versionLevel == .compatible ? .partiallyCompatible : versionLevel
+      let snapshot = HermesProductCapabilitySnapshot.rc1(
+        xpcProtocolVersion: HermesBridgeProtocolVersion.current.description,
+        bridgeServiceConnected: true,
+        executableAvailable: true,
+        observedHermesVersion: descriptor.semanticVersion,
+        compatibilityLevel: compatibilityLevel,
+        runtimeStatus: .stopped
+      )
+      let capabilitiesPayload = HermesBridgeCapabilitiesPayload(
+        protocolVersion: .current,
+        capabilities: HermesBridgeCapability.allCases,
+        productCapabilitySnapshot: snapshot
+      )
+      let encodedPayload = try JSONEncoder().encode(capabilitiesPayload)
+      let decodedPayload = try JSONDecoder().decode(
+        HermesBridgeCapabilitiesPayload.self,
+        from: encodedPayload
+      )
+      guard let decodedSnapshot = decodedPayload.productCapabilitySnapshot else {
+        values["M14_009_EXPECTED_RESULT"] = "BLOCKED"
+        return values
+      }
+
+      values["HERMES_EXECUTABLE_AVAILABLE"] = "yes"
+      values["HERMES_EXECUTABLE_FAMILY"] = descriptor.executableFamily
+      values["HERMES_EXECUTABLE_SOURCE"] = descriptor.sourceCategory
+      values["HERMES_VERSION_STATUS"] = descriptor.semanticVersion == nil ? "unknown" : "available"
+      values["HERMES_VERSION"] = decodedSnapshot.observedHermesVersion ?? "unknown"
+      values["DISCOVERY_PARITY"] = discoveryParity(
+        first: descriptor,
+        discovery: discovery,
+        candidate: URL(fileURLWithPath: result.candidate.originalPath)
+      )
+      values["REQUEST_CAPABILITY"] =
+        decodedSnapshot.capability(.requestSubmission)?.status.rawValue ?? "unknown"
+      values["REQUEST_CAPABILITY_REASON"] =
+        decodedSnapshot.capability(.requestSubmission)?.reasonCode ?? "unknown"
+      values["CANCEL_CAPABILITY"] =
+        decodedSnapshot.capability(.requestCancellation)?.status.rawValue ?? "unknown"
+      values["CANCEL_CAPABILITY_REASON"] =
+        decodedSnapshot.capability(.requestCancellation)?.reasonCode ?? "unknown"
+      values["APPROVAL_CAPABILITY"] =
+        decodedSnapshot.capability(.approvalResponse)?.status.rawValue ?? "unknown"
+      values["APPROVAL_CAPABILITY_REASON"] =
+        decodedSnapshot.capability(.approvalResponse)?.reasonCode ?? "unknown"
+      values["M14_009_EXPECTED_RESULT"] =
+        values["DISCOVERY_PARITY"] == "yes" && decodedSnapshot.observedHermesVersion != nil
+        ? "PASS" : "BLOCKED"
+      return values
+    } catch {
+      values["M14_009_EXPECTED_RESULT"] = "BLOCKED"
+      return values
+    }
+  }
+
+  private static func defaults() -> [String: String] {
+    [
+      "XPC_PROTOCOL_VERSION": HermesBridgeProtocolVersion.current.description,
+      "HERMES_EXECUTABLE_AVAILABLE": "no",
+      "HERMES_EXECUTABLE_FAMILY": "unknown",
+      "HERMES_EXECUTABLE_SOURCE": "unknown",
+      "HERMES_VERSION_STATUS": "unknown",
+      "HERMES_VERSION": "unknown",
+      "DISCOVERY_PARITY": "unknown",
+      "REQUEST_CAPABILITY": "unsupported",
+      "REQUEST_CAPABILITY_REASON": "transport.route-unsupported",
+      "CANCEL_CAPABILITY": "unsupported",
+      "CANCEL_CAPABILITY_REASON": "transport.route-unsupported",
+      "APPROVAL_CAPABILITY": "unsupported",
+      "APPROVAL_CAPABILITY_REASON": "transport.route-unsupported",
+      "RC_SCOPE_STATUS": "frozen",
+      "M14_009_EXPECTED_RESULT": "BLOCKED",
+    ]
+  }
+
+  private static func firstDiscoveryResult(
+    discovery: HermesDiscovery,
+    candidates: [URL]
+  ) -> HermesDiscoveryResult? {
+    for candidate in candidates {
+      do {
+        return try discovery.discover(at: candidate)
+      } catch HermesDiscoveryError.executableNotFound {
+        continue
+      } catch {
+        return nil
+      }
+    }
+    return nil
+  }
+
+  private static func discoveryParity(
+    first descriptor: HermesAgentVersionDescriptor,
+    discovery: HermesDiscovery,
+    candidate: URL
+  ) -> String {
+    guard let second = try? discovery.discover(at: candidate) else {
+      return "no"
+    }
+    let secondDescriptor = HermesAgentVersionDescriptor(result: second, sourceCategory: "PATH")
+    return descriptor == secondDescriptor ? "yes" : "no"
   }
 }
 
