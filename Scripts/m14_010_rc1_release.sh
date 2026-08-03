@@ -38,6 +38,9 @@ ORDERED_KEYS=(
   GET_TASK_ALLOW_ABSENT
   HARDENED_RUNTIME_STATUS
   SIGNING_IDENTITY_STATUS
+  APPLICATION_IDENTITY_REQUIRED
+  INSTALLER_IDENTITY_REQUIRED
+  INSTALLER_IDENTITY_STATUS
   APP_SIGNING_STATUS
   SERVICE_SIGNING_STATUS
   INSTALLER_SIGNING_STATUS
@@ -47,7 +50,10 @@ ORDERED_KEYS=(
   UNINSTALL_VALIDATED
   NOTARIZATION_CONFIGURED
   NOTARIZATION_STATUS
+  NOTARIZATION_SUBMISSION_TYPE
   STAPLING_STATUS
+  STAPLING_TARGET
+  FINAL_ARCHIVE_CREATED_AFTER_STAPLING
   SPCTL_ASSESSMENT
   SHA256_MANIFEST_CREATED
   RELEASE_MANIFEST_CREATED
@@ -84,6 +90,50 @@ MINIMUM_MACOS="$(version_value minimumMacOS)"
 BUILD_CONFIGURATION="$(version_value buildConfiguration)"
 PACKAGE_TYPE="$(version_value packageType)"
 
+signing_policy_field() {
+  local package_type="$1"
+  local field="$2"
+  case "$package_type:$field" in
+    app-distribution-bundle:application_identity_required) print -r -- yes ;;
+    app-distribution-bundle:installer_identity_required) print -r -- no ;;
+    app-distribution-bundle:notarization_submission_type) print -r -- zip ;;
+    app-distribution-bundle:stapling_target) print -r -- app-bundle ;;
+    disk-image:application_identity_required) print -r -- yes ;;
+    disk-image:installer_identity_required) print -r -- no ;;
+    disk-image:notarization_submission_type) print -r -- disk-image ;;
+    disk-image:stapling_target) print -r -- disk-image ;;
+    installer-package:application_identity_required) print -r -- yes ;;
+    installer-package:installer_identity_required) print -r -- yes ;;
+    installer-package:notarization_submission_type) print -r -- installer-package ;;
+    installer-package:stapling_target) print -r -- installer-package ;;
+    *) print -r -- unavailable ;;
+  esac
+}
+
+application_identity_required_for_signed_mode() {
+  case "$1" in
+    *) signing_policy_field "$1" application_identity_required ;;
+  esac
+}
+
+installer_identity_required_for_signed_mode() {
+  case "$1" in
+    *) signing_policy_field "$1" installer_identity_required ;;
+  esac
+}
+
+notarization_submission_type_for_package() {
+  case "$1" in
+    *) signing_policy_field "$1" notarization_submission_type ;;
+  esac
+}
+
+stapling_target_for_package() {
+  case "$1" in
+    *) signing_policy_field "$1" stapling_target ;;
+  esac
+}
+
 set_default_results() {
   RESULT=(
     EXPLICIT_OPT_IN_CONFIRMED no
@@ -102,16 +152,22 @@ set_default_results() {
     GET_TASK_ALLOW_ABSENT no
     HARDENED_RUNTIME_STATUS not-applicable
     SIGNING_IDENTITY_STATUS unavailable
-    APP_SIGNING_STATUS unsigned
-    SERVICE_SIGNING_STATUS unsigned
-    INSTALLER_SIGNING_STATUS unsigned
+    APPLICATION_IDENTITY_REQUIRED "$(application_identity_required_for_signed_mode "$PACKAGE_TYPE")"
+    INSTALLER_IDENTITY_REQUIRED "$(installer_identity_required_for_signed_mode "$PACKAGE_TYPE")"
+    INSTALLER_IDENTITY_STATUS "$(if [[ "$(installer_identity_required_for_signed_mode "$PACKAGE_TYPE")" == "yes" ]]; then print -r -- unavailable; else print -r -- not-applicable; fi)"
+    APP_SIGNING_STATUS unavailable
+    SERVICE_SIGNING_STATUS unavailable
+    INSTALLER_SIGNING_STATUS "$(if [[ "$(installer_identity_required_for_signed_mode "$PACKAGE_TYPE")" == "yes" ]]; then print -r -- unsigned; else print -r -- not-applicable; fi)"
     PACKAGE_TYPE "$PACKAGE_TYPE"
     PACKAGE_BUILT no
     PACKAGE_CONTENT_VALID no
     UNINSTALL_VALIDATED no
     NOTARIZATION_CONFIGURED no
     NOTARIZATION_STATUS not-requested
+    NOTARIZATION_SUBMISSION_TYPE "$(notarization_submission_type_for_package "$PACKAGE_TYPE")"
     STAPLING_STATUS not-requested
+    STAPLING_TARGET "$(stapling_target_for_package "$PACKAGE_TYPE")"
+    FINAL_ARCHIVE_CREATED_AFTER_STAPLING not-attempted
     SPCTL_ASSESSMENT not-run
     SHA256_MANIFEST_CREATED no
     RELEASE_MANIFEST_CREATED no
@@ -150,12 +206,20 @@ finish_result() {
   [[ "${RESULT[GENERATED_ARTIFACT_TRACKED_BY_GIT]}" == "no" ]] || ok=no
 
   if [[ "$mode" == "signed-notarized-release" ]]; then
-    for key in HARDENED_RUNTIME_STATUS NOTARIZATION_STATUS STAPLING_STATUS SPCTL_ASSESSMENT; do
-      [[ "${RESULT[$key]}" == "accepted" || "${RESULT[$key]}" == "enabled" ]] || ok=no
-    done
+    [[ "${RESULT[HARDENED_RUNTIME_STATUS]}" == "enabled" ]] || ok=no
     [[ "${RESULT[APP_SIGNING_STATUS]}" == "developer-id-application" ]] || ok=no
     [[ "${RESULT[SERVICE_SIGNING_STATUS]}" == "developer-id-application" ]] || ok=no
-    [[ "${RESULT[INSTALLER_SIGNING_STATUS]}" == "developer-id-installer" ]] || ok=no
+    if [[ "${RESULT[INSTALLER_IDENTITY_REQUIRED]}" == "yes" ]]; then
+      [[ "${RESULT[INSTALLER_SIGNING_STATUS]}" == "developer-id-installer" ]] || ok=no
+    else
+      [[ "${RESULT[INSTALLER_SIGNING_STATUS]}" == "not-applicable" ]] || ok=no
+    fi
+    if [[ "${RESULT[NOTARIZATION_CONFIGURED]}" == "yes" ]]; then
+      [[ "${RESULT[NOTARIZATION_STATUS]}" == "accepted" ]] || ok=no
+      [[ "${RESULT[STAPLING_STATUS]}" == "accepted" ]] || ok=no
+      [[ "${RESULT[SPCTL_ASSESSMENT]}" == "accepted" ]] || ok=no
+      [[ "${RESULT[FINAL_ARCHIVE_CREATED_AFTER_STAPLING]}" == "yes" ]] || ok=no
+    fi
   fi
 
   if [[ "$ok" == "yes" ]]; then
@@ -178,13 +242,13 @@ json_escape() {
   /usr/bin/python3 -c 'import json,sys; print(json.dumps(sys.argv[1]))' "$1"
 }
 
-identity_status() {
+identity_summary() {
   mkdir -p "$EVIDENCE_DIR"
   local output="$EVIDENCE_DIR/signing-identity-summary.txt"
   if ! /usr/bin/security find-identity -v -p codesigning >"$EVIDENCE_DIR/signing-identities.raw" 2>/dev/null; then
+    rm -f "$EVIDENCE_DIR/signing-identities.raw"
     print -r -- "developer-id-application-count=0" > "$output"
     print -r -- "developer-id-installer-count=0" >> "$output"
-    print -r -- unavailable
     return
   fi
   /usr/bin/awk '
@@ -196,7 +260,32 @@ identity_status() {
     }
   ' "$EVIDENCE_DIR/signing-identities.raw" > "$output"
   rm -f "$EVIDENCE_DIR/signing-identities.raw"
-  print -r -- available
+}
+
+identity_category_available() {
+  local category="$1"
+  identity_summary
+  local key
+  case "$category" in
+    application) key=developer-id-application-count ;;
+    installer) key=developer-id-installer-count ;;
+    *) print -r -- no; return ;;
+  esac
+  local count
+  count="$(/usr/bin/awk -F= -v key="$key" '$1 == key { print $2; found = 1 } END { if (!found) print 0 }' "$EVIDENCE_DIR/signing-identity-summary.txt")"
+  if [[ "$count" -gt 0 ]]; then
+    print -r -- yes
+  else
+    print -r -- no
+  fi
+}
+
+identity_status() {
+  if [[ "$(identity_category_available application)" == "yes" || "$(identity_category_available installer)" == "yes" ]]; then
+    print -r -- available
+  else
+    print -r -- unavailable
+  fi
 }
 
 inspect() {
@@ -206,7 +295,12 @@ inspect() {
   print -r -- "TESTED_HERMES_VERSION=$TESTED_HERMES_VERSION"
   print -r -- "MINIMUM_MACOS=$MINIMUM_MACOS"
   print -r -- "PACKAGE_TYPE=$PACKAGE_TYPE"
-  print -r -- "SIGNING_IDENTITY_STATUS=$(identity_status)"
+  print -r -- "APPLICATION_IDENTITY_CATEGORY_AVAILABLE=$(identity_category_available application)"
+  print -r -- "INSTALLER_IDENTITY_CATEGORY_AVAILABLE=$(identity_category_available installer)"
+  print -r -- "APPLICATION_IDENTITY_REQUIRED_FOR_SIGNED_MODE=$(application_identity_required_for_signed_mode "$PACKAGE_TYPE")"
+  print -r -- "INSTALLER_IDENTITY_REQUIRED_FOR_SIGNED_MODE=$(installer_identity_required_for_signed_mode "$PACKAGE_TYPE")"
+  print -r -- "NOTARIZATION_SUBMISSION_TYPE=$(notarization_submission_type_for_package "$PACKAGE_TYPE")"
+  print -r -- "STAPLING_TARGET=$(stapling_target_for_package "$PACKAGE_TYPE")"
   print -r -- "NOTARIZATION_CONFIGURED=$([[ "${HERMES_M14_010_NOTARIZE:-}" == "YES" ]] && print yes || print no)"
 }
 
@@ -410,7 +504,7 @@ create_archive_and_manifest() {
   find "$STAGING_DIR" -exec touch -h -t 198001010000 {} +
   (
     cd "$STAGING_DIR/.."
-    COPYFILE_DISABLE=1 /usr/bin/zip -X -q -r "$PACKAGE_ARCHIVE" "$(basename "$STAGING_DIR")"
+    /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$(basename "$STAGING_DIR")" "$PACKAGE_ARCHIVE"
   )
   (
     cd "$OUTPUT_DIR"
@@ -438,7 +532,12 @@ create_archive_and_manifest() {
   "buildConfiguration": "$BUILD_CONFIGURATION",
   "gitCommit": "$git_commit",
   "hardenedRuntime": $(json_escape "${RESULT[HARDENED_RUNTIME_STATUS]}"),
+  "identityRequirements": {
+    "application": $(json_escape "${RESULT[APPLICATION_IDENTITY_REQUIRED]}"),
+    "installer": $(json_escape "${RESULT[INSTALLER_IDENTITY_REQUIRED]}")
+  },
   "minimumMacOS": "$MINIMUM_MACOS",
+  "notarizationSubmissionType": $(json_escape "${RESULT[NOTARIZATION_SUBMISSION_TYPE]}"),
   "notarizationStatus": $(json_escape "${RESULT[NOTARIZATION_STATUS]}"),
   "packageType": "$PACKAGE_TYPE",
   "productVersion": "$PRODUCT_VERSION",
@@ -448,6 +547,12 @@ create_archive_and_manifest() {
     "unsupported": ["request-submission:transport.route-unsupported", "request-cancellation:transport.route-unsupported", "approval-response:transport.route-unsupported", "private-api-ws:not-claimed", "production-readiness:not-claimed"]
   },
   "signingCategory": $(json_escape "${RESULT[APP_SIGNING_STATUS]}"),
+  "signingStatus": {
+    "app": $(json_escape "${RESULT[APP_SIGNING_STATUS]}"),
+    "service": $(json_escape "${RESULT[SERVICE_SIGNING_STATUS]}"),
+    "installer": $(json_escape "${RESULT[INSTALLER_SIGNING_STATUS]}")
+  },
+  "staplingTarget": $(json_escape "${RESULT[STAPLING_TARGET]}"),
   "staplingStatus": $(json_escape "${RESULT[STAPLING_STATUS]}"),
   "tagTarget": "$TAG_TARGET",
   "testedHermesVersion": "$TESTED_HERMES_VERSION",
@@ -465,8 +570,10 @@ signing_category_for() {
     print -r -- developer-id-application
   elif [[ "$detail" == *"Signature=adhoc"* ]]; then
     print -r -- ad-hoc
-  elif [[ "$detail" == *"code object is not signed"* || "$detail" == *"invalid signature"* ]]; then
-    print -r -- unsigned
+  elif [[ "$detail" == *"invalid signature"* ]]; then
+    print -r -- invalid
+  elif [[ "$detail" == *"code object is not signed"* ]]; then
+    print -r -- unavailable
   else
     print -r -- unavailable
   fi
@@ -483,7 +590,13 @@ inspect_package() {
   scan_privacy || { RESULT[M14_010_REASON_CODE]=privacy.leak; finish_result; return 1; }
   RESULT[APP_SIGNING_STATUS]="$(signing_category_for "$APP_BUNDLE")"
   RESULT[SERVICE_SIGNING_STATUS]="$(signing_category_for "$SERVICE_EXEC")"
-  RESULT[INSTALLER_SIGNING_STATUS]=unsigned
+  if [[ "${RESULT[INSTALLER_IDENTITY_REQUIRED]}" == "yes" ]]; then
+    RESULT[INSTALLER_SIGNING_STATUS]=unsigned
+    RESULT[INSTALLER_IDENTITY_STATUS]=unavailable
+  else
+    RESULT[INSTALLER_SIGNING_STATUS]=not-applicable
+    RESULT[INSTALLER_IDENTITY_STATUS]=not-applicable
+  fi
   write_result
 }
 
@@ -511,6 +624,27 @@ build_unsigned() {
   finish_result
 }
 
+sign_release_code_inside_out() {
+  local application_identity="$1"
+  /usr/bin/codesign --force --sign "$application_identity" --timestamp --options runtime \
+    --entitlements "$ROOT_DIR/Packaging/Entitlements/HermesBridgeService.entitlements" "$SERVICE_EXEC" >/dev/null || return 1
+  /usr/bin/codesign --force --sign "$application_identity" --timestamp --options runtime \
+    "$SERVICE_BUNDLE" >/dev/null || return 1
+  /usr/bin/codesign --force --sign "$application_identity" --timestamp --options runtime \
+    "$STAGING_DIR/bin/HermesBridgeControl" >/dev/null || return 1
+  /usr/bin/codesign --force --sign "$application_identity" --timestamp --options runtime \
+    "$STAGING_DIR/bin/HermesBridgeServiceLifecycle" >/dev/null || return 1
+  /usr/bin/codesign --force --sign "$application_identity" --timestamp --options runtime \
+    --entitlements "$ROOT_DIR/Packaging/Entitlements/HermesBridgeApp.entitlements" "$APP_BUNDLE" >/dev/null || return 1
+}
+
+verify_release_code_signatures() {
+  /usr/bin/codesign --verify --strict --deep "$SERVICE_BUNDLE" >/dev/null || return 1
+  /usr/bin/codesign --verify --strict "$STAGING_DIR/bin/HermesBridgeControl" >/dev/null || return 1
+  /usr/bin/codesign --verify --strict "$STAGING_DIR/bin/HermesBridgeServiceLifecycle" >/dev/null || return 1
+  /usr/bin/codesign --verify --strict --deep "$APP_BUNDLE" >/dev/null || return 1
+}
+
 build_signed() {
   set_default_results
   RESULT[RELEASE_CONFIGURATION]=signed-notarized-release
@@ -522,21 +656,26 @@ build_signed() {
     return 2
   fi
   RESULT[EXPLICIT_OPT_IN_CONFIRMED]=yes
-  if [[ -z "${HERMES_RELEASE_APPLICATION_IDENTITY:-}" || -z "${HERMES_RELEASE_INSTALLER_IDENTITY:-}" ]]; then
+  if [[ -z "${HERMES_RELEASE_APPLICATION_IDENTITY:-}" ]]; then
     RESULT[M14_010_REASON_CODE]=blocked.signing-identity-missing
     finish_result
     return 2
   fi
+  if [[ "${RESULT[INSTALLER_IDENTITY_REQUIRED]}" == "yes" && -z "${HERMES_RELEASE_INSTALLER_IDENTITY:-}" ]]; then
+    RESULT[M14_010_REASON_CODE]=blocked.installer-signing-identity-missing
+    finish_result
+    return 2
+  fi
+  if [[ "${RESULT[INSTALLER_IDENTITY_REQUIRED]}" == "no" && -n "${HERMES_RELEASE_INSTALLER_IDENTITY:-}" ]]; then
+    print -u2 "warning: HERMES_RELEASE_INSTALLER_IDENTITY is not used for PACKAGE_TYPE=$PACKAGE_TYPE"
+  fi
   RESULT[SIGNING_IDENTITY_STATUS]=configured
+  RESULT[INSTALLER_IDENTITY_STATUS]="$(if [[ "${RESULT[INSTALLER_IDENTITY_REQUIRED]}" == "yes" ]]; then print -r -- configured; else print -r -- not-applicable; fi)"
   stage_payload || { RESULT[M14_010_REASON_CODE]=build.failed; finish_result; return 1; }
-  /usr/bin/codesign --force --sign "$HERMES_RELEASE_APPLICATION_IDENTITY" --timestamp --options runtime \
-    --entitlements "$ROOT_DIR/Packaging/Entitlements/HermesBridgeService.entitlements" "$SERVICE_EXEC" >/dev/null || {
+  sign_release_code_inside_out "$HERMES_RELEASE_APPLICATION_IDENTITY" || {
     RESULT[M14_010_REASON_CODE]=signature.invalid; finish_result; return 1
   }
-  /usr/bin/codesign --force --sign "$HERMES_RELEASE_APPLICATION_IDENTITY" --timestamp --options runtime \
-    --entitlements "$ROOT_DIR/Packaging/Entitlements/HermesBridgeApp.entitlements" "$APP_BUNDLE" >/dev/null || {
-    RESULT[M14_010_REASON_CODE]=signature.invalid; finish_result; return 1
-  }
+  verify_release_code_signatures || { RESULT[M14_010_REASON_CODE]=signature.verification-failed; finish_result; return 1; }
   validate_bundles || { RESULT[M14_010_REASON_CODE]=bundle.invalid; finish_result; return 1; }
   validate_architecture || { RESULT[M14_010_REASON_CODE]=architecture.invalid; finish_result; return 1; }
   validate_entitlements || { RESULT[M14_010_REASON_CODE]=entitlements.invalid; finish_result; return 1; }
@@ -545,7 +684,7 @@ build_signed() {
   scan_privacy || { RESULT[M14_010_REASON_CODE]=privacy.leak; finish_result; return 1; }
   RESULT[APP_SIGNING_STATUS]=developer-id-application
   RESULT[SERVICE_SIGNING_STATUS]=developer-id-application
-  RESULT[INSTALLER_SIGNING_STATUS]=developer-id-installer
+  RESULT[INSTALLER_SIGNING_STATUS]="$(if [[ "${RESULT[INSTALLER_IDENTITY_REQUIRED]}" == "yes" ]]; then print -r -- developer-id-installer; else print -r -- not-applicable; fi)"
   create_archive_and_manifest
   RESULT[PACKAGE_BUILT]=yes
   RESULT[ENVIRONMENT_RESTORED]=yes
@@ -555,6 +694,8 @@ build_signed() {
 notarize_release() {
   set_default_results
   RESULT[RELEASE_CONFIGURATION]=signed-notarized-release
+  RESULT[HARDENED_RUNTIME_STATUS]=enabled
+  RESULT[SIGNING_IDENTITY_STATUS]=configured
   if [[ "${HERMES_M14_010_NOTARIZE:-}" != "YES" ]]; then
     RESULT[M14_010_REASON_CODE]=blocked.notarization-opt-in-required
     RESULT[M14_010_RESULT]=BLOCKED
@@ -562,8 +703,15 @@ notarize_release() {
     return 2
   fi
   RESULT[NOTARIZATION_CONFIGURED]=yes
+  RESULT[INSTALLER_IDENTITY_STATUS]="$(if [[ "${RESULT[INSTALLER_IDENTITY_REQUIRED]}" == "yes" ]]; then print -r -- configured; else print -r -- not-applicable; fi)"
   [[ -f "$PACKAGE_ARCHIVE" ]] || {
     RESULT[M14_010_REASON_CODE]=blocked.package-missing
+    RESULT[M14_010_RESULT]=BLOCKED
+    write_result
+    return 2
+  }
+  [[ -d "$APP_BUNDLE" ]] || {
+    RESULT[M14_010_REASON_CODE]=blocked.app-bundle-missing
     RESULT[M14_010_RESULT]=BLOCKED
     write_result
     return 2
@@ -584,12 +732,27 @@ notarize_release() {
     finish_result
     return 1
   }
-  /usr/bin/xcrun stapler staple "$PACKAGE_ARCHIVE" >/dev/null || { RESULT[M14_010_REASON_CODE]=staple.failed; finish_result; return 1; }
-  /usr/bin/xcrun stapler validate "$PACKAGE_ARCHIVE" >/dev/null || { RESULT[M14_010_REASON_CODE]=staple.invalid; finish_result; return 1; }
-  /usr/sbin/spctl --assess --type open --verbose "$PACKAGE_ARCHIVE" >/dev/null || { RESULT[M14_010_REASON_CODE]=spctl.rejected; finish_result; return 1; }
+  /usr/bin/xcrun stapler staple "$APP_BUNDLE" >/dev/null || { RESULT[M14_010_REASON_CODE]=staple.failed; finish_result; return 1; }
+  /usr/bin/xcrun stapler validate "$APP_BUNDLE" >/dev/null || { RESULT[M14_010_REASON_CODE]=staple.invalid; finish_result; return 1; }
+  /usr/sbin/spctl --assess --type execute --verbose "$APP_BUNDLE" >/dev/null || { RESULT[M14_010_REASON_CODE]=spctl.rejected; finish_result; return 1; }
   RESULT[NOTARIZATION_STATUS]=accepted
   RESULT[STAPLING_STATUS]=accepted
   RESULT[SPCTL_ASSESSMENT]=accepted
+  RESULT[FINAL_ARCHIVE_CREATED_AFTER_STAPLING]=yes
+  RESULT[EXPLICIT_OPT_IN_CONFIRMED]=yes
+  RESULT[RELEASE_APP_BUILT]=yes
+  validate_bundles || { RESULT[M14_010_REASON_CODE]=bundle.invalid; finish_result; return 1; }
+  validate_architecture || { RESULT[M14_010_REASON_CODE]=architecture.invalid; finish_result; return 1; }
+  validate_entitlements || { RESULT[M14_010_REASON_CODE]=entitlements.invalid; finish_result; return 1; }
+  validate_package_contents || { RESULT[M14_010_REASON_CODE]=package.contents-invalid; finish_result; return 1; }
+  validate_uninstall_pairing || { RESULT[M14_010_REASON_CODE]=uninstall.invalid; finish_result; return 1; }
+  scan_privacy || { RESULT[M14_010_REASON_CODE]=privacy.leak; finish_result; return 1; }
+  RESULT[APP_SIGNING_STATUS]=developer-id-application
+  RESULT[SERVICE_SIGNING_STATUS]=developer-id-application
+  RESULT[INSTALLER_SIGNING_STATUS]="$(if [[ "${RESULT[INSTALLER_IDENTITY_REQUIRED]}" == "yes" ]]; then print -r -- developer-id-installer; else print -r -- not-applicable; fi)"
+  create_archive_and_manifest
+  RESULT[PACKAGE_BUILT]=yes
+  RESULT[ENVIRONMENT_RESTORED]=yes
   finish_result
 }
 

@@ -17,16 +17,22 @@
 
 ## Signed And Notarized Release
 
-1. Confirm Developer ID Application and Developer ID Installer identities are
-   available without printing identity names into release evidence.
+1. Confirm a Developer ID Application identity is available without printing
+   identity names into release evidence.
 2. Set `HERMES_RELEASE_APPLICATION_IDENTITY` explicitly.
-3. Set `HERMES_RELEASE_INSTALLER_IDENTITY` explicitly.
+3. Do not set `HERMES_RELEASE_INSTALLER_IDENTITY` for RC1 ZIP distribution;
+   Developer ID Installer is not used because `.pkg` output is intentionally
+   deferred.
 4. Run `HERMES_M14_010_ACCEPTANCE=YES Scripts/m14_010_rc1_release.sh build-signed`.
-5. Set `HERMES_M14_010_NOTARIZE=YES`.
-6. Provide either `HERMES_RELEASE_NOTARY_KEYCHAIN_PROFILE` or the explicit App
+5. Confirm the ZIP contains a signed app distribution bundle and does not claim
+   installer signing or a signed ZIP container.
+6. Set `HERMES_M14_010_NOTARIZE=YES`.
+7. Provide either `HERMES_RELEASE_NOTARY_KEYCHAIN_PROFILE` or the explicit App
    Store Connect API key environment inputs.
-7. Run `Scripts/m14_010_rc1_release.sh notarize`.
-8. Confirm notarization, stapling, and `spctl` assessment are accepted.
+8. Run `Scripts/m14_010_rc1_release.sh notarize`.
+9. Confirm notarization submitted the ZIP, stapling applied to the app bundle,
+   and the final distribution ZIP was recreated after stapling.
+10. Confirm `spctl` assessment is accepted for the stapled app.
 
 ## Manual GitHub Release Publication
 

@@ -18,6 +18,9 @@ final class HermesRC1PackagingTests: XCTestCase {
     "GET_TASK_ALLOW_ABSENT",
     "HARDENED_RUNTIME_STATUS",
     "SIGNING_IDENTITY_STATUS",
+    "APPLICATION_IDENTITY_REQUIRED",
+    "INSTALLER_IDENTITY_REQUIRED",
+    "INSTALLER_IDENTITY_STATUS",
     "APP_SIGNING_STATUS",
     "SERVICE_SIGNING_STATUS",
     "INSTALLER_SIGNING_STATUS",
@@ -27,7 +30,10 @@ final class HermesRC1PackagingTests: XCTestCase {
     "UNINSTALL_VALIDATED",
     "NOTARIZATION_CONFIGURED",
     "NOTARIZATION_STATUS",
+    "NOTARIZATION_SUBMISSION_TYPE",
     "STAPLING_STATUS",
+    "STAPLING_TARGET",
+    "FINAL_ARCHIVE_CREATED_AFTER_STAPLING",
     "SPCTL_ASSESSMENT",
     "SHA256_MANIFEST_CREATED",
     "RELEASE_MANIFEST_CREATED",
@@ -58,7 +64,7 @@ final class HermesRC1PackagingTests: XCTestCase {
     for key in resultKeys {
       XCTAssertTrue(script.contains(key), "missing \(key)")
     }
-    XCTAssertEqual(resultKeys.count, 36)
+    XCTAssertEqual(resultKeys.count, 42)
     XCTAssertEqual(Set(resultKeys).count, resultKeys.count)
   }
 
@@ -77,6 +83,97 @@ final class HermesRC1PackagingTests: XCTestCase {
     ] {
       XCTAssertTrue(script.contains(marker), marker)
     }
+  }
+
+  func testArtifactSpecificSigningPolicyModelsZipDmgAndPkg() throws {
+    let script = try read("Scripts/m14_010_rc1_release.sh")
+    let policy = try extractFunction("signing_policy_field", from: script)
+    let fixtures: [(packageType: String, application: String, installer: String, submission: String, staple: String)] = [
+      ("app-distribution-bundle", "yes", "no", "zip", "app-bundle"),
+      ("disk-image", "yes", "no", "disk-image", "disk-image"),
+      ("installer-package", "yes", "yes", "installer-package", "installer-package"),
+    ]
+
+    XCTAssertTrue(script.contains("application_identity_required_for_signed_mode()"))
+    XCTAssertTrue(script.contains("installer_identity_required_for_signed_mode()"))
+    XCTAssertTrue(script.contains("signing_policy_field \"$1\" application_identity_required"))
+    XCTAssertTrue(script.contains("signing_policy_field \"$1\" installer_identity_required"))
+    for fixture in fixtures {
+      XCTAssertTrue(policy.contains("\(fixture.packageType):application_identity_required) print -r -- \(fixture.application)"), fixture.packageType)
+      XCTAssertTrue(policy.contains("\(fixture.packageType):installer_identity_required) print -r -- \(fixture.installer)"), fixture.packageType)
+      XCTAssertTrue(policy.contains("\(fixture.packageType):notarization_submission_type) print -r -- \(fixture.submission)"), fixture.packageType)
+      XCTAssertTrue(policy.contains("\(fixture.packageType):stapling_target) print -r -- \(fixture.staple)"), fixture.packageType)
+    }
+  }
+
+  func testZipSignedModeRequiresOnlyApplicationIdentity() throws {
+    let script = try read("Scripts/m14_010_rc1_release.sh")
+    XCTAssertTrue(script.contains("if [[ -z \"${HERMES_RELEASE_APPLICATION_IDENTITY:-}\" ]]; then"))
+    XCTAssertTrue(script.contains("if [[ \"${RESULT[INSTALLER_IDENTITY_REQUIRED]}\" == \"yes\" && -z \"${HERMES_RELEASE_INSTALLER_IDENTITY:-}\" ]]; then"))
+    XCTAssertTrue(script.contains("warning: HERMES_RELEASE_INSTALLER_IDENTITY is not used for PACKAGE_TYPE=$PACKAGE_TYPE"))
+    XCTAssertTrue(script.contains("RESULT[INSTALLER_SIGNING_STATUS]=\"$(if [[ \"${RESULT[INSTALLER_IDENTITY_REQUIRED]}\" == \"yes\" ]]; then print -r -- developer-id-installer; else print -r -- not-applicable; fi)\""))
+    XCTAssertFalse(script.contains("-z \"${HERMES_RELEASE_APPLICATION_IDENTITY:-}\" || -z \"${HERMES_RELEASE_INSTALLER_IDENTITY:-}\""))
+    XCTAssertFalse(script.contains("productsign"))
+  }
+
+  func testPkgFixtureRequiresInstallerIdentityButZipDoesNot() throws {
+    let policy = try extractFunction("signing_policy_field", from: try read("Scripts/m14_010_rc1_release.sh"))
+    XCTAssertTrue(policy.contains("app-distribution-bundle:installer_identity_required) print -r -- no"))
+    XCTAssertTrue(policy.contains("installer-package:installer_identity_required) print -r -- yes"))
+    XCTAssertTrue(policy.contains("installer-package:application_identity_required) print -r -- yes"))
+  }
+
+  func testZipFlowSignsNestedCodeBeforeOuterAppWithHardenedRuntime() throws {
+    let script = try read("Scripts/m14_010_rc1_release.sh")
+    let signingFunction = try extractFunction("sign_release_code_inside_out", from: script)
+    let serviceSign = try XCTUnwrap(signingFunction.range(of: "$SERVICE_EXEC"))
+    let serviceBundleSign = try XCTUnwrap(signingFunction.range(of: "$SERVICE_BUNDLE"))
+    let appSign = try XCTUnwrap(signingFunction.range(of: "$APP_BUNDLE"))
+    XCTAssertLessThan(serviceSign.lowerBound, appSign.lowerBound)
+    XCTAssertLessThan(serviceBundleSign.lowerBound, appSign.lowerBound)
+    XCTAssertTrue(signingFunction.contains("--options runtime"))
+    XCTAssertTrue(script.contains("RESULT[HARDENED_RUNTIME_STATUS]=enabled"))
+    XCTAssertTrue(script.contains("codesign --verify --strict --deep \"$APP_BUNDLE\""))
+  }
+
+  func testNotarizationSubmitsZipStaplesAppAndRecreatesArchive() throws {
+    let script = try read("Scripts/m14_010_rc1_release.sh")
+    XCTAssertTrue(script.contains("notarytool submit \"$PACKAGE_ARCHIVE\""))
+    XCTAssertTrue(script.contains("stapler staple \"$APP_BUNDLE\""))
+    XCTAssertTrue(script.contains("stapler validate \"$APP_BUNDLE\""))
+    XCTAssertFalse(script.contains("stapler staple \"$PACKAGE_ARCHIVE\""))
+    XCTAssertTrue(script.contains("RESULT[FINAL_ARCHIVE_CREATED_AFTER_STAPLING]=yes"))
+    XCTAssertTrue(script.contains("/usr/bin/ditto -c -k --sequesterRsrc --keepParent"))
+  }
+
+  func testResultAndManifestDoNotClaimInstallerSigningForZip() throws {
+    let script = try read("Scripts/m14_010_rc1_release.sh")
+    XCTAssertTrue(script.contains("APP_SIGNING_STATUS unavailable"))
+    XCTAssertTrue(script.contains("SERVICE_SIGNING_STATUS unavailable"))
+    XCTAssertTrue(script.contains("print -r -- invalid"))
+    XCTAssertTrue(script.contains("print -r -- unavailable"))
+    XCTAssertTrue(script.contains("INSTALLER_SIGNING_STATUS \"$(if [[ \"$(installer_identity_required_for_signed_mode \"$PACKAGE_TYPE\")\" == \"yes\" ]]; then print -r -- unsigned; else print -r -- not-applicable; fi)\""))
+    XCTAssertTrue(script.contains("\"installer\": $(json_escape \"${RESULT[INSTALLER_IDENTITY_REQUIRED]}\")"))
+    XCTAssertTrue(script.contains("\"installer\": $(json_escape \"${RESULT[INSTALLER_SIGNING_STATUS]}\")"))
+    XCTAssertTrue(script.contains("\"notarizationSubmissionType\": $(json_escape \"${RESULT[NOTARIZATION_SUBMISSION_TYPE]}\")"))
+    XCTAssertTrue(script.contains("\"staplingTarget\": $(json_escape \"${RESULT[STAPLING_TARGET]}\")"))
+    XCTAssertTrue(script.contains("INSTALLER_IDENTITY_STATUS]=\"$(if [[ \"${RESULT[INSTALLER_IDENTITY_REQUIRED]}\" == \"yes\" ]]; then print -r -- configured; else print -r -- not-applicable; fi)\""))
+    XCTAssertFalse(script.contains("signed ZIP container"))
+    XCTAssertFalse(script.contains("productsign"))
+  }
+
+  func testInspectReportsRequirementsWithoutIdentityNamesOrHashes() throws {
+    let script = try read("Scripts/m14_010_rc1_release.sh")
+    XCTAssertTrue(script.contains("APPLICATION_IDENTITY_CATEGORY_AVAILABLE=$(identity_category_available application)"))
+    XCTAssertTrue(script.contains("INSTALLER_IDENTITY_CATEGORY_AVAILABLE=$(identity_category_available installer)"))
+    XCTAssertTrue(script.contains("APPLICATION_IDENTITY_REQUIRED_FOR_SIGNED_MODE=$(application_identity_required_for_signed_mode \"$PACKAGE_TYPE\")"))
+    XCTAssertTrue(script.contains("INSTALLER_IDENTITY_REQUIRED_FOR_SIGNED_MODE=$(installer_identity_required_for_signed_mode \"$PACKAGE_TYPE\")"))
+    XCTAssertTrue(script.contains("NOTARIZATION_SUBMISSION_TYPE=$(notarization_submission_type_for_package \"$PACKAGE_TYPE\")"))
+    XCTAssertTrue(script.contains("STAPLING_TARGET=$(stapling_target_for_package \"$PACKAGE_TYPE\")"))
+    XCTAssertTrue(script.contains("developer-id-application-count"))
+    XCTAssertTrue(script.contains("developer-id-installer-count"))
+    XCTAssertFalse(script.contains("SHA-1"))
+    XCTAssertFalse(script.contains("certificate hash"))
   }
 
   func testEntitlementPolicyRejectsDebugAndBroadRuntimeExceptions() throws {
@@ -158,6 +255,13 @@ final class HermesRC1PackagingTests: XCTestCase {
 
   private func read(_ relativePath: String) throws -> String {
     try String(contentsOf: repoRoot().appendingPathComponent(relativePath), encoding: .utf8)
+  }
+
+  private func extractFunction(_ name: String, from script: String) throws -> String {
+    let start = try XCTUnwrap(script.range(of: "\(name)() {"))
+    let remainder = script[start.lowerBound...]
+    let end = try XCTUnwrap(remainder.range(of: "\n}\n"))
+    return String(remainder[..<end.upperBound])
   }
 
   private func repoRoot() -> URL {
