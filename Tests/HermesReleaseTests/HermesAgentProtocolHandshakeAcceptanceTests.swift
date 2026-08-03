@@ -62,6 +62,7 @@ final class HermesAgentProtocolHandshakeAcceptanceTests: XCTestCase {
     XCTAssertTrue(inspect.contains("ephemeral_credential_required=no"))
     XCTAssertTrue(inspect.contains("request_method_category=session-create"))
     XCTAssertTrue(inspect.contains("safe_synthetic_request_available=yes"))
+    XCTAssertTrue(inspect.contains("safe_synthetic_request_available=no"))
     XCTAssertTrue(inspect.contains("status_mechanism=session-status"))
     XCTAssertTrue(inspect.contains("blocking_reason="))
     XCTAssertFalse(inspect.contains("write_artifacts"))
@@ -93,6 +94,8 @@ final class HermesAgentProtocolHandshakeAcceptanceTests: XCTestCase {
       "REQUEST_RPC_ERROR_CODE",
       "REQUEST_SUBMISSION_DURATION_MILLISECONDS",
       "REQUEST_REASON_CODE",
+      "REQUEST_SUBMISSION_ATTEMPTED",
+      "REQUEST_SUBMISSION_STATUS",
       "REQUEST_IDENTITY_CAPTURED",
       "CANCEL_TARGET_IDENTITY_MATCHED",
       "APPROVAL_CAPABILITY",
@@ -130,6 +133,30 @@ final class HermesAgentProtocolHandshakeAcceptanceTests: XCTestCase {
     XCTAssertFalse(exercise.contains("open -a"))
   }
 
+  func testNotRequiredAuthenticationCreatesNoCredentialOrAuthQuery() throws {
+    let script = try read(scriptPath)
+    let discover = try extractFunction("discover_protocol", from: script)
+    let exercise = try extractFunction("exercise_protocol", from: script)
+
+    XCTAssertTrue(discover.contains("authentication_state=not-required"))
+    XCTAssertTrue(discover.contains("RESULT[EPHEMERAL_CREDENTIAL_ISOLATED]=skip"))
+    XCTAssertTrue(discover.contains("RESULT[REQUEST_AUTHENTICATION_MODE]=none"))
+    XCTAssertTrue(exercise.contains("if [[ \"$auth_mode\" == \"ephemeral\" ]]; then"))
+    XCTAssertTrue(exercise.contains("target = \"/api/ws\" if auth_mode == \"none\" else"))
+  }
+
+  func testNoSafeRequestProducesSupportedUnexercisedWithoutSubmission() throws {
+    let script = try read(scriptPath)
+    let run = try extractFunction("run_acceptance", from: script)
+
+    XCTAssertTrue(script.contains("safe_synthetic_request_available()"))
+    XCTAssertTrue(script.contains("sendTyped\\(method: \"session\\.create\", params: EmptyParams\\(\\)\\)"))
+    XCTAssertTrue(run.contains("protocol.safe-request-unavailable"))
+    XCTAssertTrue(run.contains("RESULT[REQUEST_CAPABILITY]=supported-unexercised"))
+    XCTAssertTrue(run.contains("RESULT[REQUEST_SUBMISSION_ATTEMPTED]=no"))
+    XCTAssertTrue(run.contains("RESULT[M14_008_RESULT]=PARTIAL"))
+  }
+
   func testApprovalIsSupportedUnexercisedWithoutHarmlessTrigger() throws {
     let exercise = try extractFunction("exercise_protocol", from: try read(scriptPath))
 
@@ -164,6 +191,33 @@ final class HermesAgentProtocolHandshakeAcceptanceTests: XCTestCase {
     XCTAssertTrue(validate.contains("Sensitive result value leaked: key-category="))
   }
 
+  func testScannerDetectsSecretValuesButDoesNotPrintThem() throws {
+    let validate = try extractFunction("validate_result_contract", from: try read(scriptPath))
+
+    XCTAssertTrue(validate.contains("sensitive_names"))
+    XCTAssertTrue(validate.contains("meaningful_secret_shape"))
+    XCTAssertTrue(validate.contains("rule=high-entropy-shape"))
+    XCTAssertTrue(validate.contains("key-category="))
+    XCTAssertFalse(validate.contains("normalized_value}"))
+    XCTAssertFalse(validate.contains("value leaked: {"))
+  }
+
+  func testRequestDiagnosticsArePrivacySafeAndDeterministic() throws {
+    let writer = try extractFunction("write_artifacts", from: try read(scriptPath))
+
+    XCTAssertTrue(writer.contains("\"transport\": result.get(\"REQUEST_TRANSPORT\""))
+    XCTAssertTrue(writer.contains("\"authenticationMode\": result.get(\"REQUEST_AUTHENTICATION_MODE\""))
+    XCTAssertTrue(writer.contains("\"connectionAttempted\": result.get(\"REQUEST_CONNECTION_ATTEMPTED\""))
+    XCTAssertTrue(writer.contains("\"connectionStatus\": result.get(\"REQUEST_CONNECTION_STATUS\""))
+    XCTAssertTrue(writer.contains("\"rpcMethodCategory\": result.get(\"REQUEST_RPC_METHOD_CATEGORY\""))
+    XCTAssertTrue(writer.contains("\"rpcResponseCategory\": result.get(\"REQUEST_RPC_RESPONSE_CATEGORY\""))
+    XCTAssertTrue(writer.contains("\"rpcErrorCode\": result.get(\"REQUEST_RPC_ERROR_CODE\""))
+    XCTAssertTrue(writer.contains("\"submissionDurationMilliseconds\""))
+    XCTAssertTrue(writer.contains("\"reasonCode\": result.get(\"REQUEST_REASON_CODE\""))
+    XCTAssertFalse(writer.contains("raw WebSocket"))
+    XCTAssertFalse(writer.contains("headers"))
+  }
+
   func testExactShutdownReuseAndNoBroadStop() throws {
     let script = try read(scriptPath)
     let cleanup = try extractFunction("cleanup_owned_process", from: script)
@@ -186,6 +240,7 @@ final class HermesAgentProtocolHandshakeAcceptanceTests: XCTestCase {
     XCTAssertTrue(cleanup.contains("rm -rf \"$RUNTIME_ROOT\""))
     XCTAssertFalse(cleanup.contains("rm -rf \"$ARTIFACT_DIR\""))
     XCTAssertTrue(finalize.contains("rm -f \"$TOKEN_FILE\""))
+    XCTAssertTrue(finalize.contains("\"$RUNTIME_ROOT/request-probe.stderr\""))
     XCTAssertTrue(finalize.contains("SUPERVISED_PROCESS_REAL_HOME_ACCESS]=no"))
     XCTAssertTrue(finalize.contains("ENVIRONMENT_RESTORED]=yes"))
   }

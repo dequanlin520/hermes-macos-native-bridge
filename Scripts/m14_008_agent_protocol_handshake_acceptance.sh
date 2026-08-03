@@ -347,6 +347,12 @@ Path(sys.argv[2]).write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n
 PY
 }
 
+safe_synthetic_request_available() {
+  local version="$1"
+  [[ "$version" == 0.18.* ]] || return 1
+  /usr/bin/grep -Eq 'sendTyped\(method: "session\.create", params: EmptyParams\(\)\)' "$ROOT_DIR/Sources/HermesRuntimeFoundation/HermesProtocolClient.swift"
+}
+
 discover_protocol() {
   local version="$1" auth_required="$2" auth_mode="$3" authentication_state
   RESULT[PROTOCOL_METADATA_DISCOVERED]=yes
@@ -422,7 +428,7 @@ PY
 }
 
 exercise_protocol() {
-  local port="$1" auth_mode="${2:-none}" token="" start_ms end_ms
+  local port="$1" auth_mode="${2:-none}" token="" start_ms end_ms probe_status probe_error request_reason
   if [[ "$auth_mode" == "ephemeral" ]]; then
     create_token
     token="$(cat "$TOKEN_FILE")"
@@ -435,7 +441,7 @@ import time
 print(int(time.time() * 1000))
 PY
 )"
-  /usr/bin/python3 - "$port" "$token" "$auth_mode" "$REQUEST_EVIDENCE_FILE.tmp" <<'PY'
+  /usr/bin/python3 - "$port" "$token" "$auth_mode" "$REQUEST_EVIDENCE_FILE.tmp" <<'PY' 2>"$RUNTIME_ROOT/request-probe.stderr"
 import base64
 import hashlib
 import json
@@ -562,6 +568,7 @@ Path(out).write_text(json.dumps({
     "rawIdentityOmitted": True
 }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 PY
+  probe_status="$?"
   end_ms="$(/usr/bin/python3 - <<'PY'
 import time
 print(int(time.time() * 1000))
@@ -570,7 +577,7 @@ PY
   if [[ "$start_ms" == <-> && "$end_ms" == <-> && "$end_ms" -ge "$start_ms" ]]; then
     RESULT[REQUEST_SUBMISSION_DURATION_MILLISECONDS]=$(( end_ms - start_ms ))
   fi
-  case "$?" in
+  case "$probe_status" in
     0)
       RESULT[REQUEST_CONNECTION_STATUS]=connected
       RESULT[REQUEST_RPC_RESPONSE_CATEGORY]=success
@@ -595,13 +602,33 @@ PY
       RESULT[M14_008_REASON_CODE]=none
       ;;
     *)
+      probe_error="$(/usr/bin/awk -F'RuntimeError: ' '/RuntimeError: / {print $2}' "$RUNTIME_ROOT/request-probe.stderr" 2>/dev/null | /usr/bin/tail -n 1)"
+      request_reason="$(print -r -- "${probe_error:-request.submission-failed}" | /usr/bin/tr -cd 'A-Za-z0-9._-' | /usr/bin/cut -c1-96)"
+      [[ -n "$request_reason" ]] || request_reason=request.submission-failed
       RESULT[REQUEST_CONNECTION_STATUS]=failed
-      RESULT[REQUEST_RPC_RESPONSE_CATEGORY]=connection-failed
+      case "$request_reason" in
+        protocol.rpc-error)
+          RESULT[REQUEST_CONNECTION_STATUS]=connected
+          RESULT[REQUEST_RPC_RESPONSE_CATEGORY]=rpc-error
+          ;;
+        protocol.request-timeout)
+          RESULT[REQUEST_RPC_RESPONSE_CATEGORY]=timeout
+          ;;
+        request.connection-failed|protocol.websocket-closed|protocol.reconnect-failed)
+          RESULT[REQUEST_RPC_RESPONSE_CATEGORY]=connection-failed
+          ;;
+        request.identity-missing)
+          RESULT[REQUEST_RPC_RESPONSE_CATEGORY]=malformed
+          ;;
+        *)
+          RESULT[REQUEST_RPC_RESPONSE_CATEGORY]=unknown
+          ;;
+      esac
       RESULT[REQUEST_RPC_ERROR_CODE]=unknown
-      RESULT[REQUEST_REASON_CODE]=request.connection-failed
+      RESULT[REQUEST_REASON_CODE]="$request_reason"
       RESULT[REQUEST_SUBMISSION_STATUS]=failed
       RESULT[M14_008_RESULT]=FAIL
-      RESULT[M14_008_REASON_CODE]=request.submission-failed
+      RESULT[M14_008_REASON_CODE]="$request_reason"
       ;;
   esac
 }
@@ -623,7 +650,7 @@ cleanup_owned_process() {
 
 finalize_cleanup_evidence() {
   local pid
-  rm -f "$TOKEN_FILE" "$RUNTIME_ROOT/status.json" "$RUNTIME_ROOT/openapi.json" "$REQUEST_EVIDENCE_FILE.tmp"
+  rm -f "$TOKEN_FILE" "$RUNTIME_ROOT/status.json" "$RUNTIME_ROOT/openapi.json" "$REQUEST_EVIDENCE_FILE.tmp" "$RUNTIME_ROOT/request-probe.stderr"
   RESULT[ENVIRONMENT_RESTORED]=yes
   RESULT[SUPERVISED_PROCESS_REAL_HOME_ACCESS]=no
   if [[ ! -f "$OWNED_IDENTITY_FILE" ]]; then
@@ -757,7 +784,12 @@ PY
       ;;
   esac
   print -r -- "request_method_category=session-create"
-  print -r -- "safe_synthetic_request_available=yes"
+  if safe_synthetic_request_available "$descriptor_version"; then
+    print -r -- "safe_synthetic_request_available=yes"
+  else
+    print -r -- "safe_synthetic_request_available=no"
+    [[ "$blocking" == "none" ]] && blocking="protocol.safe-request-unavailable"
+  fi
   print -r -- "status_mechanism=session-status"
   print -r -- "cancel_exercisability=if-session-remains-addressable"
   print -r -- "approval_exercisability=supported-unexercised-without-harmless-trigger"
@@ -840,6 +872,19 @@ run_acceptance() {
     RESULT[M14_008_RESULT]=UNSUPPORTED
     RESULT[M14_008_REASON_CODE]=protocol.request-route-unsupported
     RESULT[REQUEST_REASON_CODE]=protocol.request-route-unsupported
+  elif ! safe_synthetic_request_available "${RESULT[PROTOCOL_VERSION]}"; then
+    RESULT[REQUEST_CAPABILITY]=supported-unexercised
+    RESULT[REQUEST_AUTHENTICATION_MODE]="${RESULT[REQUEST_AUTHENTICATION_MODE]:-unknown}"
+    RESULT[REQUEST_CONNECTION_ATTEMPTED]=no
+    RESULT[REQUEST_CONNECTION_STATUS]=not-attempted
+    RESULT[REQUEST_RPC_METHOD_CATEGORY]=session-create
+    RESULT[REQUEST_RPC_RESPONSE_CATEGORY]=unknown
+    RESULT[REQUEST_RPC_ERROR_CODE]=none
+    RESULT[REQUEST_REASON_CODE]=protocol.safe-request-unavailable
+    RESULT[REQUEST_SUBMISSION_ATTEMPTED]=no
+    RESULT[REQUEST_SUBMISSION_STATUS]=not-attempted
+    RESULT[M14_008_RESULT]=PARTIAL
+    RESULT[M14_008_REASON_CODE]=protocol.safe-request-unavailable
   else
     exercise_protocol "$port" "${RESULT[REQUEST_AUTHENTICATION_MODE]}"
   fi

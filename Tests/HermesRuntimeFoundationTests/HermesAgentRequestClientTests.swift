@@ -35,6 +35,49 @@ final class HermesAgentRequestClientTests: XCTestCase {
     XCTAssertEqual(service.createdSessions, 1)
   }
 
+  func testNotRequiredFactoryCreatesNoCredentialAuthentication() throws {
+    let configured = HermesAgentRequestClientFactory.clientDescriptor(
+      for: descriptor(authenticationState: .notRequired),
+      token: nil
+    )
+    let authentication = HermesAgentRequestClientFactory.protocolAuthentication(
+      for: configured,
+      token: nil
+    )
+
+    XCTAssertEqual(configured.authenticationState, .notRequired)
+    XCTAssertEqual(authentication, .none)
+  }
+
+  func testRequiredAvailableFactoryUsesIsolatedCredential() throws {
+    let token = HermesBackendSessionToken(rawValue: "fixture-token")
+    let configured = HermesAgentRequestClientFactory.clientDescriptor(
+      for: descriptor(authenticationState: .requiredAvailable),
+      token: token
+    )
+    let authentication = HermesAgentRequestClientFactory.protocolAuthentication(
+      for: configured,
+      token: token
+    )
+
+    XCTAssertEqual(configured.authenticationState, .requiredAvailable)
+    XCTAssertEqual(authentication, .loopbackToken(token))
+  }
+
+  func testRequiredAvailableWithoutTokenBecomesUnavailableBeforeRequest() async {
+    let base = descriptor(authenticationState: .requiredAvailable)
+    let configured = HermesAgentRequestClientFactory.clientDescriptor(for: base, token: nil)
+    let service = FakeRequestService()
+    let client = HermesAgentRequestClient(descriptor: configured, serviceFactory: { service })
+
+    await XCTAssertThrowsAgentProtocolAsyncError(try await client.submitSafeSyntheticRequest()) {
+      XCTAssertEqual(($0 as? HermesAgentProtocolError)?.reasonCode, "protocol.authentication-unavailable")
+    }
+    XCTAssertEqual(configured.authenticationState, .requiredUnavailable)
+    XCTAssertFalse(service.connected)
+    XCTAssertEqual(service.createdSessions, 0)
+  }
+
   func testRequiredUnavailableBlocksBeforeRequest() async {
     let service = FakeRequestService()
     let client = HermesAgentRequestClient(
@@ -87,6 +130,34 @@ final class HermesAgentRequestClientTests: XCTestCase {
     await XCTAssertThrowsAgentProtocolAsyncError(try await client.submitSafeSyntheticRequest()) {
       XCTAssertEqual(($0 as? HermesAgentProtocolError)?.reasonCode, "request.identity-missing")
     }
+  }
+
+  func testInvalidSessionCreatePayloadRejectedBeforeTransmission() async {
+    let service = FakeRequestService()
+    let client = HermesAgentRequestClient(
+      descriptor: descriptor(protocolVersion: "0.17.9"),
+      serviceFactory: { service }
+    )
+
+    await XCTAssertThrowsAgentProtocolAsyncError(try await client.submitSafeSyntheticRequest()) {
+      XCTAssertEqual(($0 as? HermesAgentProtocolError)?.reasonCode, "protocol.safe-request-unavailable")
+    }
+    XCTAssertFalse(service.connected)
+    XCTAssertEqual(service.createdSessions, 0)
+  }
+
+  func testHarmlessSupportedRequestFixture() async throws {
+    let service = FakeRequestService(statusOutputs: ["idle"])
+    let client = HermesAgentRequestClient(
+      descriptor: descriptor(protocolVersion: "0.18.2", authenticationState: .notRequired),
+      serviceFactory: { service }
+    )
+
+    let request = try await client.submitSafeSyntheticRequest()
+
+    XCTAssertEqual(request.identity.rawValue, "session-1")
+    XCTAssertTrue(service.connected)
+    XCTAssertEqual(service.createdSessions, 1)
   }
 
   func testStatusStateMapping() async throws {
@@ -214,13 +285,14 @@ final class HermesAgentRequestClientTests: XCTestCase {
   }
 
   private func descriptor(
+    protocolVersion: String = "0.18.2",
     approvalStatus: HermesAgentProtocolCapabilityStatus = .supportedUnexercised,
     authenticationState: HermesAgentAuthenticationState = .requiredAvailable
   ) -> HermesAgentProtocolDescriptor {
     let requiresAuth = authenticationState != .notRequired && authenticationState != .unknown
     return HermesAgentProtocolDescriptor(
       protocolFamily: "hermes-jsonrpc-websocket",
-      protocolVersion: "0.18.2",
+      protocolVersion: protocolVersion,
       request: HermesAgentProtocolCapability(
         status: .supportedUnexercised,
         routeCategory: "jsonrpc-websocket-session-create",

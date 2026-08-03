@@ -70,6 +70,30 @@ final class HermesAgentProtocolDescriptorTests: XCTestCase {
     XCTAssertEqual(descriptor.authenticationState, .notRequired)
   }
 
+  func testAuthenticationStringYesMapsToTypedRequiredAvailable() throws {
+    let status = Data(
+      #"{"version":"0.18.2","auth_required":"yes","auth_mode":"loopback_token","desktop_contract":3,"gateway_running":true}"#.utf8
+    )
+
+    let descriptor = try HermesAgentProtocolDescriptor.discover(statusData: status, openAPIMetadataData: nil)
+
+    XCTAssertTrue(descriptor.authenticationRequired)
+    XCTAssertEqual(descriptor.authenticationCategory, "loopback_token")
+    XCTAssertEqual(descriptor.authenticationState, .requiredAvailable)
+  }
+
+  func testAuthenticationUnknownBlocksTypedState() throws {
+    let status = Data(
+      #"{"version":"0.18.2","auth_required":"maybe","desktop_contract":3,"gateway_running":true}"#.utf8
+    )
+
+    let descriptor = try HermesAgentProtocolDescriptor.discover(statusData: status, openAPIMetadataData: nil)
+
+    XCTAssertFalse(descriptor.authenticationRequired)
+    XCTAssertEqual(descriptor.authenticationCategory, "unknown")
+    XCTAssertEqual(descriptor.authenticationState, .unknown)
+  }
+
   func testMalformedJSONRejected() {
     XCTAssertThrowsError(
       try HermesAgentProtocolDescriptor.discover(statusData: Data("{".utf8), openAPIMetadataData: nil)

@@ -127,15 +127,22 @@ public struct HermesAgentProtocolDescriptor: Codable, Equatable, Sendable {
     let cancelSupported = hasWebSocket && implementationMethods.contains("session.interrupt")
     let approvalSupported = hasWebSocket && implementationMethods.contains("approval.respond")
     let version = statusObject["version"] as? String ?? "unknown"
-    let authRequired = (statusObject["auth_required"] as? Bool) ?? false
+    let authRequirement = parseAuthenticationRequirement(statusObject["auth_required"])
+    let authRequired = authRequirement == .required
     let authMode = statusObject["auth_mode"] as? String
-    let authCategory = authRequired ? (authMode ?? "required-unspecified") : "none"
-    let authenticationState: HermesAgentAuthenticationState =
-      if authRequired {
-        authMode == "loopback_token" ? .requiredAvailable : .requiredUnavailable
-      } else {
-        .notRequired
-      }
+    let authCategory: String
+    let authenticationState: HermesAgentAuthenticationState
+    switch authRequirement {
+    case .notRequired:
+      authCategory = "none"
+      authenticationState = .notRequired
+    case .required:
+      authCategory = authMode ?? "required-unspecified"
+      authenticationState = authMode == "loopback_token" ? .requiredAvailable : .requiredUnavailable
+    case .unknown:
+      authCategory = "unknown"
+      authenticationState = .unknown
+    }
 
     return HermesAgentProtocolDescriptor(
       protocolFamily: hasWebSocket ? "hermes-jsonrpc-websocket" : "hermes-http-status",
@@ -193,6 +200,25 @@ public struct HermesAgentProtocolDescriptor: Codable, Equatable, Sendable {
     )
   }
 
+  public func withAuthenticationState(
+    _ state: HermesAgentAuthenticationState
+  ) -> HermesAgentProtocolDescriptor {
+    HermesAgentProtocolDescriptor(
+      protocolFamily: protocolFamily,
+      protocolVersion: protocolVersion,
+      request: request,
+      status: status,
+      cancel: cancel,
+      approval: approval,
+      authenticationRequired: state.resultAuthenticationRequired == "yes",
+      authenticationCategory: state == .notRequired ? "none" : authenticationCategory,
+      ephemeralCredentialIsolated: state == .requiredAvailable,
+      authenticationState: state,
+      streamingModesAdvertised: streamingModesAdvertised,
+      metadataSource: metadataSource
+    )
+  }
+
   private static func authenticationState(
     required: Bool,
     category: String,
@@ -201,6 +227,32 @@ public struct HermesAgentProtocolDescriptor: Codable, Equatable, Sendable {
     if !required { return .notRequired }
     if category == "loopback_token" && isolated { return .requiredAvailable }
     return .requiredUnavailable
+  }
+
+  private enum AuthenticationRequirement {
+    case notRequired
+    case required
+    case unknown
+  }
+
+  private static func parseAuthenticationRequirement(_ rawValue: Any?) -> AuthenticationRequirement {
+    switch rawValue {
+    case let value as Bool:
+      return value ? .required : .notRequired
+    case let value as String:
+      switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+      case "no", "false", "0":
+        return .notRequired
+      case "yes", "true", "1":
+        return .required
+      default:
+        return .unknown
+      }
+    case .none:
+      return .unknown
+    default:
+      return .unknown
+    }
   }
 
   private func replacing(
@@ -400,18 +452,19 @@ public struct HermesAgentRequestClientFactory: Sendable {
     endpoint: HermesBackendEndpoint,
     token: HermesBackendSessionToken? = nil
   ) -> HermesAgentRequestClient<HermesProtocolClient> {
-    HermesAgentRequestClient(
-      descriptor: descriptor,
+    let clientDescriptor = Self.clientDescriptor(for: descriptor, token: token)
+    return HermesAgentRequestClient(
+      descriptor: clientDescriptor,
       serviceFactory: {
         HermesProtocolClient(
           endpoint: endpoint,
-          authentication: Self.protocolAuthentication(for: descriptor, token: token)
+          authentication: Self.protocolAuthentication(for: clientDescriptor, token: token)
         )
       }
     )
   }
 
-  private static func protocolAuthentication(
+  public static func protocolAuthentication(
     for descriptor: HermesAgentProtocolDescriptor,
     token: HermesBackendSessionToken?
   ) -> HermesProtocolClientAuthentication {
@@ -424,6 +477,16 @@ public struct HermesAgentRequestClientFactory: Sendable {
       }
       return .none
     }
+  }
+
+  public static func clientDescriptor(
+    for descriptor: HermesAgentProtocolDescriptor,
+    token: HermesBackendSessionToken?
+  ) -> HermesAgentProtocolDescriptor {
+    guard descriptor.authenticationState == .requiredAvailable, token == nil else {
+      return descriptor
+    }
+    return descriptor.withAuthenticationState(.requiredUnavailable)
   }
 }
 
@@ -449,6 +512,9 @@ public final class HermesAgentRequestClient<Service: HermesAgentRequestProtocolS
   public func submitSafeSyntheticRequest() async throws -> HermesAgentRequestDescriptor {
     guard descriptor.request.status != .unsupported else {
       throw HermesAgentProtocolError.unsupported("protocol.request-route-unsupported")
+    }
+    guard HermesAgentSafeSyntheticRequestContract.isAvailable(for: descriptor) else {
+      throw HermesAgentProtocolError.unsupported("protocol.safe-request-unavailable")
     }
     switch descriptor.authenticationState {
     case .notRequired, .requiredAvailable:
@@ -527,6 +593,15 @@ public final class HermesAgentRequestClient<Service: HermesAgentRequestProtocolS
 
   public func close() async {
     await service.close()
+  }
+}
+
+public enum HermesAgentSafeSyntheticRequestContract {
+  public static func isAvailable(for descriptor: HermesAgentProtocolDescriptor) -> Bool {
+    descriptor.protocolFamily == "hermes-jsonrpc-websocket"
+      && descriptor.protocolVersion.hasPrefix("0.18.")
+      && descriptor.request.routeCategory == "jsonrpc-websocket-session-create"
+      && descriptor.request.status != .unsupported
   }
 }
 
