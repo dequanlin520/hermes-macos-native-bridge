@@ -17,7 +17,7 @@ public struct HermesBackendSessionToken: Equatable, Hashable, Sendable, CustomSt
     return HermesBackendSessionToken(rawValue: Data(bytes).base64URLEncodedString())
   }
 
-  init(rawValue: String) {
+  public init(rawValue: String) {
     self.rawValue = rawValue
   }
 

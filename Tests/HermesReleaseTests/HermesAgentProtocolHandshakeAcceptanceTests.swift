@@ -13,9 +13,10 @@ final class HermesAgentProtocolHandshakeAcceptanceTests: XCTestCase {
     let script = try read("Scripts/m14_008_agent_protocol_handshake_acceptance.sh")
     let mapper = try extractFunction("result_exit_code", from: script)
 
-    XCTAssertTrue(script.contains("usage: $SCRIPT_NAME inspect|inspect-request-plan|run|cleanup"))
+    XCTAssertTrue(script.contains("usage: $SCRIPT_NAME inspect|inspect-request-plan|inspect-transport-plan|run|cleanup"))
     XCTAssertTrue(script.contains("inspect)"))
     XCTAssertTrue(script.contains("inspect-request-plan)"))
+    XCTAssertTrue(script.contains("inspect-transport-plan)"))
     XCTAssertTrue(script.contains("run)"))
     XCTAssertTrue(script.contains("cleanup)"))
     XCTAssertTrue(mapper.contains("PASS) return 0"))
@@ -122,11 +123,10 @@ final class HermesAgentProtocolHandshakeAcceptanceTests: XCTestCase {
   func testProtocolExerciseUsesServiceOwnedJSONRPCAndSafeSessionRequest() throws {
     let exercise = try extractFunction("exercise_protocol", from: try read(scriptPath))
 
-    XCTAssertTrue(exercise.contains("target = \"/api/ws\" if auth_mode == \"none\""))
-    XCTAssertTrue(exercise.contains("f\"/api/ws?token={token}\""))
-    XCTAssertTrue(exercise.contains("\"session.create\""))
-    XCTAssertTrue(exercise.contains("\"session.status\""))
-    XCTAssertTrue(exercise.contains("\"session.interrupt\""))
+    XCTAssertTrue(exercise.contains("HermesReleaseAgentPreflight m14-008-exercise-protocol"))
+    XCTAssertFalse(exercise.contains("socket.create_connection"))
+    XCTAssertFalse(exercise.contains("Sec-WebSocket-Key"))
+    XCTAssertFalse(exercise.contains("/api/ws?token"))
     XCTAssertFalse(exercise.contains("\"prompt.submit\""))
     XCTAssertFalse(exercise.contains("shell"))
     XCTAssertFalse(exercise.contains("osascript"))
@@ -142,7 +142,7 @@ final class HermesAgentProtocolHandshakeAcceptanceTests: XCTestCase {
     XCTAssertTrue(discover.contains("RESULT[EPHEMERAL_CREDENTIAL_ISOLATED]=skip"))
     XCTAssertTrue(discover.contains("RESULT[REQUEST_AUTHENTICATION_MODE]=none"))
     XCTAssertTrue(exercise.contains("if [[ \"$auth_mode\" == \"ephemeral\" ]]; then"))
-    XCTAssertTrue(exercise.contains("target = \"/api/ws\" if auth_mode == \"none\" else"))
+    XCTAssertFalse(exercise.contains("?token={token}"))
   }
 
   func testNoSafeRequestProducesSupportedUnexercisedWithoutSubmission() throws {
@@ -172,7 +172,7 @@ final class HermesAgentProtocolHandshakeAcceptanceTests: XCTestCase {
     let exercise = try extractFunction("exercise_protocol", from: script)
     let validate = try extractFunction("validate_result_contract", from: script)
 
-    XCTAssertTrue(exercise.contains("sock2 = socket.create_connection"))
+    XCTAssertTrue(exercise.contains("HermesReleaseAgentPreflight m14-008-exercise-protocol"))
     XCTAssertTrue(exercise.contains("REQUEST_STATE_SURVIVED_RECONNECT]=yes"))
     XCTAssertTrue(script.contains("raw-request-identity-omitted"))
     XCTAssertTrue(validate.contains("Raw UUID leaked into deterministic result"))
@@ -188,6 +188,7 @@ final class HermesAgentProtocolHandshakeAcceptanceTests: XCTestCase {
     XCTAssertTrue(validate.contains("allowed_values"))
     XCTAssertTrue(validate.contains("semantic_version"))
     XCTAssertTrue(validate.contains("hermes-jsonrpc-websocket"))
+    XCTAssertTrue(validate.contains("hermes-status-only"))
     XCTAssertTrue(validate.contains("Sensitive result value leaked: key-category="))
   }
 
@@ -206,6 +207,8 @@ final class HermesAgentProtocolHandshakeAcceptanceTests: XCTestCase {
     let writer = try extractFunction("write_artifacts", from: try read(scriptPath))
 
     XCTAssertTrue(writer.contains("\"transport\": result.get(\"REQUEST_TRANSPORT\""))
+    XCTAssertTrue(writer.contains("\"transportFamily\": result.get(\"TRANSPORT_FAMILY\""))
+    XCTAssertTrue(writer.contains("\"handshakeErrorCategory\": result.get(\"HANDSHAKE_ERROR_CATEGORY\""))
     XCTAssertTrue(writer.contains("\"authenticationMode\": result.get(\"REQUEST_AUTHENTICATION_MODE\""))
     XCTAssertTrue(writer.contains("\"connectionAttempted\": result.get(\"REQUEST_CONNECTION_ATTEMPTED\""))
     XCTAssertTrue(writer.contains("\"connectionStatus\": result.get(\"REQUEST_CONNECTION_STATUS\""))
@@ -216,6 +219,32 @@ final class HermesAgentProtocolHandshakeAcceptanceTests: XCTestCase {
     XCTAssertTrue(writer.contains("\"reasonCode\": result.get(\"REQUEST_REASON_CODE\""))
     XCTAssertFalse(writer.contains("raw WebSocket"))
     XCTAssertFalse(writer.contains("headers"))
+  }
+
+  func testInspectTransportPlanIsReadOnly() throws {
+    let script = try read(scriptPath)
+    let inspect = try extractFunction("inspect_transport_plan", from: script)
+
+    XCTAssertTrue(inspect.contains("selected_transport_family="))
+    XCTAssertTrue(inspect.contains("authoritative_metadata_source="))
+    XCTAssertTrue(inspect.contains("route_category="))
+    XCTAssertTrue(inspect.contains("required_subprotocol_category="))
+    XCTAssertTrue(inspect.contains("origin_policy_category="))
+    XCTAssertTrue(inspect.contains("production_client_descriptor_agree="))
+    XCTAssertTrue(inspect.contains("blocking_reason="))
+    XCTAssertFalse(inspect.contains("write_artifacts"))
+    XCTAssertFalse(inspect.contains("serve --isolated"))
+    XCTAssertFalse(inspect.contains("exercise_protocol"))
+  }
+
+  func testShellDoesNotImplementIndependentProtocolTransport() throws {
+    let exercise = try extractFunction("exercise_protocol", from: try read(scriptPath))
+
+    XCTAssertFalse(exercise.contains("socket.create_connection"))
+    XCTAssertFalse(exercise.contains("Sec-WebSocket"))
+    XCTAssertFalse(exercise.contains("Upgrade: websocket"))
+    XCTAssertFalse(exercise.contains("json.dumps"))
+    XCTAssertTrue(exercise.contains("HermesReleaseAgentPreflight m14-008-exercise-protocol"))
   }
 
   func testExactShutdownReuseAndNoBroadStop() throws {

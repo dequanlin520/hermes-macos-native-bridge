@@ -34,6 +34,17 @@ ORDERED_KEYS=(
   EPHEMERAL_CREDENTIAL_ISOLATED
   REQUEST_CAPABILITY
   REQUEST_TRANSPORT
+  TRANSPORT_FAMILY
+  TRANSPORT_ROUTE_CATEGORY
+  TRANSPORT_SCHEME
+  WEBSOCKET_SUBPROTOCOL_CATEGORY
+  WEBSOCKET_ORIGIN_MODE
+  HANDSHAKE_ATTEMPTED
+  HANDSHAKE_HTTP_STATUS
+  HANDSHAKE_UPGRADE_ACCEPTED
+  HANDSHAKE_ERROR_CATEGORY
+  HANDSHAKE_DURATION_MILLISECONDS
+  TRANSPORT_DESCRIPTOR_PARITY
   REQUEST_AUTHENTICATION_MODE
   REQUEST_CONNECTION_ATTEMPTED
   REQUEST_CONNECTION_STATUS
@@ -69,7 +80,7 @@ ORDERED_KEYS=(
 )
 
 usage() {
-  print -u2 "usage: $SCRIPT_NAME inspect|inspect-request-plan|run|cleanup"
+  print -u2 "usage: $SCRIPT_NAME inspect|inspect-request-plan|inspect-transport-plan|run|cleanup"
   print -u2 "run requires HERMES_M14_008_ACCEPTANCE=YES"
 }
 
@@ -89,7 +100,18 @@ set_default_results() {
     AUTHENTICATION_REQUIRED unknown
     EPHEMERAL_CREDENTIAL_ISOLATED no
     REQUEST_CAPABILITY unsupported
-    REQUEST_TRANSPORT websocket-jsonrpc
+    REQUEST_TRANSPORT unknown
+    TRANSPORT_FAMILY unknown
+    TRANSPORT_ROUTE_CATEGORY unknown
+    TRANSPORT_SCHEME unknown
+    WEBSOCKET_SUBPROTOCOL_CATEGORY none
+    WEBSOCKET_ORIGIN_MODE none
+    HANDSHAKE_ATTEMPTED no
+    HANDSHAKE_HTTP_STATUS none
+    HANDSHAKE_UPGRADE_ACCEPTED unknown
+    HANDSHAKE_ERROR_CATEGORY unknown
+    HANDSHAKE_DURATION_MILLISECONDS 0
+    TRANSPORT_DESCRIPTOR_PARITY unknown
     REQUEST_AUTHENTICATION_MODE unknown
     REQUEST_CONNECTION_ATTEMPTED no
     REQUEST_CONNECTION_STATUS not-attempted
@@ -168,6 +190,8 @@ allowed_values = {
     "yes", "no", "skip", "unknown", "none", "not-attempted", "failed",
     "submitted", "unsupported", "supported-unexercised", "supported-exercised",
     "websocket-jsonrpc", "websocket-jsonrpc-events", "hermes-jsonrpc-websocket",
+    "hermes-status-only", "ws", "wss", "http", "https",
+    "jsonrpc", "rest", "unsupported", "accepted", "rejected",
     "blocked", "ephemeral", "not-required",
 }
 semantic_version = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
@@ -217,6 +241,12 @@ descriptor_path.write_text(json.dumps({
     "schemaVersion": 1,
     "run": "m14-008",
     "protocolFamily": result.get("PROTOCOL_FAMILY", "unknown"),
+    "rpcModel": "jsonrpc" if result.get("REQUEST_RPC_METHOD_CATEGORY") == "session-create" else "unknown",
+    "transportFamily": result.get("TRANSPORT_FAMILY", "unknown"),
+    "transportRouteCategory": result.get("TRANSPORT_ROUTE_CATEGORY", "unknown"),
+    "eventStreamingCapability": "websocket-events" if result.get("TRANSPORT_FAMILY") == "websocket-jsonrpc" else "none",
+    "webSocketSubprotocolCategory": result.get("WEBSOCKET_SUBPROTOCOL_CATEGORY", "unknown"),
+    "webSocketOriginMode": result.get("WEBSOCKET_ORIGIN_MODE", "unknown"),
     "protocolVersion": result.get("PROTOCOL_VERSION", "unknown"),
     "authenticationState": (
         "not-required" if result.get("AUTHENTICATION_REQUIRED") == "no"
@@ -224,7 +254,7 @@ descriptor_path.write_text(json.dumps({
         else "required-unavailable" if result.get("AUTHENTICATION_REQUIRED") == "yes"
         else "unknown"
     ),
-    "requestRouteCategory": "jsonrpc-websocket-session-create" if result.get("REQUEST_CAPABILITY") != "unsupported" else "unsupported",
+    "requestRouteCategory": "jsonrpc-websocket-session-create" if result.get("REQUEST_CAPABILITY") != "unsupported" and result.get("TRANSPORT_FAMILY") == "websocket-jsonrpc" else "unsupported",
     "statusRouteCategory": "jsonrpc-websocket-session-status" if result.get("REQUEST_STATUS_QUERY") != "not-attempted" else "unknown",
     "cancelRouteCategory": "jsonrpc-websocket-session-interrupt" if result.get("CANCEL_CAPABILITY") != "unsupported" else "unsupported",
     "approvalRouteCategory": "jsonrpc-websocket-approval-respond" if result.get("APPROVAL_CAPABILITY") != "unsupported" else "unsupported",
@@ -241,6 +271,17 @@ request_path.write_text(json.dumps({
     "schemaVersion": 1,
     "run": "m14-008",
     "transport": result.get("REQUEST_TRANSPORT", "websocket-jsonrpc"),
+    "transportFamily": result.get("TRANSPORT_FAMILY", "unknown"),
+    "transportRouteCategory": result.get("TRANSPORT_ROUTE_CATEGORY", "unknown"),
+    "transportScheme": result.get("TRANSPORT_SCHEME", "unknown"),
+    "webSocketSubprotocolCategory": result.get("WEBSOCKET_SUBPROTOCOL_CATEGORY", "unknown"),
+    "webSocketOriginMode": result.get("WEBSOCKET_ORIGIN_MODE", "unknown"),
+    "handshakeAttempted": result.get("HANDSHAKE_ATTEMPTED", "no"),
+    "handshakeHTTPStatus": result.get("HANDSHAKE_HTTP_STATUS", "none"),
+    "handshakeUpgradeAccepted": result.get("HANDSHAKE_UPGRADE_ACCEPTED", "unknown"),
+    "handshakeErrorCategory": result.get("HANDSHAKE_ERROR_CATEGORY", "unknown"),
+    "handshakeDurationMilliseconds": int(result.get("HANDSHAKE_DURATION_MILLISECONDS", "0")),
+    "transportDescriptorParity": result.get("TRANSPORT_DESCRIPTOR_PARITY", "unknown"),
     "authenticationMode": result.get("REQUEST_AUTHENTICATION_MODE", "unknown"),
     "connectionAttempted": result.get("REQUEST_CONNECTION_ATTEMPTED", "no"),
     "connectionStatus": result.get("REQUEST_CONNECTION_STATUS", "not-attempted"),
@@ -354,9 +395,16 @@ safe_synthetic_request_available() {
 }
 
 discover_protocol() {
-  local version="$1" auth_required="$2" auth_mode="$3" authentication_state
+  local version="$1" auth_required="$2" auth_mode="$3" authentication_state openapi_paths has_ws
   RESULT[PROTOCOL_METADATA_DISCOVERED]=yes
-  RESULT[PROTOCOL_FAMILY]=hermes-jsonrpc-websocket
+  RESULT[PROTOCOL_FAMILY]=hermes-status-only
+  RESULT[REQUEST_TRANSPORT]=unknown
+  RESULT[TRANSPORT_FAMILY]=unknown
+  RESULT[TRANSPORT_ROUTE_CATEGORY]=unsupported
+  RESULT[TRANSPORT_SCHEME]=unknown
+  RESULT[WEBSOCKET_SUBPROTOCOL_CATEGORY]=none
+  RESULT[WEBSOCKET_ORIGIN_MODE]=none
+  RESULT[TRANSPORT_DESCRIPTOR_PARITY]=yes
   RESULT[PROTOCOL_VERSION]="$version"
   if [[ "$auth_required" == "no" ]]; then
     authentication_state=not-required
@@ -401,7 +449,40 @@ discover_protocol() {
   if [[ "$auth_required" == "yes" && "$auth_mode" == "loopback_token" ]]; then
     RESULT[EPHEMERAL_CREDENTIAL_ISOLATED]=yes
   fi
+  openapi_paths="$(/usr/bin/python3 - "$OPENAPI_SUMMARY_FILE" <<'PY' 2>/dev/null || true
+import json
+import sys
+from pathlib import Path
+try:
+    data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+except Exception:
+    data = {}
+print("\n".join(data.get("paths") or []))
+PY
+)"
+  has_ws=no
+  if print -r -- "$openapi_paths" | /usr/bin/grep -qx '/api/ws'; then
+    has_ws=yes
+  fi
+
+  if [[ "$has_ws" == "no" ]]; then
+    RESULT[REQUEST_CAPABILITY]=unsupported
+    RESULT[CANCEL_CAPABILITY]=unsupported
+    RESULT[APPROVAL_CAPABILITY]=unsupported
+    RESULT[REQUEST_RPC_METHOD_CATEGORY]=session-create
+    RESULT[REQUEST_RPC_RESPONSE_CATEGORY]=unsupported
+    RESULT[REQUEST_REASON_CODE]=transport.route-unsupported
+    RESULT[M14_008_RESULT]=UNSUPPORTED
+    RESULT[M14_008_REASON_CODE]=transport.route-unsupported
+    return 1
+  fi
+
   if /usr/bin/grep -Eq '"session.create"|"session.status"|"session.interrupt"|"approval.respond"' "$ROOT_DIR/Sources/HermesRuntimeFoundation/HermesProtocolClient.swift"; then
+    RESULT[PROTOCOL_FAMILY]=hermes-jsonrpc-websocket
+    RESULT[REQUEST_TRANSPORT]=websocket-jsonrpc
+    RESULT[TRANSPORT_FAMILY]=websocket-jsonrpc
+    RESULT[TRANSPORT_ROUTE_CATEGORY]=jsonrpc-websocket-session-create
+    RESULT[TRANSPORT_SCHEME]=ws
     RESULT[REQUEST_CAPABILITY]=supported-unexercised
     RESULT[CANCEL_CAPABILITY]=supported-unexercised
     RESULT[APPROVAL_CAPABILITY]=supported-unexercised
@@ -441,133 +522,8 @@ import time
 print(int(time.time() * 1000))
 PY
 )"
-  /usr/bin/python3 - "$port" "$token" "$auth_mode" "$REQUEST_EVIDENCE_FILE.tmp" <<'PY' 2>"$RUNTIME_ROOT/request-probe.stderr"
-import base64
-import hashlib
-import json
-import os
-import socket
-import struct
-import sys
-import time
-
-port = int(sys.argv[1])
-token = sys.argv[2]
-auth_mode = sys.argv[3]
-out = sys.argv[4]
-
-def recv_until(sock, marker):
-    data = b""
-    while marker not in data:
-        chunk = sock.recv(4096)
-        if not chunk:
-            raise RuntimeError("protocol.websocket-closed")
-        data += chunk
-    return data
-
-def send_frame(sock, text):
-    payload = text.encode()
-    mask = os.urandom(4)
-    header = bytearray([0x81])
-    length = len(payload)
-    if length < 126:
-        header.append(0x80 | length)
-    elif length <= 65535:
-        header.extend([0x80 | 126])
-        header.extend(struct.pack("!H", length))
-    else:
-        header.extend([0x80 | 127])
-        header.extend(struct.pack("!Q", length))
-    masked = bytes(byte ^ mask[index % 4] for index, byte in enumerate(payload))
-    sock.sendall(bytes(header) + mask + masked)
-
-def read_frame(sock):
-    first = sock.recv(2)
-    if len(first) < 2:
-        raise RuntimeError("protocol.websocket-closed")
-    length = first[1] & 0x7F
-    if length == 126:
-        length = struct.unpack("!H", sock.recv(2))[0]
-    elif length == 127:
-        length = struct.unpack("!Q", sock.recv(8))[0]
-    data = b""
-    while len(data) < length:
-        data += sock.recv(length - len(data))
-    return json.loads(data.decode())
-
-def rpc(sock, request_id, method, params):
-    send_frame(sock, json.dumps({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}))
-    deadline = time.time() + 5
-    while time.time() < deadline:
-        frame = read_frame(sock)
-        if frame.get("id") == request_id:
-            if "error" in frame:
-                raise RuntimeError("protocol.rpc-error")
-            return frame.get("result") or {}
-    raise RuntimeError("protocol.request-timeout")
-
-sock = socket.create_connection(("127.0.0.1", port), timeout=5)
-key = base64.b64encode(os.urandom(16)).decode()
-target = "/api/ws" if auth_mode == "none" else f"/api/ws?token={token}"
-handshake = (
-    f"GET {target} HTTP/1.1\r\n"
-    "Host: 127.0.0.1\r\n"
-    "Upgrade: websocket\r\n"
-    "Connection: Upgrade\r\n"
-    f"Sec-WebSocket-Key: {key}\r\n"
-    "Sec-WebSocket-Version: 13\r\n\r\n"
-)
-sock.sendall(handshake.encode())
-response = recv_until(sock, b"\r\n\r\n")
-if b" 101 " not in response:
-    raise RuntimeError("request.connection-failed")
-ready_or_event = read_frame(sock)
-created = rpc(sock, "m14-008-1", "session.create", {})
-session_id = created.get("session_id")
-if not isinstance(session_id, str) or not session_id:
-    raise RuntimeError("request.identity-missing")
-status = rpc(sock, "m14-008-2", "session.status", {"session_id": session_id})
-output = str(status.get("output", "unknown")).lower()
-state = "completed" if "idle" in output or "complete" in output else ("running" if "run" in output or "stream" in output else "unknown")
-interrupt = rpc(sock, "m14-008-3", "session.interrupt", {"session_id": session_id})
-cancel_state = "cancelled" if "interrupt" in str(interrupt.get("status", "")).lower() or "cancel" in str(interrupt.get("status", "")).lower() else "unknown"
-sock.close()
-
-sock2 = socket.create_connection(("127.0.0.1", port), timeout=5)
-key2 = base64.b64encode(os.urandom(16)).decode()
-target2 = "/api/ws" if auth_mode == "none" else f"/api/ws?token={token}"
-sock2.sendall((
-    f"GET {target2} HTTP/1.1\r\n"
-    "Host: 127.0.0.1\r\n"
-    "Upgrade: websocket\r\n"
-    "Connection: Upgrade\r\n"
-    f"Sec-WebSocket-Key: {key2}\r\n"
-    "Sec-WebSocket-Version: 13\r\n\r\n"
-).encode())
-response2 = recv_until(sock2, b"\r\n\r\n")
-if b" 101 " not in response2:
-    raise RuntimeError("protocol.reconnect-failed")
-_ = read_frame(sock2)
-status2 = rpc(sock2, "m14-008-4", "session.status", {"session_id": session_id})
-sock2.close()
-Path = __import__("pathlib").Path
-Path(out).write_text(json.dumps({
-    "transport": "websocket-jsonrpc",
-    "authenticationMode": auth_mode,
-    "connectionAttempted": True,
-    "connectionStatus": "connected",
-    "rpcMethodCategory": "session-create",
-    "rpcResponseCategory": "success",
-    "rpcErrorCode": "none",
-    "reasonCode": "none",
-    "identityCaptured": True,
-    "identitySyntaxCategory": "token-like",
-    "initialState": state,
-    "cancelState": cancel_state,
-    "reconnectStatusObserved": bool(status2),
-    "rawIdentityOmitted": True
-}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-PY
+  swift run --configuration release HermesReleaseAgentPreflight m14-008-exercise-protocol \
+    "$port" "$auth_mode" "$token" "$REQUEST_EVIDENCE_FILE.tmp" 2>"$RUNTIME_ROOT/request-probe.stderr"
   probe_status="$?"
   end_ms="$(/usr/bin/python3 - <<'PY'
 import time
@@ -580,6 +536,12 @@ PY
   case "$probe_status" in
     0)
       RESULT[REQUEST_CONNECTION_STATUS]=connected
+      RESULT[HANDSHAKE_ATTEMPTED]=yes
+      RESULT[HANDSHAKE_HTTP_STATUS]=unknown
+      RESULT[HANDSHAKE_UPGRADE_ACCEPTED]=yes
+      RESULT[HANDSHAKE_ERROR_CATEGORY]=unknown
+      RESULT[HANDSHAKE_DURATION_MILLISECONDS]="${RESULT[REQUEST_SUBMISSION_DURATION_MILLISECONDS]}"
+      RESULT[TRANSPORT_DESCRIPTOR_PARITY]=yes
       RESULT[REQUEST_RPC_RESPONSE_CATEGORY]=success
       RESULT[REQUEST_RPC_ERROR_CODE]=none
       RESULT[REQUEST_REASON_CODE]=none
@@ -602,13 +564,55 @@ PY
       RESULT[M14_008_REASON_CODE]=none
       ;;
     *)
-      probe_error="$(/usr/bin/awk -F'RuntimeError: ' '/RuntimeError: / {print $2}' "$RUNTIME_ROOT/request-probe.stderr" 2>/dev/null | /usr/bin/tail -n 1)"
+      probe_error="$(/usr/bin/awk -F'RuntimeError: ' '/RuntimeError: / {print $2; found=1} !found && /^[A-Za-z0-9._-]+$/ {print $0}' "$RUNTIME_ROOT/request-probe.stderr" 2>/dev/null | /usr/bin/tail -n 1)"
       request_reason="$(print -r -- "${probe_error:-request.submission-failed}" | /usr/bin/tr -cd 'A-Za-z0-9._-' | /usr/bin/cut -c1-96)"
       [[ -n "$request_reason" ]] || request_reason=request.submission-failed
       RESULT[REQUEST_CONNECTION_STATUS]=failed
+      RESULT[HANDSHAKE_ATTEMPTED]=yes
+      RESULT[HANDSHAKE_DURATION_MILLISECONDS]="${RESULT[REQUEST_SUBMISSION_DURATION_MILLISECONDS]}"
+      RESULT[TRANSPORT_DESCRIPTOR_PARITY]="${RESULT[TRANSPORT_DESCRIPTOR_PARITY]:-yes}"
       case "$request_reason" in
+        transport.connection-refused)
+          RESULT[HANDSHAKE_ERROR_CATEGORY]=connect-refused
+          RESULT[HANDSHAKE_UPGRADE_ACCEPTED]=no
+          RESULT[REQUEST_RPC_RESPONSE_CATEGORY]=connection-failed
+          ;;
+        websocket.http-not-found)
+          RESULT[HANDSHAKE_ERROR_CATEGORY]=http-status
+          RESULT[HANDSHAKE_HTTP_STATUS]=404
+          RESULT[HANDSHAKE_UPGRADE_ACCEPTED]=no
+          RESULT[REQUEST_RPC_RESPONSE_CATEGORY]=connection-failed
+          ;;
+        websocket.forbidden)
+          RESULT[HANDSHAKE_ERROR_CATEGORY]=http-status
+          RESULT[HANDSHAKE_HTTP_STATUS]=403
+          RESULT[HANDSHAKE_UPGRADE_ACCEPTED]=no
+          RESULT[REQUEST_RPC_RESPONSE_CATEGORY]=connection-failed
+          ;;
+        websocket.upgrade-rejected|websocket.subprotocol-mismatch|websocket.origin-rejected)
+          RESULT[HANDSHAKE_ERROR_CATEGORY]=upgrade-rejected
+          RESULT[HANDSHAKE_UPGRADE_ACCEPTED]=no
+          RESULT[REQUEST_RPC_RESPONSE_CATEGORY]=connection-failed
+          ;;
+        websocket.timeout)
+          RESULT[HANDSHAKE_ERROR_CATEGORY]=timeout
+          RESULT[HANDSHAKE_UPGRADE_ACCEPTED]=unknown
+          RESULT[REQUEST_RPC_RESPONSE_CATEGORY]=timeout
+          ;;
+        websocket.handshake-malformed|transport.scheme-invalid)
+          RESULT[HANDSHAKE_ERROR_CATEGORY]=malformed-url
+          RESULT[HANDSHAKE_UPGRADE_ACCEPTED]=no
+          RESULT[REQUEST_RPC_RESPONSE_CATEGORY]=malformed
+          ;;
+        protocol.transport-descriptor-mismatch)
+          RESULT[HANDSHAKE_ERROR_CATEGORY]=protocol
+          RESULT[HANDSHAKE_UPGRADE_ACCEPTED]=unknown
+          RESULT[TRANSPORT_DESCRIPTOR_PARITY]=no
+          RESULT[REQUEST_RPC_RESPONSE_CATEGORY]=connection-failed
+          ;;
         protocol.rpc-error)
           RESULT[REQUEST_CONNECTION_STATUS]=connected
+          RESULT[HANDSHAKE_UPGRADE_ACCEPTED]=yes
           RESULT[REQUEST_RPC_RESPONSE_CATEGORY]=rpc-error
           ;;
         protocol.request-timeout)
@@ -720,7 +724,7 @@ PY
 }
 
 inspect_request_plan() {
-  local executable version descriptor_auth="unknown" descriptor_family="unknown" descriptor_version="unknown" blocking="none"
+  local executable version descriptor_auth="unknown" descriptor_family="unknown" descriptor_version="unknown" descriptor_transport="unknown" blocking="none"
   if executable="$(hermes_executable)"; then
     version="$(hermes_version "$executable")"
   else
@@ -744,17 +748,19 @@ if not auth:
 print(data.get("protocolFamily", "unknown"))
 print(data.get("protocolVersion", "unknown"))
 print(auth)
+print(data.get("transportFamily", "unknown"))
 PY
 )"
     descriptor_family="${${(f)parsed}[1]:-unknown}"
     descriptor_version="${${(f)parsed}[2]:-unknown}"
     descriptor_auth="${${(f)parsed}[3]:-unknown}"
+    descriptor_transport="${${(f)parsed}[4]:-unknown}"
   fi
   if [[ "$descriptor_auth" == "unknown" ]]; then
     descriptor_auth=not-required
   fi
   if [[ "$descriptor_family" == "unknown" ]]; then
-    descriptor_family=hermes-jsonrpc-websocket
+    descriptor_family=hermes-status-only
   fi
   if [[ "$descriptor_version" == "unknown" ]]; then
     descriptor_version="${version:-unknown}"
@@ -784,17 +790,100 @@ PY
       ;;
   esac
   print -r -- "request_method_category=session-create"
-  if safe_synthetic_request_available "$descriptor_version"; then
+  if [[ "$descriptor_transport" == "websocket-jsonrpc" ]] && safe_synthetic_request_available "$descriptor_version"; then
     print -r -- "safe_synthetic_request_available=yes"
   else
     print -r -- "safe_synthetic_request_available=no"
-    [[ "$blocking" == "none" ]] && blocking="protocol.safe-request-unavailable"
+    if [[ "$descriptor_transport" == "unknown" ]]; then
+      [[ "$blocking" == "none" ]] && blocking="transport.route-unsupported"
+    else
+      [[ "$blocking" == "none" ]] && blocking="protocol.safe-request-unavailable"
+    fi
   fi
   print -r -- "status_mechanism=session-status"
   print -r -- "cancel_exercisability=if-session-remains-addressable"
   print -r -- "approval_exercisability=supported-unexercised-without-harmless-trigger"
   print -r -- "reconnect_strategy=reconnect-and-query-captured-session"
   print -r -- "blocking_reason=$blocking"
+}
+
+inspect_transport_plan() {
+  local executable version descriptor_family="unknown" descriptor_transport="unknown" descriptor_route="unknown"
+  local descriptor_auth="unknown" descriptor_source="unknown" descriptor_subprotocol="none"
+  local descriptor_origin="none" descriptor_parity="unknown" blocking="none"
+  if executable="$(hermes_executable)"; then
+    version="$(hermes_version "$executable")"
+  else
+    version="unknown"
+    blocking="executable.unavailable"
+  fi
+  if [[ -f "$PROTOCOL_DESCRIPTOR_FILE" ]]; then
+    local parsed
+    parsed="$(/usr/bin/python3 - "$PROTOCOL_DESCRIPTOR_FILE" <<'PY'
+import json
+import sys
+from pathlib import Path
+try:
+    data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+except Exception:
+    data = {}
+print(data.get("protocolFamily", "unknown"))
+print(data.get("transportFamily", "unknown"))
+print(data.get("transportRouteCategory") or data.get("requestRouteCategory", "unknown"))
+print(data.get("authenticationState", "unknown"))
+print(data.get("protocolVersion", "unknown"))
+print(data.get("metadataSource", "captured-openapi-summary-and-local-production-client-contract"))
+print(data.get("webSocketSubprotocolCategory", "none"))
+print(data.get("webSocketOriginMode", "none"))
+PY
+)"
+    descriptor_family="${${(f)parsed}[1]:-unknown}"
+    descriptor_transport="${${(f)parsed}[2]:-unknown}"
+    descriptor_route="${${(f)parsed}[3]:-unknown}"
+    descriptor_auth="${${(f)parsed}[4]:-unknown}"
+    [[ "$version" == "unknown" ]] && version="${${(f)parsed}[5]:-unknown}"
+    descriptor_source="${${(f)parsed}[6]:-unknown}"
+    descriptor_subprotocol="${${(f)parsed}[7]:-none}"
+    descriptor_origin="${${(f)parsed}[8]:-none}"
+  elif [[ -f "$OPENAPI_SUMMARY_FILE" ]]; then
+    descriptor_source=captured-openapi-summary-and-local-production-client-contract
+    if /usr/bin/python3 - "$OPENAPI_SUMMARY_FILE" <<'PY'
+import json
+import sys
+from pathlib import Path
+data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+raise SystemExit(0 if "/api/ws" in (data.get("paths") or []) else 1)
+PY
+    then
+      descriptor_family=hermes-jsonrpc-websocket
+      descriptor_transport=websocket-jsonrpc
+      descriptor_route=jsonrpc-websocket-session-create
+    else
+      descriptor_family=hermes-status-only
+      descriptor_transport=unknown
+      descriptor_route=unsupported
+    fi
+  fi
+  if [[ "$descriptor_transport" == "websocket-jsonrpc" && "$descriptor_route" == "jsonrpc-websocket-session-create" ]]; then
+    descriptor_parity=yes
+  elif [[ "$descriptor_transport" == "unknown" || "$descriptor_route" == "unsupported" ]]; then
+    descriptor_parity=yes
+    [[ "$blocking" == "none" ]] && blocking="transport.route-unsupported"
+  else
+    descriptor_parity=no
+    [[ "$blocking" == "none" ]] && blocking="protocol.transport-descriptor-mismatch"
+  fi
+  print -r -- "hermes_version=${version:-unknown}"
+  print -r -- "selected_transport_family=$descriptor_transport"
+  print -r -- "authoritative_metadata_source=$descriptor_source"
+  print -r -- "route_category=$descriptor_route"
+  print -r -- "authentication_state=$descriptor_auth"
+  print -r -- "required_subprotocol_category=$descriptor_subprotocol"
+  print -r -- "origin_policy_category=$descriptor_origin"
+  print -r -- "session_create_method_category=session-create"
+  print -r -- "production_client_descriptor_agree=$descriptor_parity"
+  print -r -- "blocking_reason=$blocking"
+  print -r -- "protocol_family=$descriptor_family"
 }
 
 run_acceptance() {
@@ -870,8 +959,8 @@ run_acceptance() {
   }
   if [[ "${RESULT[REQUEST_CAPABILITY]}" == "unsupported" ]]; then
     RESULT[M14_008_RESULT]=UNSUPPORTED
-    RESULT[M14_008_REASON_CODE]=protocol.request-route-unsupported
-    RESULT[REQUEST_REASON_CODE]=protocol.request-route-unsupported
+    RESULT[M14_008_REASON_CODE]=transport.route-unsupported
+    RESULT[REQUEST_REASON_CODE]=transport.route-unsupported
   elif ! safe_synthetic_request_available "${RESULT[PROTOCOL_VERSION]}"; then
     RESULT[REQUEST_CAPABILITY]=supported-unexercised
     RESULT[REQUEST_AUTHENTICATION_MODE]="${RESULT[REQUEST_AUTHENTICATION_MODE]:-unknown}"
@@ -917,6 +1006,7 @@ cleanup() {
 case "${1:-}" in
   inspect) inspect ;;
   inspect-request-plan) inspect_request_plan ;;
+  inspect-transport-plan) inspect_transport_plan ;;
   run) run_acceptance ;;
   cleanup) cleanup ;;
   *) usage; exit 1 ;;

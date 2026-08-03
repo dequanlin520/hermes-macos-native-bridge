@@ -59,6 +59,12 @@ public enum HermesAgentAuthenticationState: String, Codable, Equatable, Sendable
 
 public struct HermesAgentProtocolDescriptor: Codable, Equatable, Sendable {
   public let protocolFamily: String
+  public let rpcModel: String
+  public let transportFamily: String
+  public let transportRouteCategory: String
+  public let eventStreamingCapability: String
+  public let webSocketSubprotocolCategory: String
+  public let webSocketOriginMode: String
   public let protocolVersion: String
   public let request: HermesAgentProtocolCapability
   public let status: HermesAgentProtocolCapability
@@ -73,6 +79,12 @@ public struct HermesAgentProtocolDescriptor: Codable, Equatable, Sendable {
 
   public init(
     protocolFamily: String,
+    rpcModel: String = "jsonrpc",
+    transportFamily: String = "unknown",
+    transportRouteCategory: String = "unknown",
+    eventStreamingCapability: String = "unknown",
+    webSocketSubprotocolCategory: String = "none",
+    webSocketOriginMode: String = "none",
     protocolVersion: String,
     request: HermesAgentProtocolCapability,
     status: HermesAgentProtocolCapability,
@@ -86,6 +98,12 @@ public struct HermesAgentProtocolDescriptor: Codable, Equatable, Sendable {
     metadataSource: String
   ) {
     self.protocolFamily = HermesAgentProtocolSanitizer.safeToken(protocolFamily)
+    self.rpcModel = HermesAgentProtocolSanitizer.safeToken(rpcModel)
+    self.transportFamily = HermesAgentProtocolSanitizer.safeToken(transportFamily)
+    self.transportRouteCategory = HermesAgentProtocolSanitizer.safeToken(transportRouteCategory)
+    self.eventStreamingCapability = HermesAgentProtocolSanitizer.safeToken(eventStreamingCapability)
+    self.webSocketSubprotocolCategory = HermesAgentProtocolSanitizer.safeToken(webSocketSubprotocolCategory)
+    self.webSocketOriginMode = HermesAgentProtocolSanitizer.safeToken(webSocketOriginMode)
     self.protocolVersion = HermesAgentProtocolSanitizer.safeToken(protocolVersion)
     self.request = request
     self.status = status
@@ -120,12 +138,16 @@ public struct HermesAgentProtocolDescriptor: Codable, Equatable, Sendable {
     }
 
     let openAPIPaths = try parseOpenAPIPaths(openAPIMetadataData)
+    let hasBoundedOpenAPI = openAPIMetadataData != nil && !openAPIPaths.isEmpty
     let hasStatus = openAPIPaths.contains("/api/status") || statusObject["version"] != nil
-    let hasWebSocket = openAPIPaths.contains("/api/ws") || implementationMethods.contains("session.create")
-    let requestSupported = hasWebSocket && implementationMethods.contains("session.create")
-    let statusSupported = hasWebSocket && implementationMethods.contains("session.status")
-    let cancelSupported = hasWebSocket && implementationMethods.contains("session.interrupt")
-    let approvalSupported = hasWebSocket && implementationMethods.contains("approval.respond")
+    let hasWebSocket = openAPIPaths.contains(HermesBackendEndpoint.webSocketPath)
+    let metadataAllowsLocalFallback = !hasBoundedOpenAPI
+    let localClientHasSessionCreate = implementationMethods.contains("session.create")
+    let webSocketTransportSupported = hasWebSocket || (metadataAllowsLocalFallback && localClientHasSessionCreate)
+    let requestSupported = webSocketTransportSupported && implementationMethods.contains("session.create")
+    let statusSupported = webSocketTransportSupported && implementationMethods.contains("session.status")
+    let cancelSupported = webSocketTransportSupported && implementationMethods.contains("session.interrupt")
+    let approvalSupported = webSocketTransportSupported && implementationMethods.contains("approval.respond")
     let version = statusObject["version"] as? String ?? "unknown"
     let authRequirement = parseAuthenticationRequirement(statusObject["auth_required"])
     let authRequired = authRequirement == .required
@@ -145,7 +167,13 @@ public struct HermesAgentProtocolDescriptor: Codable, Equatable, Sendable {
     }
 
     return HermesAgentProtocolDescriptor(
-      protocolFamily: hasWebSocket ? "hermes-jsonrpc-websocket" : "hermes-http-status",
+      protocolFamily: webSocketTransportSupported ? "hermes-jsonrpc-websocket" : "hermes-status-only",
+      rpcModel: localClientHasSessionCreate ? "jsonrpc" : "unknown",
+      transportFamily: webSocketTransportSupported ? "websocket-jsonrpc" : "unknown",
+      transportRouteCategory: webSocketTransportSupported ? "jsonrpc-websocket" : "unsupported",
+      eventStreamingCapability: webSocketTransportSupported ? "websocket-events" : "none",
+      webSocketSubprotocolCategory: "none",
+      webSocketOriginMode: "none",
       protocolVersion: version,
       request: HermesAgentProtocolCapability(
         status: requestSupported ? .supportedUnexercised : .unsupported,
@@ -173,7 +201,7 @@ public struct HermesAgentProtocolDescriptor: Codable, Equatable, Sendable {
       authenticationCategory: authCategory,
       ephemeralCredentialIsolated: authRequired && authMode == "loopback_token",
       authenticationState: authenticationState,
-      streamingModesAdvertised: hasWebSocket ? ["websocket-jsonrpc-events"] : [],
+      streamingModesAdvertised: webSocketTransportSupported ? ["websocket-jsonrpc-events"] : [],
       metadataSource: openAPIPaths.isEmpty ? "api-status-and-local-implementation" : "openapi-api-status-and-local-implementation"
     )
   }
@@ -186,6 +214,12 @@ public struct HermesAgentProtocolDescriptor: Codable, Equatable, Sendable {
   ) -> HermesAgentProtocolDescriptor {
     HermesAgentProtocolDescriptor(
       protocolFamily: protocolFamily,
+      rpcModel: rpcModel,
+      transportFamily: transportFamily,
+      transportRouteCategory: transportRouteCategory,
+      eventStreamingCapability: eventStreamingCapability,
+      webSocketSubprotocolCategory: webSocketSubprotocolCategory,
+      webSocketOriginMode: webSocketOriginMode,
       protocolVersion: protocolVersion,
       request: replacing(self.request, status: request),
       status: replacing(self.status, status: status),
@@ -205,6 +239,12 @@ public struct HermesAgentProtocolDescriptor: Codable, Equatable, Sendable {
   ) -> HermesAgentProtocolDescriptor {
     HermesAgentProtocolDescriptor(
       protocolFamily: protocolFamily,
+      rpcModel: rpcModel,
+      transportFamily: transportFamily,
+      transportRouteCategory: transportRouteCategory,
+      eventStreamingCapability: eventStreamingCapability,
+      webSocketSubprotocolCategory: webSocketSubprotocolCategory,
+      webSocketOriginMode: webSocketOriginMode,
       protocolVersion: protocolVersion,
       request: request,
       status: status,
@@ -445,6 +485,12 @@ public protocol HermesAgentRequestProtocolServing: Sendable {
 extension HermesProtocolClient: HermesAgentRequestProtocolServing {}
 
 public struct HermesAgentRequestClientFactory: Sendable {
+  public static let productionTransportFamily = "websocket-jsonrpc"
+  public static let productionTransportScheme = "ws"
+  public static let productionTransportRouteCategory = "jsonrpc-websocket-session-create"
+  public static let productionWebSocketSubprotocolCategory = "none"
+  public static let productionWebSocketOriginMode = "none"
+
   public init() {}
 
   public func makeClient(
@@ -598,10 +644,136 @@ public final class HermesAgentRequestClient<Service: HermesAgentRequestProtocolS
 
 public enum HermesAgentSafeSyntheticRequestContract {
   public static func isAvailable(for descriptor: HermesAgentProtocolDescriptor) -> Bool {
-    descriptor.protocolFamily == "hermes-jsonrpc-websocket"
+    descriptor.rpcModel == "jsonrpc"
+      && descriptor.transportFamily == "websocket-jsonrpc"
       && descriptor.protocolVersion.hasPrefix("0.18.")
       && descriptor.request.routeCategory == "jsonrpc-websocket-session-create"
       && descriptor.request.status != .unsupported
+  }
+}
+
+public struct HermesAgentTransportPlan: Equatable, Sendable {
+  public let hermesVersion: String
+  public let transportFamily: String
+  public let metadataSource: String
+  public let routeCategory: String
+  public let authenticationState: String
+  public let webSocketSubprotocolCategory: String
+  public let webSocketOriginMode: String
+  public let sessionCreateMethodCategory: String
+  public let descriptorParity: Bool
+  public let blockingReason: String
+
+  public init(
+    descriptor: HermesAgentProtocolDescriptor,
+    productionRouteCategory: String = HermesAgentRequestClientFactory.productionTransportRouteCategory
+  ) {
+    hermesVersion = descriptor.protocolVersion
+    transportFamily = descriptor.transportFamily
+    metadataSource = descriptor.metadataSource
+    routeCategory = descriptor.transportRouteCategory
+    authenticationState = descriptor.authenticationState.rawValue
+    webSocketSubprotocolCategory = descriptor.webSocketSubprotocolCategory
+    webSocketOriginMode = descriptor.webSocketOriginMode
+    sessionCreateMethodCategory = descriptor.request.routeCategory == "unsupported"
+      ? "unsupported"
+      : "session-create"
+    descriptorParity = descriptor.transportFamily != "websocket-jsonrpc"
+      || descriptor.request.routeCategory == productionRouteCategory
+    if descriptor.transportFamily == "unknown" || descriptor.request.status == .unsupported {
+      blockingReason = "transport.route-unsupported"
+    } else if !descriptorParity {
+      blockingReason = "protocol.transport-descriptor-mismatch"
+    } else if descriptor.authenticationState == .requiredUnavailable {
+      blockingReason = "protocol.authentication-unavailable"
+    } else if descriptor.authenticationState == .unknown {
+      blockingReason = "protocol.authentication-unknown"
+    } else {
+      blockingReason = "none"
+    }
+  }
+}
+
+public struct HermesAgentHandshakeDiagnostics: Codable, Equatable, Sendable {
+  public let transportFamily: String
+  public let transportRouteCategory: String
+  public let transportScheme: String
+  public let webSocketSubprotocolCategory: String
+  public let webSocketOriginMode: String
+  public let handshakeAttempted: String
+  public let handshakeHTTPStatus: String
+  public let handshakeUpgradeAccepted: String
+  public let handshakeErrorCategory: String
+  public let handshakeDurationMilliseconds: Int
+  public let transportDescriptorParity: String
+
+  public init(
+    descriptor: HermesAgentProtocolDescriptor,
+    attempted: Bool = false,
+    httpStatus: Int? = nil,
+    upgradeAccepted: Bool? = nil,
+    errorCategory: String = "unknown",
+    durationMilliseconds: Int = 0,
+    descriptorParity: Bool? = nil
+  ) {
+    transportFamily = descriptor.transportFamily
+    transportRouteCategory = descriptor.transportRouteCategory
+    transportScheme = descriptor.transportFamily == "websocket-jsonrpc" ? "ws" : "unknown"
+    webSocketSubprotocolCategory = descriptor.webSocketSubprotocolCategory
+    webSocketOriginMode = descriptor.webSocketOriginMode
+    handshakeAttempted = attempted ? "yes" : "no"
+    handshakeHTTPStatus = httpStatus.map(String.init) ?? "none"
+    handshakeUpgradeAccepted = upgradeAccepted.map { $0 ? "yes" : "no" } ?? "unknown"
+    handshakeErrorCategory = HermesAgentProtocolSanitizer.safeToken(errorCategory)
+    handshakeDurationMilliseconds = max(0, durationMilliseconds)
+    let parity = descriptorParity ?? HermesAgentTransportPlan(descriptor: descriptor).descriptorParity
+    transportDescriptorParity = parity ? "yes" : "no"
+  }
+
+  public static func errorCategory(for reasonCode: String) -> String {
+    switch reasonCode {
+    case "transport.connection-refused":
+      return "connect-refused"
+    case "websocket.http-not-found", "websocket.forbidden":
+      return "http-status"
+    case "websocket.upgrade-rejected", "websocket.subprotocol-mismatch", "websocket.origin-rejected":
+      return "upgrade-rejected"
+    case "websocket.timeout":
+      return "timeout"
+    case "websocket.handshake-malformed", "transport.scheme-invalid":
+      return "malformed-url"
+    case "protocol.transport-descriptor-mismatch":
+      return "protocol"
+    default:
+      return "unknown"
+    }
+  }
+
+  public static func reasonCode(httpStatus: Int?, errorCategory: String) -> String {
+    if let httpStatus {
+      switch httpStatus {
+      case 404:
+        return "websocket.http-not-found"
+      case 403:
+        return "websocket.forbidden"
+      case 400...499, 500...599:
+        return "websocket.upgrade-rejected"
+      default:
+        break
+      }
+    }
+    switch errorCategory {
+    case "connect-refused":
+      return "transport.connection-refused"
+    case "timeout":
+      return "websocket.timeout"
+    case "malformed-url":
+      return "websocket.handshake-malformed"
+    case "protocol":
+      return "protocol.transport-descriptor-mismatch"
+    default:
+      return "request.connection-failed"
+    }
   }
 }
 

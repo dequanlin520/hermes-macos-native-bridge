@@ -123,6 +123,52 @@ final class HermesAgentRequestClientTests: XCTestCase {
     XCTAssertNotNil(authenticated)
   }
 
+  func testProductionClientDescriptorRouteParity() throws {
+    let supported = descriptor(authenticationState: .notRequired)
+    let unsupported = HermesAgentProtocolDescriptor(
+      protocolFamily: "hermes-status-only",
+      rpcModel: "jsonrpc",
+      transportFamily: "unknown",
+      transportRouteCategory: "unsupported",
+      eventStreamingCapability: "none",
+      webSocketSubprotocolCategory: "none",
+      webSocketOriginMode: "none",
+      protocolVersion: "0.18.2",
+      request: HermesAgentProtocolCapability(
+        status: .unsupported,
+        routeCategory: "unsupported",
+        reasonCode: "transport.route-unsupported"
+      ),
+      status: supported.status,
+      cancel: supported.cancel,
+      approval: supported.approval,
+      authenticationRequired: false,
+      authenticationCategory: "none",
+      ephemeralCredentialIsolated: false,
+      authenticationState: .notRequired,
+      streamingModesAdvertised: [],
+      metadataSource: "test"
+    )
+
+    XCTAssertEqual(
+      supported.request.routeCategory,
+      HermesAgentRequestClientFactory.productionTransportRouteCategory
+    )
+    XCTAssertTrue(HermesAgentTransportPlan(descriptor: supported).descriptorParity)
+    XCTAssertEqual(
+      HermesAgentTransportPlan(descriptor: unsupported).blockingReason,
+      "transport.route-unsupported"
+    )
+  }
+
+  func testSessionCreateEnvelopeMatchesProductionContract() {
+    XCTAssertEqual(HermesAgentRequestClientFactory.productionTransportFamily, "websocket-jsonrpc")
+    XCTAssertEqual(HermesAgentRequestClientFactory.productionTransportScheme, "ws")
+    XCTAssertEqual(HermesAgentRequestClientFactory.productionWebSocketSubprotocolCategory, "none")
+    XCTAssertEqual(HermesAgentRequestClientFactory.productionWebSocketOriginMode, "none")
+    XCTAssertTrue(HermesAgentSafeSyntheticRequestContract.isAvailable(for: descriptor()))
+  }
+
   func testRequestResponseParsingRejectsMissingIdentity() async {
     let service = FakeRequestService(createdSessionID: "")
     let client = HermesAgentRequestClient(descriptor: descriptor(), serviceFactory: { service })
@@ -292,6 +338,12 @@ final class HermesAgentRequestClientTests: XCTestCase {
     let requiresAuth = authenticationState != .notRequired && authenticationState != .unknown
     return HermesAgentProtocolDescriptor(
       protocolFamily: "hermes-jsonrpc-websocket",
+      rpcModel: "jsonrpc",
+      transportFamily: "websocket-jsonrpc",
+      transportRouteCategory: "jsonrpc-websocket-session-create",
+      eventStreamingCapability: "websocket-events",
+      webSocketSubprotocolCategory: "none",
+      webSocketOriginMode: "none",
       protocolVersion: protocolVersion,
       request: HermesAgentProtocolCapability(
         status: .supportedUnexercised,

@@ -11,6 +11,12 @@ final class HermesAgentProtocolDescriptorTests: XCTestCase {
     )
 
     XCTAssertEqual(descriptor.protocolFamily, "hermes-jsonrpc-websocket")
+    XCTAssertEqual(descriptor.rpcModel, "jsonrpc")
+    XCTAssertEqual(descriptor.transportFamily, "websocket-jsonrpc")
+    XCTAssertEqual(descriptor.transportRouteCategory, "jsonrpc-websocket")
+    XCTAssertEqual(descriptor.eventStreamingCapability, "websocket-events")
+    XCTAssertEqual(descriptor.webSocketSubprotocolCategory, "none")
+    XCTAssertEqual(descriptor.webSocketOriginMode, "none")
     XCTAssertEqual(descriptor.protocolVersion, "0.18.2")
     XCTAssertEqual(descriptor.metadataSource, "openapi-api-status-and-local-implementation")
     XCTAssertEqual(descriptor.request.routeCategory, "jsonrpc-websocket-session-create")
@@ -31,6 +37,79 @@ final class HermesAgentProtocolDescriptorTests: XCTestCase {
     XCTAssertEqual(descriptor.request.reasonCode, "protocol.request-route-unsupported")
     XCTAssertEqual(descriptor.cancel.status, .unsupported)
     XCTAssertEqual(descriptor.cancel.reasonCode, "protocol.cancel-route-unsupported")
+    XCTAssertEqual(descriptor.rpcModel, "unknown")
+    XCTAssertEqual(descriptor.transportFamily, "unknown")
+    XCTAssertEqual(descriptor.protocolFamily, "hermes-status-only")
+  }
+
+  func testProtocolModelAndTransportFamilyAreIndependent() throws {
+    let descriptor = try HermesAgentProtocolDescriptor.discover(
+      statusData: statusData(authRequired: false, authMode: nil),
+      openAPIMetadataData: openAPIData(paths: ["/api/status"]),
+      implementationMethods: ["session.create"]
+    )
+
+    XCTAssertEqual(descriptor.rpcModel, "jsonrpc")
+    XCTAssertEqual(descriptor.transportFamily, "unknown")
+    XCTAssertEqual(descriptor.request.status, .unsupported)
+    XCTAssertFalse(HermesAgentSafeSyntheticRequestContract.isAvailable(for: descriptor))
+  }
+
+  func testTransportPlanReportsRouteUnsupportedForStatusOnlyMetadata() throws {
+    let descriptor = try HermesAgentProtocolDescriptor.discover(
+      statusData: statusData(authRequired: false, authMode: nil),
+      openAPIMetadataData: openAPIData(paths: ["/api/status"]),
+      implementationMethods: ["session.create"]
+    )
+
+    let plan = HermesAgentTransportPlan(descriptor: descriptor)
+
+    XCTAssertEqual(plan.transportFamily, "unknown")
+    XCTAssertEqual(plan.routeCategory, "unsupported")
+    XCTAssertTrue(plan.descriptorParity)
+    XCTAssertEqual(plan.blockingReason, "transport.route-unsupported")
+  }
+
+  func testHandshakeReasonClassificationIsStable() {
+    XCTAssertEqual(
+      HermesAgentHandshakeDiagnostics.reasonCode(httpStatus: 404, errorCategory: "http-status"),
+      "websocket.http-not-found"
+    )
+    XCTAssertEqual(
+      HermesAgentHandshakeDiagnostics.reasonCode(httpStatus: 403, errorCategory: "http-status"),
+      "websocket.forbidden"
+    )
+    XCTAssertEqual(
+      HermesAgentHandshakeDiagnostics.reasonCode(httpStatus: nil, errorCategory: "connect-refused"),
+      "transport.connection-refused"
+    )
+    XCTAssertEqual(
+      HermesAgentHandshakeDiagnostics.reasonCode(httpStatus: nil, errorCategory: "malformed-url"),
+      "websocket.handshake-malformed"
+    )
+  }
+
+  func testHandshakeDiagnosticsRemainPrivacySafe() throws {
+    let descriptor = try HermesAgentProtocolDescriptor.discover(
+      statusData: statusData(authRequired: false, authMode: nil),
+      openAPIMetadataData: openAPIData(paths: ["/api/status"]),
+      implementationMethods: ["session.create"]
+    )
+
+    let diagnostics = HermesAgentHandshakeDiagnostics(
+      descriptor: descriptor,
+      attempted: false,
+      httpStatus: nil,
+      upgradeAccepted: nil,
+      errorCategory: "unknown",
+      durationMilliseconds: 12
+    )
+    let data = try JSONEncoder().encode(diagnostics)
+    let text = String(data: data, encoding: .utf8) ?? ""
+
+    XCTAssertFalse(text.contains("127.0.0.1"))
+    XCTAssertFalse(text.contains("token"))
+    XCTAssertFalse(text.contains("Authorization"))
   }
 
   func testAuthenticationCategoryParsingAndEphemeralIsolation() throws {
