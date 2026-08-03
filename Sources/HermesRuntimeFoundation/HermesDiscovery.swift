@@ -12,17 +12,27 @@ public struct HermesExecutableCandidate: Equatable, Sendable {
   public let originalPath: String
   public let resolvedPath: String
   public let symlinkStatus: SymlinkStatus
+  public let sourceCategory: String
 
   public init(
     allowlistedCandidatePath: String,
     originalPath: String,
     resolvedPath: String,
-    symlinkStatus: SymlinkStatus
+    symlinkStatus: SymlinkStatus,
+    sourceCategory: String = "explicit"
   ) {
     self.allowlistedCandidatePath = allowlistedCandidatePath
     self.originalPath = originalPath
     self.resolvedPath = resolvedPath
     self.symlinkStatus = symlinkStatus
+    self.sourceCategory = Self.safeSourceCategory(sourceCategory)
+  }
+
+  private static func safeSourceCategory(_ value: String) -> String {
+    let filtered = value.filter {
+      $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_")
+    }
+    return filtered.isEmpty ? "unknown" : String(filtered.prefix(64))
   }
 }
 
@@ -70,6 +80,7 @@ public enum HermesDiscoveryError: Error, Equatable, Sendable {
   case executableNotFound(path: String)
   case pathNotAllowlisted(path: String)
   case executableNotRunnable(path: String)
+  case unsafeExecutablePath(path: String)
   case versionCommandFailed(exitCode: Int32)
   case malformedVersionOutput
   case timeout
@@ -87,17 +98,30 @@ public struct HermesDiscoveryResult: Equatable, Sendable {
 
 public final class HermesDiscovery: Sendable {
   private let allowlistedPaths: Set<String>
+  private let sourceCategoriesByPath: [String: String]
+  private let approvedResolvedPathPrefixes: [String]
+  private let currentUserHomePath: String?
+  private let currentUserID: uid_t
+  private let enforceCurrentUserSafety: Bool
   private let timeoutSeconds: TimeInterval
   private let outputLimitBytes: Int
   private let executor: FixedHermesVersionCommandExecuting
 
   public convenience init(
     allowlistedExecutableCandidates: [URL],
+    sourceCategoriesByCandidatePath: [String: String] = [:],
+    approvedResolvedPathPrefixes: [URL] = [],
+    currentUserHomeURL: URL? = nil,
+    enforceCurrentUserSafety: Bool = false,
     timeoutSeconds: TimeInterval = 5,
     outputLimitBytes: Int = 64 * 1024
   ) {
     self.init(
       allowlistedExecutableCandidates: allowlistedExecutableCandidates,
+      sourceCategoriesByCandidatePath: sourceCategoriesByCandidatePath,
+      approvedResolvedPathPrefixes: approvedResolvedPathPrefixes,
+      currentUserHomeURL: currentUserHomeURL,
+      enforceCurrentUserSafety: enforceCurrentUserSafety,
       timeoutSeconds: timeoutSeconds,
       outputLimitBytes: outputLimitBytes,
       executor: FixedHermesVersionCommandExecutor(outputLimitBytes: outputLimitBytes)
@@ -106,6 +130,10 @@ public final class HermesDiscovery: Sendable {
 
   init(
     allowlistedExecutableCandidates: [URL],
+    sourceCategoriesByCandidatePath: [String: String] = [:],
+    approvedResolvedPathPrefixes: [URL] = [],
+    currentUserHomeURL: URL? = nil,
+    enforceCurrentUserSafety: Bool = false,
     timeoutSeconds: TimeInterval,
     outputLimitBytes: Int,
     executor: FixedHermesVersionCommandExecuting
@@ -113,9 +141,85 @@ public final class HermesDiscovery: Sendable {
     self.allowlistedPaths = Set(
       allowlistedExecutableCandidates.map { Self.normalizedPath(for: $0) }
     )
+    var categories: [String: String] = [:]
+    for (path, category) in sourceCategoriesByCandidatePath {
+      categories[Self.normalizedPath(for: URL(fileURLWithPath: path))] = category
+    }
+    self.sourceCategoriesByPath = categories
+    self.approvedResolvedPathPrefixes = approvedResolvedPathPrefixes
+      .map { Self.normalizedPath(for: $0) }
+      .sorted { $0.count > $1.count }
+    self.currentUserHomePath = currentUserHomeURL.map { Self.normalizedPath(for: $0) }
+    self.currentUserID = geteuid()
+    self.enforceCurrentUserSafety = enforceCurrentUserSafety
     self.timeoutSeconds = timeoutSeconds
     self.outputLimitBytes = outputLimitBytes
     self.executor = executor
+  }
+
+  public static func currentUserHomeURL(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
+    if let home = environment["HOME"], !home.isEmpty, home.hasPrefix("/") {
+      return URL(fileURLWithPath: home, isDirectory: true).standardizedFileURL
+    }
+    return URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).standardizedFileURL
+  }
+
+  public static func approvedProductionResolvedPathPrefixes(
+    currentUserHomeURL: URL = currentUserHomeURL()
+  ) -> [URL] {
+    [
+      currentUserHomeURL.appendingPathComponent(".local/bin", isDirectory: true),
+      currentUserHomeURL.appendingPathComponent(".hermes", isDirectory: true),
+      URL(fileURLWithPath: "/opt/homebrew/bin", isDirectory: true),
+      URL(fileURLWithPath: "/usr/local/bin", isDirectory: true),
+    ]
+  }
+
+  public static func productionSourceCategoriesByCandidatePath(
+    candidates: [URL],
+    currentUserHomeURL: URL = currentUserHomeURL()
+  ) -> [String: String] {
+    var values: [String: String] = [:]
+    for candidate in candidates {
+      let path = normalizedPath(for: candidate)
+      let category: String
+      if path == normalizedPath(for: currentUserHomeURL.appendingPathComponent(".local/bin/hermes")) {
+        category = "user-local-bin"
+      } else if path == "/opt/homebrew/bin/hermes" {
+        category = "homebrew"
+      } else if path == "/usr/local/bin/hermes" {
+        category = "usr-local"
+      } else {
+        category = "path"
+      }
+      values[path] = category
+    }
+    return values
+  }
+
+  public func discoverFirstAvailable(candidates: [URL]) throws -> HermesDiscoveryResult {
+    var firstRunnableError: HermesDiscoveryError?
+    var lastMissingError: HermesDiscoveryError?
+    for candidate in candidates {
+      do {
+        return try discover(at: candidate)
+      } catch let error as HermesDiscoveryError {
+        switch error {
+        case .executableNotFound:
+          lastMissingError = error
+        default:
+          firstRunnableError = firstRunnableError ?? error
+        }
+        continue
+      }
+    }
+    if let firstRunnableError {
+      throw firstRunnableError
+    }
+    if let lastMissingError {
+      throw lastMissingError
+    }
+    throw HermesDiscoveryError.executableNotFound(path: "none")
   }
 
   public func discover(at candidateURL: URL) throws -> HermesDiscoveryResult {
@@ -135,11 +239,17 @@ public final class HermesDiscovery: Sendable {
       throw HermesDiscoveryError.executableNotRunnable(path: candidatePath)
     }
 
+    let resolvedPath = Self.resolvedPath(for: candidateURL)
+    if enforceCurrentUserSafety {
+      try validateSafeExecutable(candidatePath: candidatePath, resolvedPath: resolvedPath)
+    }
+
     let candidate = HermesExecutableCandidate(
       allowlistedCandidatePath: candidatePath,
       originalPath: candidatePath,
-      resolvedPath: Self.resolvedPath(for: candidateURL),
-      symlinkStatus: Self.symlinkStatus(for: candidateURL)
+      resolvedPath: resolvedPath,
+      symlinkStatus: Self.symlinkStatus(for: candidateURL),
+      sourceCategory: sourceCategoriesByPath[candidatePath] ?? "explicit"
     )
 
     let output = try executor.runHermesVersion(
@@ -172,6 +282,71 @@ public final class HermesDiscovery: Sendable {
     } catch {
       return .notSymlink
     }
+  }
+
+  private func validateSafeExecutable(candidatePath: String, resolvedPath: String) throws {
+    guard !candidatePath.contains("\u{0}"), !resolvedPath.contains("\u{0}"),
+      Self.pathIsInsideApprovedPrefix(candidatePath, prefixes: approvedResolvedPathPrefixes),
+      Self.pathIsInsideApprovedPrefix(resolvedPath, prefixes: approvedResolvedPathPrefixes),
+      Self.candidateIsRegularExecutableOrSymlinkToRegularExecutable(path: candidatePath),
+      FileManager.default.isReadableFile(atPath: resolvedPath)
+    else {
+      throw HermesDiscoveryError.unsafeExecutablePath(path: candidatePath)
+    }
+    if let home = currentUserHomePath,
+      (Self.pathIsInside(candidatePath, prefix: home) || Self.pathIsInside(resolvedPath, prefix: home))
+    {
+      guard Self.pathIsInside(candidatePath, prefix: home),
+        Self.pathIsInside(resolvedPath, prefix: home)
+      else {
+        throw HermesDiscoveryError.unsafeExecutablePath(path: candidatePath)
+      }
+      guard Self.ownerUID(path: resolvedPath) == currentUserID else {
+        throw HermesDiscoveryError.unsafeExecutablePath(path: candidatePath)
+      }
+    }
+    guard !Self.hasWorldWritableParent(path: candidatePath),
+      !Self.hasWorldWritableParent(path: resolvedPath)
+    else {
+      throw HermesDiscoveryError.unsafeExecutablePath(path: candidatePath)
+    }
+  }
+
+  private static func pathIsInsideApprovedPrefix(_ path: String, prefixes: [String]) -> Bool {
+    prefixes.contains { pathIsInside(path, prefix: $0) }
+  }
+
+  private static func pathIsInside(_ path: String, prefix: String) -> Bool {
+    path == prefix || path.hasPrefix(prefix.hasSuffix("/") ? prefix : "\(prefix)/")
+  }
+
+  private static func ownerUID(path: String) -> uid_t? {
+    var info = stat()
+    guard lstat(path, &info) == 0 else { return nil }
+    return info.st_uid
+  }
+
+  private static func candidateIsRegularExecutableOrSymlinkToRegularExecutable(path: String) -> Bool {
+    var candidateInfo = stat()
+    guard lstat(path, &candidateInfo) == 0 else { return false }
+    let candidateMode = candidateInfo.st_mode & S_IFMT
+    guard candidateMode == S_IFREG || candidateMode == S_IFLNK else { return false }
+
+    var resolvedInfo = stat()
+    guard stat(path, &resolvedInfo) == 0 else { return false }
+    return resolvedInfo.st_mode & S_IFMT == S_IFREG
+  }
+
+  private static func hasWorldWritableParent(path: String) -> Bool {
+    var url = URL(fileURLWithPath: path).deletingLastPathComponent()
+    while url.path != "/" {
+      var info = stat()
+      if lstat(url.path, &info) == 0, (info.st_mode & S_IWOTH) != 0 {
+        return true
+      }
+      url.deleteLastPathComponent()
+    }
+    return false
   }
 }
 

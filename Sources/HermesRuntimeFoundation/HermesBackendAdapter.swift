@@ -9,9 +9,37 @@ public protocol HermesBackendAdapting: Sendable {
 
 public protocol HermesBackendDiscovering: Sendable {
   func discover(at candidateURL: URL) throws -> HermesDiscoveryResult
+  func discoverFirstAvailable(candidates: [URL]) throws -> HermesDiscoveryResult
 }
 
 extension HermesDiscovery: HermesBackendDiscovering {}
+
+public extension HermesBackendDiscovering {
+  func discoverFirstAvailable(candidates: [URL]) throws -> HermesDiscoveryResult {
+    var firstRunnableError: HermesDiscoveryError?
+    var lastMissingError: HermesDiscoveryError?
+    for candidate in candidates {
+      do {
+        return try discover(at: candidate)
+      } catch let error as HermesDiscoveryError {
+        switch error {
+        case .executableNotFound:
+          lastMissingError = error
+        default:
+          firstRunnableError = firstRunnableError ?? error
+        }
+        continue
+      }
+    }
+    if let firstRunnableError {
+      throw firstRunnableError
+    }
+    if let lastMissingError {
+      throw lastMissingError
+    }
+    throw HermesDiscoveryError.executableNotFound(path: "none")
+  }
+}
 
 public protocol HermesBackendSupervising: Sendable {
   var state: HermesProcessState { get }
@@ -108,6 +136,7 @@ public final class HermesBackendAdapter: HermesBackendAdapting, @unchecked Senda
     -> HermesBackendProtocolClienting
 
   private let configuration: HermesBackendAdapterConfiguration
+  private let executableCandidates: [URL]
   private let discovery: HermesBackendDiscovering
   private let supervisor: HermesBackendSupervising
   private let protocolClientFactory: ProtocolClientFactory
@@ -123,6 +152,7 @@ public final class HermesBackendAdapter: HermesBackendAdapting, @unchecked Senda
   ) {
     self.init(
       configuration: configuration,
+      executableCandidates: allowlistedExecutableCandidates,
       discovery: HermesDiscovery(allowlistedExecutableCandidates: allowlistedExecutableCandidates),
       supervisor: supervisor
     )
@@ -130,11 +160,13 @@ public final class HermesBackendAdapter: HermesBackendAdapting, @unchecked Senda
 
   public init(
     configuration: HermesBackendAdapterConfiguration,
+    executableCandidates: [URL]? = nil,
     discovery: HermesBackendDiscovering,
     supervisor: HermesBackendSupervising = HermesProcessSupervisor(),
     protocolClientFactory: ProtocolClientFactory? = nil
   ) {
     self.configuration = configuration
+    self.executableCandidates = executableCandidates ?? [configuration.executableURL]
     self.discovery = discovery
     self.supervisor = supervisor
     self.protocolClientFactory =
@@ -150,7 +182,7 @@ public final class HermesBackendAdapter: HermesBackendAdapting, @unchecked Senda
 
   public func discover() throws -> HermesDiscoveryResult {
     do {
-      let result = try discovery.discover(at: configuration.executableURL)
+      let result = try discovery.discoverFirstAvailable(candidates: executableCandidates)
       lock.withLock { currentDiscovery = result }
       return result
     } catch {

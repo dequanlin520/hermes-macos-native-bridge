@@ -56,6 +56,16 @@ public struct HermesBridgeCLIStatusOutput: Codable, Equatable, Sendable {
   }
 }
 
+private extension HermesPermissionsDoctorReport {
+  func value(_ kind: HermesPermissionKind, _ keyPath: KeyPath<HermesPermissionCheck, String>) -> String {
+    checks.first { $0.kind == kind }?[keyPath: keyPath] ?? "unknown"
+  }
+
+  func blocksFirstRun(_ kind: HermesPermissionKind) -> String {
+    checks.first { $0.kind == kind }?.blocksFirstRun == true ? "yes" : "no"
+  }
+}
+
 public enum HermesBridgeDoctorCheckStatus: String, Codable, Equatable, Sendable {
   case pass
   case warning
@@ -115,6 +125,56 @@ public struct HermesBridgeCLIErrorOutput: Codable, Equatable, Sendable {
     self.schemaVersion = schemaVersion
     self.code = code
     self.message = message
+  }
+}
+
+public struct HermesPermissionGateDiagnosticOutput: Codable, Equatable, Sendable {
+  public let corePermissionGate: String
+  public let blockingPermissionCount: Int
+  public let inputMonitoringClassification: String
+  public let inputMonitoringStatus: String
+  public let inputMonitoringBlocksFirstRun: String
+  public let accessibilityClassification: String
+  public let accessibilityStatus: String
+  public let accessibilityBlocksFirstRun: String
+  public let screenRecordingStatus: String
+  public let fullDiskAccessStatus: String
+  public let automationStatus: String
+  public let optionalPermissionCount: Int
+  public let permissionModelParity: String
+
+  public init(report: HermesPermissionsDoctorReport) {
+    self.corePermissionGate = report.corePermissionGatePassed ? "pass" : "blocked"
+    self.blockingPermissionCount = report.blockingFirstRunChecks.count
+    self.inputMonitoringClassification = report.value(.inputMonitoring, \.classification.rawValue)
+    self.inputMonitoringStatus = report.value(.inputMonitoring, \.currentStatus.rawValue)
+    self.inputMonitoringBlocksFirstRun = report.blocksFirstRun(.inputMonitoring)
+    self.accessibilityClassification = report.value(.accessibility, \.classification.rawValue)
+    self.accessibilityStatus = report.value(.accessibility, \.currentStatus.rawValue)
+    self.accessibilityBlocksFirstRun = report.blocksFirstRun(.accessibility)
+    self.screenRecordingStatus = report.value(.screenRecording, \.currentStatus.rawValue)
+    self.fullDiskAccessStatus = report.value(.fullDiskAccess, \.currentStatus.rawValue)
+    self.automationStatus = report.value(.automation, \.currentStatus.rawValue)
+    self.optionalPermissionCount = report.optionalPermissionCount
+    self.permissionModelParity = report.rc1ModelParity ? "yes" : "no"
+  }
+
+  public var lines: [String] {
+    [
+      "CORE_PERMISSION_GATE=\(corePermissionGate)",
+      "BLOCKING_PERMISSION_COUNT=\(blockingPermissionCount)",
+      "INPUT_MONITORING_CLASSIFICATION=\(inputMonitoringClassification)",
+      "INPUT_MONITORING_STATUS=\(inputMonitoringStatus)",
+      "INPUT_MONITORING_BLOCKS_FIRST_RUN=\(inputMonitoringBlocksFirstRun)",
+      "ACCESSIBILITY_CLASSIFICATION=\(accessibilityClassification)",
+      "ACCESSIBILITY_STATUS=\(accessibilityStatus)",
+      "ACCESSIBILITY_BLOCKS_FIRST_RUN=\(accessibilityBlocksFirstRun)",
+      "SCREEN_RECORDING_STATUS=\(screenRecordingStatus)",
+      "FULL_DISK_ACCESS_STATUS=\(fullDiskAccessStatus)",
+      "AUTOMATION_STATUS=\(automationStatus)",
+      "OPTIONAL_PERMISSION_COUNT=\(optionalPermissionCount)",
+      "PERMISSION_MODEL_PARITY=\(permissionModelParity)",
+    ]
   }
 }
 
@@ -180,6 +240,7 @@ public enum HermesBridgeCLICommand: Equatable, Sendable {
   case status
   case doctor
   case permissionsDoctor
+  case permissionGate
   case recentAuditEvents
   case verifyAudit
   case auditSigningStatus
@@ -288,6 +349,8 @@ public struct HermesBridgeCLIInvocation: Equatable, Sendable {
       self.command = .doctor
     case "permissions-doctor":
       self.command = .permissionsDoctor
+    case "permission-gate":
+      self.command = .permissionGate
     case "recent-audit-events":
       self.command = .recentAuditEvents
     case "verify-audit":
@@ -506,6 +569,12 @@ public struct HermesBridgeControlRunner: Sendable {
         let report = await runtime.doctor.report(layout: layout, timeout: invocation.timeout)
         return success(
           HermesBridgeControlRenderer.renderPermissions(
+            report.permissions, format: invocation.format)
+        )
+      case .permissionGate:
+        let report = await runtime.doctor.report(layout: layout, timeout: invocation.timeout)
+        return success(
+          HermesBridgeControlRenderer.renderPermissionGate(
             report.permissions, format: invocation.format)
         )
       case .recentAuditEvents:
@@ -1013,9 +1082,19 @@ public enum HermesBridgeControlRenderer {
     return
       (["permissionsDoctor: \(report.checks.count) checks"]
       + report.checks.map {
-        "\($0.state.rawValue) \($0.kind.rawValue): \($0.detailCode)"
+        "\($0.currentStatus.rawValue) \($0.kind.rawValue) \($0.classification.rawValue)"
+          + " blocksFirstRun=\($0.blocksFirstRun ? "yes" : "no"): \($0.detailCode)"
           + ($0.remediationCode.map { " [\($0.rawValue)]" } ?? "")
       }).joined(separator: "\n")
+  }
+
+  public static func renderPermissionGate(
+    _ report: HermesPermissionsDoctorReport,
+    format: HermesBridgeCLIOutputFormat
+  ) -> String {
+    let output = HermesPermissionGateDiagnosticOutput(report: report)
+    if format == .json { return json(output) }
+    return output.lines.joined(separator: "\n")
   }
 
   public static func renderAuditEvents(

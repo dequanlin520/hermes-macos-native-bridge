@@ -58,10 +58,19 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
     let resolvedPaths = try paths ?? HermesBridgeServicePaths(configuration: configuration)
     self.paths = resolvedPaths
     self.logger = logger ?? HermesBridgeServiceLogger(logsRoot: resolvedPaths.logsRoot)
-    self.discovery = HermesDiscovery(
+    let enforceProductionDiscoverySafety = Self.shouldEnforceProductionDiscoverySafety(configuration)
+    let serviceDiscovery = HermesDiscovery(
       allowlistedExecutableCandidates: configuration.allowlistedHermesExecutableCandidates,
+      sourceCategoriesByCandidatePath: Self.sourceCategories(
+        for: configuration.allowlistedHermesExecutableCandidates,
+        productionPolicy: enforceProductionDiscoverySafety
+      ),
+      approvedResolvedPathPrefixes: HermesDiscovery.approvedProductionResolvedPathPrefixes(),
+      currentUserHomeURL: HermesDiscovery.currentUserHomeURL(),
+      enforceCurrentUserSafety: enforceProductionDiscoverySafety,
       timeoutSeconds: min(configuration.timeouts.startup, 10)
     )
+    self.discovery = serviceDiscovery
     self.supervisor = HermesProcessSupervisor()
     self.protocolFactory = HermesProtocolClientFactory()
     self.runtimeEventBus = HermesRuntimeEventBus()
@@ -175,8 +184,9 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
     self.runtimeSessionManager = HermesRuntimeSessionManager(
       backendFactory: {
         HermesBackendAdapter(
-          allowlistedExecutableCandidates: configuration.allowlistedHermesExecutableCandidates,
           configuration: backendConfiguration,
+          executableCandidates: configuration.allowlistedHermesExecutableCandidates,
+          discovery: serviceDiscovery,
           supervisor: runtimeSupervisor
         )
       },
@@ -222,7 +232,7 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
       eventPolicyEngine: eventPolicyEngine,
       runtimeCommandAPI: runtimeCommandAPI,
       agentDiscovery: discovery,
-      agentExecutableURL: backendConfiguration.executableURL
+      agentExecutableCandidates: configuration.allowlistedHermesExecutableCandidates
     )
     self.dispatcher = HermesBridgeXPCRequestDispatcher(
       handler: requestHandler,
@@ -294,6 +304,25 @@ public final class HermesBridgeCompositionRoot: @unchecked Sendable {
     }
   }
 
+  private static func shouldEnforceProductionDiscoverySafety(
+    _ configuration: HermesBridgeServiceConfiguration
+  ) -> Bool {
+    configuration.machServiceName == HermesBridgeServiceConfiguration.productionMachServiceName
+      && configuration.runtimeRoot.path.hasSuffix("/Library/Application Support/HermesBridge/Runtime")
+  }
+
+  private static func sourceCategories(
+    for candidates: [URL],
+    productionPolicy: Bool
+  ) -> [String: String] {
+    guard productionPolicy else {
+      return Dictionary(uniqueKeysWithValues: candidates.map {
+        ($0.standardizedFileURL.path, "explicit")
+      })
+    }
+    return HermesDiscovery.productionSourceCategoriesByCandidatePath(candidates: candidates)
+  }
+
   private static func safeCode(for error: Error) -> String {
     String(describing: type(of: error))
       .filter { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_") }
@@ -308,7 +337,7 @@ public struct HermesBridgeServiceRequestHandler: HermesBridgeRequestHandling {
   private let eventPolicyEngine: HermesEventPolicyEngine
   private let runtimeCommandAPI: HermesRuntimeCommandAPI
   private let agentDiscovery: any HermesBackendDiscovering
-  private let agentExecutableURL: URL
+  private let agentExecutableCandidates: [URL]
   private let runtimeEvents: HermesBridgeRuntimeEventSubscriptionCoordinator
 
   public init(
@@ -319,7 +348,7 @@ public struct HermesBridgeServiceRequestHandler: HermesBridgeRequestHandling {
     eventPolicyEngine: HermesEventPolicyEngine,
     runtimeCommandAPI: HermesRuntimeCommandAPI,
     agentDiscovery: any HermesBackendDiscovering,
-    agentExecutableURL: URL
+    agentExecutableCandidates: [URL]
   ) {
     self.orchestrator = orchestrator
     self.bindingRegistry = bindingRegistry
@@ -328,7 +357,7 @@ public struct HermesBridgeServiceRequestHandler: HermesBridgeRequestHandling {
     self.eventPolicyEngine = eventPolicyEngine
     self.runtimeCommandAPI = runtimeCommandAPI
     self.agentDiscovery = agentDiscovery
-    self.agentExecutableURL = agentExecutableURL.standardizedFileURL
+    self.agentExecutableCandidates = agentExecutableCandidates.map { $0.standardizedFileURL }
     self.runtimeEvents = HermesBridgeRuntimeEventSubscriptionCoordinator(commandAPI: runtimeCommandAPI)
   }
 
@@ -593,7 +622,7 @@ public struct HermesBridgeServiceRequestHandler: HermesBridgeRequestHandling {
 
   public func discoverAgent() async throws -> HermesBridgeAgentDiscoveryPayload {
     do {
-      let result = try agentDiscovery.discover(at: agentExecutableURL)
+      let result = try agentDiscovery.discoverFirstAvailable(candidates: agentExecutableCandidates)
       let compatibility = Self.agentCompatibility(for: result.versionInfo.semanticVersion)
       return HermesBridgeAgentDiscoveryPayload(
         status: compatibility == .compatible ? .available : .incompatible,
@@ -606,7 +635,7 @@ public struct HermesBridgeServiceRequestHandler: HermesBridgeRequestHandling {
         return HermesBridgeAgentDiscoveryPayload(status: .unavailable)
       case .malformedVersionOutput, .versionCommandFailed:
         return HermesBridgeAgentDiscoveryPayload(status: .incompatible, compatibility: .incompatible)
-      case .pathNotAllowlisted, .executableNotRunnable, .timeout:
+      case .pathNotAllowlisted, .executableNotRunnable, .unsafeExecutablePath, .timeout:
         return HermesBridgeAgentDiscoveryPayload(status: .unknown)
       }
     } catch {
@@ -616,8 +645,8 @@ public struct HermesBridgeServiceRequestHandler: HermesBridgeRequestHandling {
 
   public func agentCompatibilityReport() -> HermesAgentCompatibilityReport {
     do {
-      let result = try agentDiscovery.discover(at: agentExecutableURL)
-      return HermesAgentCompatibilityReport.discovered(result)
+      let result = try agentDiscovery.discoverFirstAvailable(candidates: agentExecutableCandidates)
+      return HermesAgentCompatibilityReport.discovered(result, sourceCategory: result.candidate.sourceCategory)
     } catch let error as HermesDiscoveryError {
       switch error {
       case .executableNotFound:
@@ -626,6 +655,8 @@ public struct HermesBridgeServiceRequestHandler: HermesBridgeRequestHandling {
         return .blocked(reasonCode: "discovery.path_not_allowlisted")
       case .executableNotRunnable:
         return .blocked(reasonCode: "discovery.executable_not_runnable")
+      case .unsafeExecutablePath:
+        return .blocked(reasonCode: "discovery.path_not_safe")
       case .versionCommandFailed:
         return .blocked(reasonCode: "version.command_failed")
       case .malformedVersionOutput:

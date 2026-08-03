@@ -66,6 +66,111 @@ final class HermesOnboardingTests: XCTestCase {
     XCTAssertTrue(snapshot.availableActions.contains(.openSystemSettings(.accessibility)))
   }
 
+  func testZeroBlockingPermissionsAdvancesThroughConnectionToReady() async {
+    let permissions = HermesOnboardingPermissionReadiness(
+      permissions: [
+        HermesOnboardingPermissionCheck(
+          kind: .inputMonitoring,
+          status: .notRequired,
+          classification: "unsupported",
+          blocksFirstRun: false
+        ),
+        HermesOnboardingPermissionCheck(
+          kind: .automation,
+          status: .featureTriggered,
+          classification: "required-for-enabled-feature",
+          blocksFirstRun: false
+        ),
+      ]
+    )
+
+    let snapshot = await makeCoordinator(permissions: permissions).advance()
+
+    XCTAssertEqual(snapshot.state, .ready)
+    XCTAssertEqual(snapshot.step, .ready)
+    XCTAssertEqual(snapshot.permissions?.permissions.count, 2)
+  }
+
+  func testRetryRecalculatesStalePermissionCache() async {
+    let provider = MutableReadinessProvider(
+      permissions: HermesOnboardingPermissionReadiness(
+        permissions: [
+          HermesOnboardingPermissionCheck(
+            kind: .accessibility,
+            status: .notDetermined,
+            remediation: .openSystemSettings(.accessibility)
+          )
+        ]
+      )
+    )
+    let coordinator = makeCoordinator(provider: provider)
+
+    let blocked = await coordinator.advance()
+    XCTAssertEqual(blocked.state, .permissionsRequired)
+
+    provider.permissions = HermesOnboardingPermissionReadiness(
+      permissions: [
+        HermesOnboardingPermissionCheck(
+          kind: .accessibility,
+          status: .notRequired,
+          classification: "unsupported",
+          blocksFirstRun: false
+        )
+      ]
+    )
+
+    let retried = await coordinator.retry()
+    XCTAssertEqual(retried.state, .ready)
+    XCTAssertEqual(retried.permissions?.permissions.first?.status, .notRequired)
+  }
+
+  func testProductionProviderClassifiesOptionalPermissionsWithoutBlockingFirstRun() async {
+    let client = RecordingXPCReadinessClient()
+    let provider = HermesOnboardingProductionReadinessProvider(
+      client: client,
+      permissionsDoctor: HermesPermissionsDoctor(
+        dependencies: HermesPermissionsDoctorDependencies(
+          accessibilityTrusted: { false },
+          screenCaptureAccess: { .notDetermined },
+          signingSummary: { _ in
+            HermesCodeSigningPermissionSummary(
+              signed: false,
+              appSandbox: false,
+              userSelectedFiles: false,
+              hardenedRuntime: false,
+              developerID: false
+            )
+          }
+        )
+      )
+    )
+
+    let readiness = await provider.checkPermissions()
+
+    XCTAssertTrue(readiness.isReady)
+    XCTAssertEqual(
+      readiness.permission(.inputMonitoring)?.status,
+      HermesOnboardingPermissionStatus.notRequired
+    )
+    XCTAssertEqual(
+      readiness.permission(.accessibility)?.status,
+      HermesOnboardingPermissionStatus.notRequired
+    )
+    XCTAssertEqual(
+      readiness.permission(.screenRecording)?.status,
+      HermesOnboardingPermissionStatus.notRequired
+    )
+    XCTAssertEqual(
+      readiness.permission(.fullDiskAccess)?.status,
+      HermesOnboardingPermissionStatus.notRequired
+    )
+    XCTAssertEqual(
+      readiness.permission(.automation)?.status,
+      HermesOnboardingPermissionStatus.featureTriggered
+    )
+    XCTAssertTrue(readiness.permissions.allSatisfy { !$0.blocksFirstRun })
+  }
+
   func testRetryTransitions() async {
     let provider = MutableReadinessProvider(service: .unavailable)
     let coordinator = makeCoordinator(provider: provider)
@@ -525,6 +630,10 @@ private extension HermesOnboardingPermissionReadiness {
       HermesOnboardingPermissionCheck(kind: $0, status: .granted)
     }
   )
+
+  func permission(_ kind: HermesOnboardingPermissionKind) -> HermesOnboardingPermissionCheck? {
+    permissions.first { $0.kind == kind }
+  }
 }
 
 private extension HermesOnboardingConnectionReadiness {

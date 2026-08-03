@@ -314,7 +314,7 @@ let package = Package(
     ),
     .executableTarget(
       name: "HermesMenuBarExecutable",
-      dependencies: ["HermesMenuBar", "HermesRuntimeFoundation"]
+      dependencies: ["HermesBridgeXPC", "HermesMenuBar", "HermesRuntimeFoundation"]
     ),
     .executableTarget(
       name: "M6001AuditFixture",

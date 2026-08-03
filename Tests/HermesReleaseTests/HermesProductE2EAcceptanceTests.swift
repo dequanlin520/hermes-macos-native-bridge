@@ -92,9 +92,26 @@ final class HermesProductE2EAcceptanceTests: XCTestCase {
     }
     XCTAssertTrue(helper.contains("HermesBridgeServiceConfiguration.productionDefault()"))
     XCTAssertTrue(helper.contains("HermesDiscovery("))
-    XCTAssertTrue(helper.contains("HermesAgentVersionDescriptor(result: result, sourceCategory: \"PATH\")"))
+    XCTAssertTrue(helper.contains("sourceCategory: result.candidate.sourceCategory"))
     XCTAssertTrue(helper.contains("HermesProductCapabilitySnapshot.rc1("))
     XCTAssertTrue(script.contains("preflight_inspect"))
+  }
+
+  func testReadOnlyDiscoveryDiagnosticKeysDoNotExposePaths() throws {
+    let helper = try read("Sources/HermesReleaseAgentPreflight/HermesReleaseAgentPreflight.swift")
+    for key in [
+      "HERMES_DISCOVERY_STATUS",
+      "HERMES_DISCOVERY_SOURCE",
+      "HERMES_EXECUTABLE_FAMILY",
+      "HERMES_VERSION_STATUS",
+      "HERMES_VERSION",
+      "DISCOVERY_CURRENT_USER_ONLY",
+      "DISCOVERY_PATH_SAFE",
+    ] {
+      XCTAssertTrue(helper.contains("\"\(key)\""), key)
+    }
+    XCTAssertTrue(helper.contains("hermes-discovery-inspect"))
+    XCTAssertFalse(helper.contains("HERMES_EXECUTABLE_PATH"))
   }
 
   func testAcceptanceScriptDoesNotUsePrivateRoutesOrDirectHermesProtocolRequests() throws {

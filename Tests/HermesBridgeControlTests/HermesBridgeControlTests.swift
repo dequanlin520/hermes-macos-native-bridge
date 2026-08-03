@@ -132,6 +132,31 @@ final class HermesBridgeControlTests: XCTestCase {
     XCTAssertFalse(result.stdout.localizedCaseInsensitiveContains("token"))
   }
 
+  func testPermissionGateCommandRendersReadOnlyRC1Snapshot() async throws {
+    let report = HermesBridgeDoctorReport(
+      checks: [],
+      permissions: HermesPermissionsDoctor().report(evidence: .init())
+    )
+
+    let result = await runner(doctor: FakeDoctor(report: report)).run(arguments: [
+      "permission-gate",
+    ])
+
+    XCTAssertEqual(result.exitCode, .success)
+    XCTAssertTrue(result.stdout.contains("CORE_PERMISSION_GATE=pass"))
+    XCTAssertTrue(result.stdout.contains("BLOCKING_PERMISSION_COUNT=0"))
+    XCTAssertTrue(result.stdout.contains("INPUT_MONITORING_CLASSIFICATION=unsupported"))
+    XCTAssertTrue(result.stdout.contains("INPUT_MONITORING_STATUS=not-required"))
+    XCTAssertTrue(result.stdout.contains("INPUT_MONITORING_BLOCKS_FIRST_RUN=no"))
+    XCTAssertTrue(result.stdout.contains("ACCESSIBILITY_STATUS=not-required"))
+    XCTAssertTrue(result.stdout.contains("ACCESSIBILITY_BLOCKS_FIRST_RUN=no"))
+    XCTAssertTrue(result.stdout.contains("SCREEN_RECORDING_STATUS=not-required"))
+    XCTAssertTrue(result.stdout.contains("FULL_DISK_ACCESS_STATUS=not-required"))
+    XCTAssertTrue(result.stdout.contains("AUTOMATION_STATUS=feature-triggered"))
+    XCTAssertTrue(result.stdout.contains("PERMISSION_MODEL_PARITY=yes"))
+    XCTAssertFalse(result.stdout.contains("/Users/"))
+  }
+
   func testCapabilitiesOutput() async throws {
     let result = await runner().run(arguments: ["capabilities"])
     XCTAssertEqual(result.exitCode, .success)

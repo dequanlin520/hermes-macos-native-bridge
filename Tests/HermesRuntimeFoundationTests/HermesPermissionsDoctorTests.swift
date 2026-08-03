@@ -10,9 +10,13 @@ final class HermesPermissionsDoctorTests: XCTestCase {
       [
         "appSandbox",
         "userSelectedFiles",
+        "inputMonitoring",
         "accessibility",
         "automation",
         "screenRecording",
+        "fullDiskAccess",
+        "microphone",
+        "camera",
         "launchAgent",
         "machService",
         "securityScopedBookmarks",
@@ -31,32 +35,31 @@ final class HermesPermissionsDoctorTests: XCTestCase {
       ])
   }
 
-  func testAccessibilityGrantedAndDeniedMapping() {
-    let granted = doctor(accessibility: true).report(evidence: .init()).check(.accessibility)
-    XCTAssertEqual(granted.state, .granted)
-    XCTAssertNil(granted.remediationCode)
-
-    let denied = doctor(accessibility: false).report(evidence: .init()).check(.accessibility)
-    XCTAssertEqual(denied.state, .notDetermined)
-    XCTAssertEqual(denied.remediationCode, .openAccessibilitySettings)
+  func testAccessibilityIsFeatureScopedAndDoesNotBlockRC1FirstRun() {
+    let accessibility = doctor(accessibility: false).report(evidence: .init()).check(.accessibility)
+    XCTAssertEqual(accessibility.classification, .unsupported)
+    XCTAssertEqual(accessibility.currentStatus, .notRequired)
+    XCTAssertEqual(accessibility.state, .notApplicable)
+    XCTAssertFalse(accessibility.blocksFirstRun)
+    XCTAssertNil(accessibility.remediationCode)
   }
 
-  func testScreenRecordingGrantedNotDeterminedAndUnsupportedMapping() {
-    XCTAssertEqual(
-      doctor(screen: .granted).report(evidence: .init()).check(.screenRecording).state,
-      .granted
-    )
-    XCTAssertEqual(
-      doctor(screen: .notDetermined).report(evidence: .init()).check(.screenRecording).state,
-      .notDetermined
-    )
-    XCTAssertEqual(
-      doctor(screen: .unavailable).report(evidence: .init()).check(.screenRecording).state,
-      .unavailable
-    )
+  func testNoCoreRCFeatureRequiresInputMonitoringScreenRecordingOrFullDiskAccess() {
+    let report = doctor(screen: .notDetermined).report(evidence: .init())
+    for kind in [
+      HermesPermissionKind.inputMonitoring,
+      .screenRecording,
+      .fullDiskAccess,
+    ] {
+      let check = report.check(kind)
+      XCTAssertEqual(check.currentStatus, .notRequired, kind.rawValue)
+      XCTAssertEqual(check.state, .notApplicable, kind.rawValue)
+      XCTAssertFalse(check.blocksFirstRun, kind.rawValue)
+      XCTAssertNil(check.remediationCode, kind.rawValue)
+    }
   }
 
-  func testNoPromptingChecksUseInjectedPreflightOnly() {
+  func testRC1PermissionModelDoesNotRunAXOrScreenPreflightsForUnsupportedCapabilities() {
     let calls = CallCounter()
     let doctor = HermesPermissionsDoctor(
       dependencies: HermesPermissionsDoctorDependencies(
@@ -71,8 +74,29 @@ final class HermesPermissionsDoctorTests: XCTestCase {
         signingSummary: { _ in .unsigned }
       ))
     _ = doctor.report(evidence: .init())
-    XCTAssertGreaterThanOrEqual(calls.accessibility, 1)
-    XCTAssertGreaterThanOrEqual(calls.screen, 1)
+    XCTAssertEqual(calls.accessibility, 0)
+    XCTAssertEqual(calls.screen, 0)
+  }
+
+  func testAutomationIsFeatureTriggeredAndDoesNotBlockRC1FirstRun() {
+    let automation = doctor().report(evidence: .init()).check(.automation)
+    XCTAssertEqual(automation.classification, .requiredForEnabledFeature)
+    XCTAssertEqual(automation.currentStatus, .featureTriggered)
+    XCTAssertFalse(automation.blocksFirstRun)
+    XCTAssertNil(automation.remediationCode)
+  }
+
+  func testCleanUserCorePermissionGatePassesWithoutManualTCCGrants() {
+    let report = doctor(accessibility: false, screen: .notDetermined).report(evidence: .init())
+
+    XCTAssertTrue(report.corePermissionGatePassed)
+    XCTAssertEqual(report.blockingFirstRunChecks.count, 0)
+    XCTAssertTrue(report.rc1ModelParity)
+    XCTAssertEqual(report.check(.inputMonitoring).currentStatus, .notRequired)
+    XCTAssertEqual(report.check(.accessibility).currentStatus, .notRequired)
+    XCTAssertEqual(report.check(.screenRecording).currentStatus, .notRequired)
+    XCTAssertEqual(report.check(.fullDiskAccess).currentStatus, .notRequired)
+    XCTAssertEqual(report.check(.automation).currentStatus, .featureTriggered)
   }
 
   func testFixedRemediationCodesAndSystemSettingsURLs() {

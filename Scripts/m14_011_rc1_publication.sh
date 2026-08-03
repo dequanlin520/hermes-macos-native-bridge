@@ -28,7 +28,7 @@ KNOWN_LIMITATIONS="$OUTPUT_DIR/known-limitations.md"
 ROLLBACK_DOC="$OUTPUT_DIR/rollback-and-uninstall.md"
 GH_DESCRIPTOR="$EVIDENCE_DIR/github-publication-draft.json"
 
-SUPPORTED_DISTRIBUTION_CLASSIFICATIONS="unsigned-internal-validation signed-notarized-prerelease blocked"
+SUPPORTED_DISTRIBUTION_CLASSIFICATIONS="unsigned-internal-validation signed-notarized-prerelease installer.source-tree-dependency blocked"
 DISTRIBUTION_CLASSIFICATION="unsigned-internal-validation"
 PUBLIC_DISTRIBUTION_ALLOWED="no"
 SIGNED_RELEASE_BLOCKING_REASON="signing.application-identity-unavailable"
@@ -443,6 +443,7 @@ validate_zip_contents() {
   /usr/bin/python3 - "$RC_ARCHIVE" <<'PY'
 import sys
 import zipfile
+import re
 
 archive = sys.argv[1]
 required_suffixes = {
@@ -462,6 +463,11 @@ deny_suffixes = (".swift", ".log", ".key", ".pem", ".p12", ".mobileprovision")
 
 with zipfile.ZipFile(archive) as zf:
     names = [name for name in zf.namelist() if not name.endswith("/")]
+    installer_texts = {
+        name: zf.read(name).decode("utf-8", errors="ignore")
+        for name in names
+        if name.endswith(("Scripts/install-hermes-bridge-app.zsh", "Scripts/uninstall-hermes-bridge-app.zsh"))
+    }
 
 missing = [suffix for suffix in required_suffixes if not any(name.endswith(suffix) for name in names)]
 denied = [
@@ -472,7 +478,30 @@ denied = [
 ]
 if missing or denied:
     raise SystemExit(f"missing={missing} denied={denied[:10]}")
+
+source_dependency_patterns = {
+    "xcodebuild": re.compile(r"\bxcodebuild\b"),
+    "swift build": re.compile(r"\bswift\s+build\b"),
+    "swift run": re.compile(r"\bswift\s+run\b"),
+    "Package.swift lookup": re.compile(r"Package\.swift"),
+    "repository-root discovery": re.compile(r"(repo_root|ROOT_DIR=.*dirname.*\.\.|git -C|rev-parse --show-toplevel)"),
+    "source compilation": re.compile(r"(Sources/|Packaging/HermesBridgeApp|DerivedData|\.build/)"),
+}
+hits = []
+for name, text in installer_texts.items():
+    for label, pattern in source_dependency_patterns.items():
+        if pattern.search(text):
+            hits.append(f"{name}:{label}")
+if hits:
+    print("installer.source-tree-dependency " + ",".join(hits), file=sys.stderr)
+    raise SystemExit(86)
 PY
+  local validation_status=$?
+  if [[ "$validation_status" -eq 86 ]]; then
+    RESULT[M14_011_REASON_CODE]=installer.source-tree-dependency
+    return 1
+  fi
+  [[ "$validation_status" -eq 0 ]] || return "$validation_status"
   RESULT[ZIP_CONTENT_VALID]=yes
   RESULT[NO_SOURCE_CODE_INCLUDED]=yes
 }
@@ -490,6 +519,7 @@ patterns = {
     "secret": re.compile(r"(?i)(BEGIN (RSA |OPENSSH |EC |DSA |)?PRIVATE KEY|bearer\s+[A-Za-z0-9._-]+|token\s*[:=]|password\s*[:=]|secret\s*[:=])"),
     "absolute_path": re.compile(r"/Users/[^ \n\t\"]+"),
     "username": re.compile(re.escape(username)) if username else re.compile(r"a^"),
+    "unused_privacy": re.compile(r"(NSInputMonitoringUsageDescription|NSScreenCaptureUsageDescription|NSSystemAdministrationUsageDescription|NSAppleEventsUsageDescription|NSAccessibilityUsageDescription|NSMicrophoneUsageDescription|NSCameraUsageDescription)"),
 }
 hits = []
 for root in roots:
@@ -563,7 +593,7 @@ assemble() {
     return "$(result_exit_code)"
   }
   RESULT[RC_ARTIFACT_FILENAME_VALID]=yes
-  validate_zip_contents || { RESULT[M14_011_REASON_CODE]=zip.contents-invalid; finish_result; return "$(result_exit_code)"; }
+  validate_zip_contents || { set_reason_if_unknown zip.contents-invalid; finish_result; return "$(result_exit_code)"; }
   print -r -- "$(sha256 "$RC_ARCHIVE")  $RC_ARCHIVE_NAME" > "$SHA256SUMS"
   update_checksum_state || { finish_result; return "$(result_exit_code)"; }
   write_release_notes

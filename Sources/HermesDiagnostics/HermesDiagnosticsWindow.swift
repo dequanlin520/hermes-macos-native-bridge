@@ -114,7 +114,11 @@ public struct HermesDiagnosticsWindow: View {
           ForEach(permissions) { permission in
             GridRow {
               Text(permission.kind)
-              Text(permission.state)
+              Text(permission.currentStatus)
+                .foregroundStyle(.secondary)
+              Text(permission.classification)
+                .foregroundStyle(.secondary)
+              Text(permission.blocksFirstRun ? "blocks First Run" : "does not block")
                 .foregroundStyle(.secondary)
               Text(permission.detailCode)
                 .foregroundStyle(.secondary)

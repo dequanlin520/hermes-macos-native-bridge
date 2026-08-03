@@ -169,13 +169,61 @@ final class HermesBridgeServiceTests: XCTestCase {
     await fixture.host.stop()
   }
 
+  func testComposedServiceAgentDiscoveryFallsBackToCurrentUserLocalBinWhenPathMissing() async throws {
+    let home = temporaryDirectory.appendingPathComponent("home", isDirectory: true)
+    let localBin = home.appendingPathComponent(".local/bin", isDirectory: true)
+    let venvBin = home.appendingPathComponent(".hermes/hermes-agent/venv/bin", isDirectory: true)
+    try FileManager.default.createDirectory(at: localBin, withIntermediateDirectories: true)
+    try FileManager.default.createDirectory(at: venvBin, withIntermediateDirectories: true)
+    let target = venvBin.appendingPathComponent("hermes")
+    try "#!/bin/zsh\nprintf 'Hermes Agent v0.18.2 (2026.7.7.2)\\n'\n"
+      .write(to: target, atomically: true, encoding: .utf8)
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: target.path)
+    let userLocal = localBin.appendingPathComponent("hermes")
+    try FileManager.default.createSymbolicLink(atPath: userLocal.path, withDestinationPath: target.path)
+    let pathMissing = temporaryDirectory.appendingPathComponent("path-hermes-missing")
+    let config = try configuration(allowlistedHermesExecutableCandidates: [pathMissing, userLocal])
+    let fixture = try AnonymousHostFixture(configuration: config)
+    try fixture.host.start()
+
+    let response = try await fixture.send(operation: .capabilities)
+
+    guard case .success(.capabilities(let payload)) = response.result else {
+      return XCTFail("expected capabilities")
+    }
+    XCTAssertEqual(payload.productCapabilitySnapshot?.observedHermesVersion, "0.18.2")
+    XCTAssertEqual(
+      payload.productCapabilitySnapshot?.capability(.hermesExecutableDiscovery)?.status,
+      .supported
+    )
+    XCTAssertEqual(fixture.compositionRoot.runtimeSessionManager.listSessions(), [])
+    await fixture.host.stop()
+  }
+
+  func testProductionCandidateOrderIncludesUserLocalWithoutLaunchAgentPath() throws {
+    let home = temporaryDirectory.appendingPathComponent("home", isDirectory: true)
+    let candidates = HermesBridgeServiceConfiguration.productionHermesExecutableCandidates(
+      environment: ["PATH": "/usr/bin:/bin:/usr/sbin:/sbin"],
+      currentUserHomeURL: home
+    )
+
+    XCTAssertEqual(
+      candidates.map(\.path),
+      [
+        home.appendingPathComponent(".local/bin/hermes").path,
+        "/opt/homebrew/bin/hermes",
+        "/usr/local/bin/hermes",
+      ]
+    )
+  }
+
   func testServiceOwnsConcreteAgentDiscoveryImplementation() throws {
     let source = try String(
       contentsOfFile: "Sources/HermesBridgeService/HermesBridgeCompositionRoot.swift",
       encoding: .utf8
     )
 
-    XCTAssertTrue(source.contains("self.discovery = HermesDiscovery("))
+    XCTAssertTrue(source.contains("let serviceDiscovery = HermesDiscovery("))
     XCTAssertTrue(source.contains("agentDiscovery: discovery"))
   }
 
@@ -305,14 +353,15 @@ final class HermesBridgeServiceTests: XCTestCase {
     schemaVersion: Int = HermesBridgeServiceConfiguration.currentSchemaVersion,
     machServiceName: String = HermesBridgeServiceConfiguration.productionMachServiceName,
     allowTestMachServiceName: Bool = false,
-    bindings: [HermesBridgeBindingDefinition] = []
+    bindings: [HermesBridgeBindingDefinition] = [],
+    allowlistedHermesExecutableCandidates: [URL]? = nil
   ) throws -> HermesBridgeServiceConfiguration {
     try HermesBridgeServiceConfiguration(
       schemaVersion: schemaVersion,
       machServiceName: machServiceName,
       runtimeRoot: temporaryDirectory.appendingPathComponent("Runtime", isDirectory: true),
       requestStateRoot: temporaryDirectory.appendingPathComponent("State", isDirectory: true),
-      allowlistedHermesExecutableCandidates: [try executableFixture()],
+      allowlistedHermesExecutableCandidates: allowlistedHermesExecutableCandidates ?? [try executableFixture()],
       loopbackPortPolicy: HermesBridgeLoopbackPortPolicy(fixedPort: try freePort()),
       timeouts: HermesBridgeServiceTimeouts(
         startup: 1,

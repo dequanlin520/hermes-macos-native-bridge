@@ -100,6 +100,81 @@ final class HermesDiagnosticsTests: XCTestCase {
     XCTAssertTrue(dump.contains("<redacted>") || dump.contains("unknown"))
   }
 
+  func testOptionalPermissionsRemainDiagnosticOnly() async throws {
+    let commandAPI = RecordingDiagnosticsCommandAPI(sessions: [Self.status(.running)])
+    let permissions = StaticPermissionsReporter(
+      states: [
+        HermesDiagnosticPermissionState(
+          kind: "Input Monitoring",
+          classification: "unsupported",
+          state: "notApplicable",
+          currentStatus: "not-required",
+          blocksFirstRun: false,
+          capabilityOwner: "product-scope",
+          reason: "RC1 does not include keyboard monitoring.",
+          detailCode: "not_required_by_rc1"
+        ),
+        HermesDiagnosticPermissionState(
+          kind: "Automation",
+          classification: "required-for-enabled-feature",
+          state: "notDetermined",
+          currentStatus: "feature-triggered",
+          blocksFirstRun: false,
+          capabilityOwner: "app-intents",
+          reason: "Requested only when the feature runs.",
+          detailCode: "feature_triggered_only"
+        ),
+      ]
+    )
+    let provider = HermesDiagnosticProvider(
+      commandAPI: commandAPI,
+      permissions: permissions,
+      environment: HermesDiagnosticEnvironmentSource(
+        macOSVersion: { "macOS 13.0" },
+        architecture: { "arm64" },
+        generatedAt: { Date(timeIntervalSince1970: 1_800_000_000) }
+      )
+    )
+
+    let result = try await provider.runDiagnostics()
+
+    XCTAssertEqual(result.issues, [])
+    XCTAssertEqual(result.environmentInfo.permissionStates.first?.classification, "unsupported")
+    XCTAssertEqual(result.environmentInfo.permissionStates.first?.currentStatus, "not-required")
+    XCTAssertFalse(result.environmentInfo.permissionStates.first?.blocksFirstRun ?? true)
+  }
+
+  func testBlockingPermissionIsTheOnlyPermissionIssueSource() async throws {
+    let commandAPI = RecordingDiagnosticsCommandAPI(sessions: [Self.status(.running)])
+    let permissions = StaticPermissionsReporter(
+      states: [
+        HermesDiagnosticPermissionState(
+          kind: "Accessibility",
+          classification: "required-for-core",
+          state: "notDetermined",
+          currentStatus: "not-determined",
+          blocksFirstRun: true,
+          capabilityOwner: "fixture",
+          reason: "fixture",
+          detailCode: "fixture"
+        )
+      ]
+    )
+    let provider = HermesDiagnosticProvider(
+      commandAPI: commandAPI,
+      permissions: permissions,
+      environment: HermesDiagnosticEnvironmentSource(
+        macOSVersion: { "macOS 13.0" },
+        architecture: { "arm64" },
+        generatedAt: { Date(timeIntervalSince1970: 1_800_000_000) }
+      )
+    )
+
+    let result = try await provider.runDiagnostics()
+
+    XCTAssertEqual(result.issues, ["Accessibility not-determined"])
+  }
+
   private func provider(
     commandAPI: RecordingDiagnosticsCommandAPI,
     eventBusState: HermesDiagnosticComponentState = .unknown

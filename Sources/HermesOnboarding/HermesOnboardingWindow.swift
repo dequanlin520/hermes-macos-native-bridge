@@ -124,6 +124,10 @@ public struct HermesOnboardingWindow: View {
               Text(permission.kind.rawValue)
               Text(permission.status.rawValue)
                 .foregroundStyle(.secondary)
+              Text(permission.classification)
+                .foregroundStyle(.secondary)
+              Text(permission.blocksFirstRun ? "blocks First Run" : "does not block")
+                .foregroundStyle(.secondary)
             }
           }
         }

@@ -5,9 +5,13 @@ import Security
 public enum HermesPermissionKind: String, Codable, CaseIterable, Equatable, Sendable {
   case appSandbox
   case userSelectedFiles
+  case inputMonitoring
   case accessibility
   case automation
   case screenRecording
+  case fullDiskAccess
+  case microphone
+  case camera
   case launchAgent
   case machService
   case securityScopedBookmarks
@@ -23,6 +27,28 @@ public enum HermesPermissionKind: String, Codable, CaseIterable, Equatable, Send
   case signing
   case hardenedRuntime
   case notarization
+}
+
+public enum HermesPermissionClassification: String, Codable, CaseIterable, Equatable, Sendable {
+  case requiredForCore = "required-for-core"
+  case requiredForEnabledFeature = "required-for-enabled-feature"
+  case optional
+  case unsupported
+  case notApplicable = "not-applicable"
+}
+
+public enum HermesPermissionCurrentStatus: String, Codable, CaseIterable, Equatable, Sendable {
+  case granted
+  case denied
+  case restricted
+  case notDetermined = "not-determined"
+  case unavailable
+  case notApplicable = "not-applicable"
+  case misconfigured
+  case unknown
+  case notRequired = "not-required"
+  case featureTriggered = "feature-triggered"
+  case unsupported
 }
 
 public enum HermesPermissionState: String, Codable, CaseIterable, Equatable, Sendable {
@@ -59,7 +85,13 @@ public enum HermesPermissionRemediationCode: String, Codable, CaseIterable, Equa
 
 public struct HermesPermissionCheck: Codable, Equatable, Sendable {
   public let kind: HermesPermissionKind
+  public let classification: HermesPermissionClassification
+  public let currentStatus: HermesPermissionCurrentStatus
   public let state: HermesPermissionState
+  public let blocksFirstRun: Bool
+  public let capabilityOwner: String
+  public let userReadableReason: String
+  public let settingsDestination: String?
   public let detailCode: String
   public let remediationCode: HermesPermissionRemediationCode?
 
@@ -67,10 +99,24 @@ public struct HermesPermissionCheck: Codable, Equatable, Sendable {
     kind: HermesPermissionKind,
     state: HermesPermissionState,
     detailCode: String,
+    classification: HermesPermissionClassification? = nil,
+    currentStatus: HermesPermissionCurrentStatus? = nil,
+    blocksFirstRun: Bool? = nil,
+    capabilityOwner: String? = nil,
+    userReadableReason: String? = nil,
     remediationCode: HermesPermissionRemediationCode? = nil
   ) {
     self.kind = kind
+    let policy = HermesRC1PermissionPolicy.policy(for: kind)
+    self.classification = classification ?? policy.classification
+    self.currentStatus = currentStatus ?? policy.currentStatus ?? HermesPermissionCurrentStatus(state)
     self.state = state
+    self.blocksFirstRun = blocksFirstRun ?? (self.classification == .requiredForCore && state.isBlocking)
+    self.capabilityOwner = Self.safeDisplay(capabilityOwner ?? policy.capabilityOwner)
+    self.userReadableReason = Self.safeDisplay(userReadableReason ?? policy.userReadableReason)
+    self.settingsDestination = remediationCode
+      .flatMap(HermesSystemSettingsRemediationURL.url(for:))?
+      .absoluteString
     self.detailCode = Self.safeToken(detailCode)
     self.remediationCode = remediationCode
   }
@@ -80,6 +126,14 @@ public struct HermesPermissionCheck: Codable, Equatable, Sendable {
       $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_" || $0 == "-")
     }
     return String((filtered.isEmpty ? "unknown" : filtered).prefix(64))
+  }
+
+  private static func safeDisplay(_ value: String) -> String {
+    let filtered = value.unicodeScalars.filter { scalar in
+      scalar.value >= 0x20 && scalar.value != 0x7F
+        && scalar != "/" && scalar != ":" && scalar != "{" && scalar != "}"
+    }
+    return String(String.UnicodeScalarView(filtered)).prefixString(180)
   }
 }
 
@@ -105,6 +159,28 @@ public struct HermesPermissionsDoctorReport: Codable, Equatable, Sendable {
         ?? HermesPermissionCheck(kind: $0, state: .unknown, detailCode: "not_checked")
     }
     self.auditIntegrity = auditIntegrity
+  }
+
+  public var blockingFirstRunChecks: [HermesPermissionCheck] {
+    checks.filter(\.blocksFirstRun)
+  }
+
+  public var optionalPermissionCount: Int {
+    checks.filter { $0.classification == .optional || $0.classification == .requiredForEnabledFeature }.count
+  }
+
+  public var rc1ModelParity: Bool {
+    let byKind = Dictionary(uniqueKeysWithValues: checks.map { ($0.kind, $0) })
+    return HermesPermissionKind.allCases.allSatisfy { kind in
+      guard let check = byKind[kind] else { return false }
+      let policy = HermesRC1PermissionPolicy.policy(for: kind)
+      return check.classification == policy.classification
+        && check.blocksFirstRun == (check.classification == .requiredForCore && check.state.isBlocking)
+    }
+  }
+
+  public var corePermissionGatePassed: Bool {
+    blockingFirstRunChecks.isEmpty
   }
 }
 
@@ -133,6 +209,84 @@ public struct HermesSystemSettingsRemediationURL: Equatable, Sendable {
       .exportAuditTrustAnchor, .rotateAuditSigningKey, .verifyAuditLog,
       .configureAuditSigningAccess, .resumeAuditKeyRotation, .resetAuditSigningConfiguration:
       return nil
+    }
+  }
+}
+
+public struct HermesRC1PermissionPolicy: Equatable, Sendable {
+  public let classification: HermesPermissionClassification
+  public let currentStatus: HermesPermissionCurrentStatus?
+  public let capabilityOwner: String
+  public let userReadableReason: String
+
+  public static func policy(for kind: HermesPermissionKind) -> Self {
+    switch kind {
+    case .inputMonitoring:
+      return Self(
+        classification: .unsupported,
+        currentStatus: .notRequired,
+        capabilityOwner: "product-scope",
+        userReadableReason: "RC1 does not include keyboard monitoring or GUI Computer Use."
+      )
+    case .accessibility:
+      return Self(
+        classification: .unsupported,
+        currentStatus: .notRequired,
+        capabilityOwner: "product-scope",
+        userReadableReason: "RC1 exposes no enabled production feature that uses Accessibility APIs."
+      )
+    case .automation:
+      return Self(
+        classification: .requiredForEnabledFeature,
+        currentStatus: .featureTriggered,
+        capabilityOwner: "app-intents",
+        userReadableReason: "Automation is requested only when an approved Shortcut or Apple Event operation is invoked."
+      )
+    case .screenRecording:
+      return Self(
+        classification: .unsupported,
+        currentStatus: .notRequired,
+        capabilityOwner: "product-scope",
+        userReadableReason: "RC1 does not include screen capture or screen control."
+      )
+    case .fullDiskAccess:
+      return Self(
+        classification: .unsupported,
+        currentStatus: .notRequired,
+        capabilityOwner: "file-authorization",
+        userReadableReason: "RC1 file access uses user-selected paths and scoped authorization."
+      )
+    case .microphone:
+      return Self(
+        classification: .unsupported,
+        currentStatus: .notRequired,
+        capabilityOwner: "product-scope",
+        userReadableReason: "RC1 does not capture microphone audio."
+      )
+    case .camera:
+      return Self(
+        classification: .unsupported,
+        currentStatus: .notRequired,
+        capabilityOwner: "product-scope",
+        userReadableReason: "RC1 does not capture camera video."
+      )
+    case .notifications:
+      return Self(
+        classification: .optional,
+        currentStatus: nil,
+        capabilityOwner: "native-app",
+        userReadableReason: "Notifications are optional user-facing alerts and do not gate core readiness."
+      )
+    case .appSandbox, .userSelectedFiles, .launchAgent, .machService,
+      .securityScopedBookmarks, .authorizedFileRoots, .appIntentMetadata, .auditSigningKey,
+      .auditKeychain, .auditTrustAnchor, .auditUnsignedLegacySegments, .auditInvalidSignatures,
+      .auditUnknownSigner, .signing, .hardenedRuntime, .notarization:
+      return Self(
+        classification: .notApplicable,
+        currentStatus: nil,
+        capabilityOwner: "diagnostics",
+        userReadableReason: "This is diagnostic configuration evidence, not a macOS privacy grant required for First Run."
+      )
     }
   }
 }
@@ -298,23 +452,39 @@ public struct HermesPermissionsDoctor: Sendable {
         remediationCode: signing.appSandbox && !signing.userSelectedFiles ? .rebuildSignedApp : nil
       ),
       HermesPermissionCheck(
+        kind: .inputMonitoring,
+        state: .notApplicable,
+        detailCode: "not_required_by_rc1"
+      ),
+      HermesPermissionCheck(
         kind: .accessibility,
-        state: dependencies.accessibilityTrusted() ? .granted : .notDetermined,
-        detailCode: "preflight_only",
-        remediationCode: dependencies.accessibilityTrusted() ? nil : .openAccessibilitySettings
+        state: .notApplicable,
+        detailCode: "not_required_by_rc1"
       ),
       HermesPermissionCheck(
         kind: .automation,
         state: .notDetermined,
-        detailCode: "no_nonprompting_public_probe",
-        remediationCode: .openAutomationSettings
+        detailCode: "feature_triggered_only"
       ),
       HermesPermissionCheck(
         kind: .screenRecording,
-        state: dependencies.screenCaptureAccess(),
-        detailCode: "preflight_only",
-        remediationCode: dependencies.screenCaptureAccess() == .granted
-          ? nil : .openScreenRecordingSettings
+        state: .notApplicable,
+        detailCode: "not_required_by_rc1"
+      ),
+      HermesPermissionCheck(
+        kind: .fullDiskAccess,
+        state: .notApplicable,
+        detailCode: "not_required_by_rc1"
+      ),
+      HermesPermissionCheck(
+        kind: .microphone,
+        state: .notApplicable,
+        detailCode: "not_required_by_rc1"
+      ),
+      HermesPermissionCheck(
+        kind: .camera,
+        state: .notApplicable,
+        detailCode: "not_required_by_rc1"
       ),
       HermesPermissionCheck(
         kind: .launchAgent,
@@ -475,5 +645,37 @@ public struct HermesPermissionsDoctor: Sendable {
     case .retired:
       return "retired"
     }
+  }
+}
+
+extension HermesPermissionState {
+  fileprivate var isBlocking: Bool {
+    switch self {
+    case .denied, .restricted, .notDetermined, .misconfigured, .unknown:
+      return true
+    case .granted, .unavailable, .notApplicable:
+      return false
+    }
+  }
+}
+
+extension HermesPermissionCurrentStatus {
+  fileprivate init(_ state: HermesPermissionState) {
+    switch state {
+    case .granted: self = .granted
+    case .denied: self = .denied
+    case .restricted: self = .restricted
+    case .notDetermined: self = .notDetermined
+    case .unavailable: self = .unavailable
+    case .notApplicable: self = .notApplicable
+    case .misconfigured: self = .misconfigured
+    case .unknown: self = .unknown
+    }
+  }
+}
+
+extension String {
+  fileprivate func prefixString(_ count: Int) -> String {
+    String(prefix(count))
   }
 }

@@ -54,19 +54,52 @@ public struct HermesDiagnosticEnvironmentInfo: Codable, Equatable, Sendable {
 public struct HermesDiagnosticPermissionState: Codable, Equatable, Identifiable, Sendable {
   public var id: String { kind }
   public let kind: String
+  public let classification: String
   public let state: String
+  public let currentStatus: String
+  public let blocksFirstRun: Bool
+  public let capabilityOwner: String
+  public let reason: String
   public let detailCode: String
 
-  public init(kind: String, state: String, detailCode: String) {
+  public init(
+    kind: String,
+    classification: String = "unknown",
+    state: String,
+    currentStatus: String? = nil,
+    blocksFirstRun: Bool = false,
+    capabilityOwner: String = "unknown",
+    reason: String = "",
+    detailCode: String
+  ) {
     self.kind = HermesDiagnosticRedactor.safeRedactedToken(kind, fallback: "unknown")
+    self.classification = HermesDiagnosticRedactor.safeRedactedToken(
+      classification,
+      fallback: "unknown"
+    )
     self.state = HermesDiagnosticRedactor.safeRedactedToken(state, fallback: "unknown")
+    self.currentStatus = HermesDiagnosticRedactor.safeRedactedToken(
+      currentStatus ?? state,
+      fallback: "unknown"
+    )
+    self.blocksFirstRun = blocksFirstRun
+    self.capabilityOwner = HermesDiagnosticRedactor.safeRedactedToken(
+      capabilityOwner,
+      fallback: "unknown"
+    )
+    self.reason = HermesDiagnosticRedactor.safeDisplayText(reason, limit: 180)
     self.detailCode = HermesDiagnosticRedactor.safeRedactedToken(detailCode, fallback: "unknown")
   }
 
   public init(check: HermesPermissionCheck) {
     self.init(
       kind: check.kind.rawValue,
+      classification: check.classification.rawValue,
       state: check.state.rawValue,
+      currentStatus: check.currentStatus.rawValue,
+      blocksFirstRun: check.blocksFirstRun,
+      capabilityOwner: check.capabilityOwner,
+      reason: check.userReadableReason,
       detailCode: check.detailCode
     )
   }

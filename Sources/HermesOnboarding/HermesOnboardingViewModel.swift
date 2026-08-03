@@ -93,6 +93,8 @@ public enum HermesOnboardingSystemSettings {
       url = HermesSystemSettingsRemediationURL.screenRecording
     case .notifications:
       url = HermesSystemSettingsRemediationURL.notifications
+    case .inputMonitoring, .fullDiskAccess, .microphone, .camera:
+      return
     }
     NSWorkspace.shared.open(url)
   }

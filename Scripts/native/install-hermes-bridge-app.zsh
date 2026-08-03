@@ -1,19 +1,40 @@
 #!/bin/zsh
 set -euo pipefail
 
-APP_NAME="Hermes Bridge.app"
+APP_NAME="Hermes macOS Native Bridge.app"
 EXPECTED_BUNDLE_ID="com.hermes.bridge.app"
-EXECUTABLE_NAME="HermesBridgeApp"
-INDEXING_WAIT_SECONDS_DEFAULT=20
+EXPECTED_VERSION="0.1.0-rc.1"
+APP_EXECUTABLE_NAME="HermesBridgeApp"
+LABEL="com.hermes.bridge"
+MACH_SERVICE="com.hermes.bridge.xpc"
 SCRIPT_DIR="${0:A:h}"
+STAGING_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
+
+STAGED_APP="$STAGING_ROOT/$APP_NAME"
+STAGED_CONTROL="$STAGING_ROOT/bin/HermesBridgeControl"
+STAGED_LIFECYCLE="$STAGING_ROOT/bin/HermesBridgeServiceLifecycle"
+STAGED_SERVICE="$STAGED_APP/Contents/Library/XPCServices/HermesBridgeService.xpc/Contents/MacOS/HermesBridgeService"
+STAGED_LAUNCH_AGENT="$STAGING_ROOT/Library/LaunchAgents/$LABEL.plist"
+
+APP_TARGET="$HOME/Applications/$APP_NAME"
+BRIDGE_SUPPORT="$HOME/Library/Application Support/HermesBridge"
+SERVICE_TARGET="$BRIDGE_SUPPORT/HermesBridgeService"
+CONTROL_TARGET="$BRIDGE_SUPPORT/HermesBridgeControl"
+LIFECYCLE_TARGET="$BRIDGE_SUPPORT/HermesBridgeServiceLifecycle"
+LAUNCH_AGENT_TARGET="$HOME/Library/LaunchAgents/$LABEL.plist"
+LOGS_ROOT="$HOME/Library/Logs/HermesBridge"
+RUNTIME_ROOT="$HOME/Library/Application Support/HermesBridge/Runtime"
+SERVICE_DOMAIN="gui/$(id -u)"
+FIXTURE_MODE="${HERMES_INSTALLER_FIXTURE_MODE:-NO}"
 
 usage() {
   print -u2 "usage: $0 --install-user-app"
 }
 
 die() {
-  print -u2 "error: $*"
-  exit 1
+  local code="${2:-1}"
+  print -u2 "error: $1"
+  exit "$code"
 }
 
 require_flag() {
@@ -23,213 +44,165 @@ require_flag() {
   fi
 }
 
-repo_root() {
-  local root
-  root="$(cd "${SCRIPT_DIR}/../.." && pwd -P)"
-  print -r -- "$root"
+assert_user_scope() {
+  case "$APP_TARGET" in
+    "$HOME/Applications/"*) ;;
+    *) die "app destination is outside current HOME: $APP_TARGET" 70 ;;
+  esac
+  case "$LAUNCH_AGENT_TARGET" in
+    "$HOME/Library/LaunchAgents/"*) ;;
+    *) die "LaunchAgent destination is outside current HOME: $LAUNCH_AGENT_TARGET" 70 ;;
+  esac
+  case "$BRIDGE_SUPPORT" in
+    "$HOME/Library/Application Support/HermesBridge") ;;
+    *) die "helper destination is outside current HOME: $BRIDGE_SUPPORT" 70 ;;
+  esac
+  [[ "$APP_TARGET" != /Applications/* ]] || die "system Applications destination is forbidden" 70
+  [[ "$LAUNCH_AGENT_TARGET" != /Library/LaunchAgents/* ]] || die "system LaunchAgents destination is forbidden" 70
+  [[ "$BRIDGE_SUPPORT" != /usr/local/* && "$BRIDGE_SUPPORT" != /opt/homebrew/* ]] || die "system helper destination is forbidden" 70
 }
 
-user_app_root() {
-  print -r -- "${HOME}/Applications"
+assert_staged_assets() {
+  [[ -d "$STAGED_APP" ]] || die "missing staged app: $STAGED_APP" 66
+  [[ -x "$STAGED_APP/Contents/MacOS/$APP_EXECUTABLE_NAME" ]] || die "missing staged app executable: $STAGED_APP/Contents/MacOS/$APP_EXECUTABLE_NAME" 66
+  [[ -x "$STAGED_SERVICE" ]] || die "missing staged service executable: $STAGED_SERVICE" 66
+  [[ -x "$STAGED_CONTROL" ]] || die "missing staged control executable: $STAGED_CONTROL" 66
+  [[ -x "$STAGED_LIFECYCLE" ]] || die "missing staged lifecycle executable: $STAGED_LIFECYCLE" 66
+  [[ -f "$STAGED_LAUNCH_AGENT" ]] || die "missing staged LaunchAgent: $STAGED_LAUNCH_AGENT" 66
 }
 
-installed_app_path() {
-  print -r -- "$(user_app_root)/${APP_NAME}"
+plist_value() {
+  /usr/libexec/PlistBuddy -c "Print :$2" "$1" 2>/dev/null || true
 }
 
-artifact_root() {
-  print -r -- "$(repo_root)/artifacts/m4-003"
+validate_staged_app() {
+  local plist="$STAGED_APP/Contents/Info.plist"
+  [[ -f "$plist" ]] || die "missing staged Info.plist: $plist" 66
+  /usr/bin/plutil -lint "$plist" >/dev/null || die "invalid staged Info.plist: $plist" 66
+  [[ "$(plist_value "$plist" CFBundleIdentifier)" == "$EXPECTED_BUNDLE_ID" ]] || die "unexpected bundle identifier in staged app" 66
+  [[ "$(plist_value "$plist" CFBundleShortVersionString)" == "$EXPECTED_VERSION" ]] || die "unexpected staged app version: $(plist_value "$plist" CFBundleShortVersionString)" 66
 }
 
-built_app_path() {
-  print -r -- "$(artifact_root)/build/${APP_NAME}"
-}
-
-metadata_present() {
-  local app="$1"
-  [[ -d "${app}/Contents/Resources" ]] || return 1
-  find "${app}/Contents/Resources" -path '*/Metadata.appintents/*' -type f -print -quit | grep -q .
-}
-
-validate_expected_metadata() {
-  local app="$1"
-  local metadata_root="${app}/Contents/Resources"
-  local expected=(
-    "Submit Hermes Request"
-    "Check Hermes Request Status"
-    "Cancel Hermes Request"
-    "Respond to Hermes Approval"
-    "Check Hermes Bridge Health"
-  )
-  metadata_present "$app" || die "missing App Intents metadata in ${app}"
-  local title
-  for title in "${expected[@]}"; do
-    if ! grep -R -I -F "$title" "$metadata_root" >/dev/null; then
-      die "missing App Intents metadata title: ${title}"
+prepare_directories() {
+  for directory in \
+    "$HOME/Applications" \
+    "$HOME/Library/LaunchAgents" \
+    "$BRIDGE_SUPPORT" \
+    "$LOGS_ROOT" \
+    "$RUNTIME_ROOT"; do
+    if [[ -L "$directory" ]]; then
+      die "refusing to use symlinked directory: $directory" 73
     fi
+    mkdir -p "$directory"
   done
 }
 
-validate_bundle_id() {
-  local app="$1"
-  local plist="${app}/Contents/Info.plist"
-  [[ -f "$plist" ]] || die "missing Info.plist: ${plist}"
-  plutil -lint "$plist" >/dev/null || die "invalid Info.plist: ${plist}"
-  local actual
-  actual="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist")"
-  [[ "$actual" == "$EXPECTED_BUNDLE_ID" ]] || die "wrong bundle identifier: ${actual}"
-}
-
-verify_signature() {
-  local app="$1"
-  codesign --verify --deep --strict "$app" >/dev/null 2>&1 || die "invalid code signature: ${app}"
-}
-
-sign_app() {
-  local app="$1"
-  codesign --force --deep --sign - "$app" >/dev/null || die "failed to ad-hoc sign ${app}"
-}
-
-assert_user_app_destination() {
-  local root
-  root="$(user_app_root)"
-  [[ "$root" == "${HOME}/Applications" ]] || die "destination root is not fixed to current-user Applications"
-  [[ "$root" != "/Applications" ]] || die "system Applications destination is forbidden"
-  if [[ -L "$root" ]]; then
-    die "destination root must not be a symlink: ${root}"
-  fi
-  if [[ -e "$root" && ! -d "$root" ]]; then
-    die "destination root is not a directory: ${root}"
-  fi
-  mkdir -p "$root"
-  [[ -d "$root" ]] || die "failed to create destination root: ${root}"
-  [[ ! -L "$root" ]] || die "destination root must not be a symlink: ${root}"
-}
-
-copy_metadata_from_derived_data() {
-  local app="$1"
-  local resources="${app}/Contents/Resources"
-  local candidates
-  mkdir -p "$resources"
-  candidates=("${(@f)$(find "${HOME}/Library/Developer/Xcode/DerivedData" -path '*/Build/Products/Debug/*.appintents' -type d 2>/dev/null | sort || true)}")
-  local candidate base
-  for candidate in "${candidates[@]}"; do
-    [[ "${candidate:t}" != "Metadata.appintents" ]] || continue
-    if [[ -n "$(find "$candidate" -path '*/Metadata.appintents/*' -type f -print -quit 2>/dev/null)" ]]; then
-      base="${candidate:t}"
-      rm -rf "${resources}/${base}"
-      cp -R "$candidate" "${resources}/${base}"
-    fi
-  done
-}
-
-build_app_bundle() {
-  local root artifact app binary
-  root="$(repo_root)"
-  artifact="$(artifact_root)"
-  app="$(built_app_path)"
-  binary="${root}/.build/debug/${EXECUTABLE_NAME}"
-
-  cd "$root"
-  rm -rf "${artifact}/build"
-  mkdir -p "${app}/Contents/MacOS" "${app}/Contents/Resources"
-
-  xcodebuild -scheme HermesBridgeApp -destination 'platform=macOS' build > "${artifact}/xcodebuild.log"
-  swift build --product HermesBridgeApp > "${artifact}/swift-build-app.log"
-
-  [[ -x "$binary" ]] || die "missing built executable: ${binary}"
-  cp "$binary" "${app}/Contents/MacOS/${EXECUTABLE_NAME}"
-  cp "${root}/Packaging/HermesBridgeApp/Info.plist" "${app}/Contents/Info.plist"
-  chmod 755 "${app}/Contents/MacOS/${EXECUTABLE_NAME}"
-
-  copy_metadata_from_derived_data "$app"
-  validate_bundle_id "$app"
-  validate_expected_metadata "$app"
-  sign_app "$app"
-  verify_signature "$app"
-}
-
-backup_existing_app() {
-  local dest="$1"
-  local artifact="$2"
-  local backup_root="${artifact}/backups"
-  local manifest="${artifact}/last-backup-path.txt"
-  : > "$manifest"
-  if [[ -e "$dest" ]]; then
-    [[ -d "$dest" && ! -L "$dest" ]] || die "refusing to replace non-directory or symlink at ${dest}"
-    mkdir -p "$backup_root"
-    local backup="${backup_root}/${APP_NAME%.app}.$(date -u +%Y%m%dT%H%M%SZ).app"
-    mv "$dest" "$backup"
-    print -r -- "$backup" > "$manifest"
-    local old_backups
-    old_backups=("${(@f)$(find "$backup_root" -maxdepth 1 -name "${APP_NAME%.app}.*.app" -type d | sort | head -n -3 || true)}")
-    if (( ${#old_backups[@]} > 0 )); then
-      rm -rf -- "${old_backups[@]}"
-    fi
-  fi
-}
-
-install_atomically() {
+replace_directory_with_ditto() {
   local src="$1"
   local dest="$2"
-  local root tmp
-  root="$(user_app_root)"
-  tmp="${root}/.${APP_NAME}.install.$$"
+  local tmp="${dest}.install.$$"
   rm -rf "$tmp"
-  cp -R "$src" "$tmp"
-  validate_bundle_id "$tmp"
-  validate_expected_metadata "$tmp"
-  verify_signature "$tmp"
+  /usr/bin/ditto "$src" "$tmp"
+  rm -rf "$dest"
   mv "$tmp" "$dest"
 }
 
-launch_installed_app() {
-  local app="$1"
-  open -n "$app" || die "failed to launch installed app: ${app}"
+copy_helpers() {
+  /usr/bin/ditto "$STAGED_SERVICE" "$SERVICE_TARGET"
+  /usr/bin/ditto "$STAGED_CONTROL" "$CONTROL_TARGET"
+  /usr/bin/ditto "$STAGED_LIFECYCLE" "$LIFECYCLE_TARGET"
+  chmod 755 "$SERVICE_TARGET" "$CONTROL_TARGET" "$LIFECYCLE_TARGET"
 }
 
-record_pid() {
-  local app="$1"
-  local artifact="$2"
-  local app_real pid line
-  app_real="$(cd "$app" && pwd -P)"
-  : > "${artifact}/installed-app-pid.txt"
-  sleep 2
-  while IFS= read -r line; do
-    pid="${line%% *}"
-    if [[ -n "$pid" ]]; then
-      local proc_path
-      proc_path="$(ps -p "$pid" -o comm= 2>/dev/null || true)"
-      if [[ "$proc_path" == "${app_real}/Contents/MacOS/${EXECUTABLE_NAME}" ]]; then
-        print -r -- "$pid" > "${artifact}/installed-app-pid.txt"
-        return 0
-      fi
-    fi
-  done < <(pgrep -fl "${app_real}/Contents/MacOS/${EXECUTABLE_NAME}" 2>/dev/null || true)
+write_launch_agent() {
+  /usr/bin/python3 - "$STAGED_LAUNCH_AGENT" "$LAUNCH_AGENT_TARGET" "$SERVICE_TARGET" "$LOGS_ROOT" "$RUNTIME_ROOT" <<'PY'
+import plistlib
+import sys
+from pathlib import Path
+
+source, target, service, logs, runtime = map(Path, sys.argv[1:])
+data = plistlib.loads(source.read_bytes())
+data["Label"] = "com.hermes.bridge"
+data["MachServices"] = {"com.hermes.bridge.xpc": True}
+data["ProgramArguments"] = [str(service)]
+data["StandardOutPath"] = str(logs / "service.stdout.log")
+data["StandardErrorPath"] = str(logs / "service.stderr.log")
+env = dict(data.get("EnvironmentVariables", {}))
+env["HERMES_BRIDGE_RUNTIME_ROOT"] = str(runtime)
+data["EnvironmentVariables"] = env
+target.write_bytes(plistlib.dumps(data, fmt=plistlib.FMT_XML, sort_keys=True))
+PY
+  chmod 600 "$LAUNCH_AGENT_TARGET"
+  /usr/bin/plutil -lint "$LAUNCH_AGENT_TARGET" >/dev/null || die "invalid installed LaunchAgent: $LAUNCH_AGENT_TARGET" 65
+}
+
+validate_installed_app() {
+  local plist="$APP_TARGET/Contents/Info.plist"
+  [[ -d "$APP_TARGET" ]] || die "installed app is missing: $APP_TARGET" 65
+  [[ -x "$APP_TARGET/Contents/MacOS/$APP_EXECUTABLE_NAME" ]] || die "installed app executable is missing or not executable" 65
+  /usr/bin/plutil -lint "$plist" >/dev/null || die "invalid installed Info.plist: $plist" 65
+  [[ "$(plist_value "$plist" CFBundleShortVersionString)" == "$EXPECTED_VERSION" ]] || die "unexpected installed app version" 65
+}
+
+validate_installed_launch_agent() {
+  local program label
+  label="$(/usr/libexec/PlistBuddy -c 'Print :Label' "$LAUNCH_AGENT_TARGET")"
+  program="$(/usr/libexec/PlistBuddy -c 'Print :ProgramArguments:0' "$LAUNCH_AGENT_TARGET")"
+  [[ "$label" == "$LABEL" ]] || die "installed LaunchAgent has unexpected label: $label" 65
+  [[ "$program" == "$SERVICE_TARGET" ]] || die "installed LaunchAgent points at wrong service: $program" 65
+  [[ "$program" != "$STAGING_ROOT"* ]] || die "installed LaunchAgent points into staging" 65
+  [[ "$program" != /Applications/* && "$program" != /Library/* && "$program" != /usr/local/* && "$program" != /opt/homebrew/* ]] || die "installed LaunchAgent points at system path" 65
+  if /usr/bin/grep -R -I -F "$STAGING_ROOT" "$LAUNCH_AGENT_TARGET" >/dev/null; then
+    die "installed LaunchAgent contains developer or source-tree path" 65
+  fi
+}
+
+launchctl_available_for_gui_domain() {
+  [[ "$FIXTURE_MODE" != "YES" ]] || return 1
+  /bin/launchctl print "$SERVICE_DOMAIN" >/dev/null 2>&1
+}
+
+unload_existing_launch_agent() {
+  if ! launchctl_available_for_gui_domain; then
+    return 0
+  fi
+
+  if /bin/launchctl print "$SERVICE_DOMAIN/$LABEL" >/dev/null 2>&1; then
+    /bin/launchctl bootout "$SERVICE_DOMAIN/$LABEL" >/dev/null 2>&1 || true
+  fi
+}
+
+bootstrap_launch_agent() {
+  if ! launchctl_available_for_gui_domain; then
+    print -r -- "LAUNCH_AGENT_BOOTSTRAP_SKIPPED=yes"
+    return 0
+  fi
+
+  /bin/launchctl bootstrap "$SERVICE_DOMAIN" "$LAUNCH_AGENT_TARGET" >/dev/null
+  /bin/launchctl print "$SERVICE_DOMAIN/$LABEL" >/dev/null
+  print -r -- "LAUNCH_AGENT_BOOTSTRAPPED=yes"
 }
 
 main() {
   require_flag "$@"
-  local artifact app dest
-  artifact="$(artifact_root)"
-  app="$(built_app_path)"
-  dest="$(installed_app_path)"
-  mkdir -p "$artifact"
+  assert_user_scope
+  assert_staged_assets
+  validate_staged_app
+  prepare_directories
+  unload_existing_launch_agent
+  replace_directory_with_ditto "$STAGED_APP" "$APP_TARGET"
+  copy_helpers
+  write_launch_agent
+  validate_installed_app
+  validate_installed_launch_agent
+  bootstrap_launch_agent
 
-  assert_user_app_destination
-  build_app_bundle
-  backup_existing_app "$dest" "$artifact"
-  install_atomically "$app" "$dest"
-  verify_signature "$dest"
-  launch_installed_app "$dest"
-  record_pid "$dest" "$artifact"
-
-  print -r -- "$dest" > "${artifact}/installed-app-path.txt"
-  print -r -- "APP_BUILD_PASSED=yes"
-  print -r -- "APP_SIGNATURE_VALID=yes"
-  print -r -- "USER_APP_INSTALL_PASSED=yes"
-  print -r -- "APP_LAUNCH_REQUESTED=yes"
-  print -r -- "INSTALLED_APP_PATH=${dest}"
+  print -r -- "STAGING_ROOT=$STAGING_ROOT"
+  print -r -- "APP_INSTALLED=yes"
+  print -r -- "HELPERS_INSTALLED=yes"
+  print -r -- "LAUNCH_AGENT_INSTALLED=yes"
+  print -r -- "INSTALLED_APP_PATH=$APP_TARGET"
+  print -r -- "INSTALLED_SERVICE_PATH=$SERVICE_TARGET"
 }
 
 main "$@"

@@ -87,18 +87,33 @@ public struct HermesOnboardingProductionReadinessProvider: HermesOnboardingReadi
   public func checkPermissions() async -> HermesOnboardingPermissionReadiness {
     let report = permissionsDoctor.report(evidence: evidence())
     let supported: [(HermesPermissionKind, HermesOnboardingPermissionKind)] = [
+      (.inputMonitoring, .inputMonitoring),
       (.accessibility, .accessibility),
       (.automation, .automation),
       (.screenRecording, .screenRecording),
+      (.fullDiskAccess, .fullDiskAccess),
+      (.microphone, .microphone),
+      (.camera, .camera),
       (.notifications, .notifications),
     ]
     let checks = supported.map { sourceKind, targetKind in
       let check = report.checks.first { $0.kind == sourceKind }
-      let status = HermesOnboardingPermissionStatus(permissionState: check?.state ?? .unknown)
-      let remediation = remediationAction(for: targetKind, status: status)
+      let status = HermesOnboardingPermissionStatus(
+        permissionStatus: check?.currentStatus,
+        permissionState: check?.state ?? .unknown
+      )
+      let blocksFirstRun = check?.blocksFirstRun ?? status.isBlocking
+      let remediation = remediationAction(
+        for: targetKind,
+        blocksFirstRun: blocksFirstRun
+      )
       return HermesOnboardingPermissionCheck(
         kind: targetKind,
         status: status,
+        classification: check?.classification.rawValue ?? "required-for-core",
+        blocksFirstRun: blocksFirstRun,
+        capabilityOwner: check?.capabilityOwner ?? "unknown",
+        reason: check?.userReadableReason ?? "",
         remediation: remediation
       )
     }
@@ -138,15 +153,40 @@ public struct HermesOnboardingProductionReadinessProvider: HermesOnboardingReadi
 
   private func remediationAction(
     for kind: HermesOnboardingPermissionKind,
-    status: HermesOnboardingPermissionStatus
+    blocksFirstRun: Bool
   ) -> HermesOnboardingRemediationAction? {
-    guard status.isBlocking else { return nil }
+    guard blocksFirstRun else { return nil }
     return .openSystemSettings(kind)
   }
 }
 
 extension HermesOnboardingPermissionStatus {
-  init(permissionState: HermesPermissionState) {
+  init(permissionStatus: HermesPermissionCurrentStatus?, permissionState: HermesPermissionState) {
+    if let permissionStatus {
+      switch permissionStatus {
+      case .granted:
+        self = .granted
+      case .denied, .misconfigured:
+        self = .denied
+      case .restricted:
+        self = .restricted
+      case .notDetermined:
+        self = .notDetermined
+      case .unavailable:
+        self = .unavailable
+      case .notApplicable:
+        self = .notApplicable
+      case .unknown:
+        self = .unknown
+      case .notRequired:
+        self = .notRequired
+      case .featureTriggered:
+        self = .featureTriggered
+      case .unsupported:
+        self = .unsupported
+      }
+      return
+    }
     switch permissionState {
     case .granted:
       self = .granted

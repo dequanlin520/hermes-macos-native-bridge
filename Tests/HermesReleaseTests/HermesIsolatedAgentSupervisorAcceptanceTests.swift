@@ -263,7 +263,7 @@ final class HermesIsolatedAgentSupervisorAcceptanceTests: XCTestCase {
 
     XCTAssertTrue(service.contains("isolatedAgentSupervisor"))
     XCTAssertTrue(service.contains("HermesAgentSupervisor()"))
-    XCTAssertTrue(service.contains("self.discovery = HermesDiscovery("))
+    XCTAssertTrue(service.contains("let serviceDiscovery = HermesDiscovery("))
     XCTAssertFalse(app.contains("HermesAgentSupervisor("))
     XCTAssertFalse(app.contains("HermesAgentSupervisorConfiguration"))
   }
